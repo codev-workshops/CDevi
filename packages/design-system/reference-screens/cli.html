@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<!-- Pattern reference — not a CDevi screen. See reference-screens/README.md. -->
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CDevi demo — Local runtime — the cdevi CLI</title>
+
+<link rel="stylesheet" href="../css/cdevi.css">
+<link rel="stylesheet" href="demo.css">
+</head>
+<body class="cd-root">
+<header class="demo-bar">
+  <a href="index.html">← All demo pages</a>
+  <span>Local runtime — the cdevi CLI</span>
+  <button type="button" onclick="document.documentElement.dataset.theme=document.documentElement.dataset.theme==='dark'?'light':'dark'">Toggle theme</button>
+</header>
+<main class="demo-stage">
+<div class="cd-term"><span class="cd-prompt">~/code/payments-api $</span> cdevi link
+<span class="cd-good">✓</span> Linked to acme/payments-api · workspace acme · runtime policy: either
+
+<span class="cd-prompt">~/code/payments-api $</span> cdevi specify "Rate limiting for auth endpoints" --agent codex
+<span class="cd-dim">Using Codex 0.31 from PATH · key from OPENAI_API_KEY (…c91d) · key stays on this machine</span>
+<span class="cd-good">✓</span> Session 042-rate-limiting created · branch spec/042-rate-limiting · stage: specify
+<span class="cd-dim">→ running /speckit.specify … </span>
+<span class="cd-good">✓</span> spec.md written (v1) · 3 [NEEDS CLARIFICATION] markers
+<span class="cd-dim">→ running /speckit.clarify … </span>
+<span class="cd-warn">?</span> Should the limiter apply per IP, per account, or both?
+  1) Per IP only   2) Per IP and per account <span class="cd-warn">(recommended)</span>   3) Per account only
+  <span class="cd-dim">Answer here, or from the CDevi web inbox. Times out in 4 h.</span>
+<span class="cd-prompt">></span> 2
+<span class="cd-good">✓</span> Answered · appended to spec.md › Clarifications
+
+<span class="cd-prompt">~/code/payments-api $</span> cdevi plan &amp;&amp; cdevi tasks &amp;&amp; cdevi analyze
+<span class="cd-good">✓</span> plan.md, research.md, data-model.md, contracts/ (v1)
+<span class="cd-good">✓</span> tasks.md · 6 tasks · T002 [P] T004 [P] · 3 dependency edges
+<span class="cd-good">✓</span> analyze passed · constitution check 14/14 · evidence spec_analyzed (trust: low, laptop)
+<span class="cd-dim">Delegate all is now enabled in the web app. Or run a task here:</span>
+
+<span class="cd-prompt">~/code/payments-api $</span> cdevi run T002 --agent claude-code
+<span class="cd-dim">Claude Code 2.1 · key from ANTHROPIC_API_KEY (…2d7c) · branch cdevi/t002-sliding-window</span>
+<span class="cd-dim">heartbeat ok · egress advisory · run 41a1 visible in inbox</span>
+  read   src/lib/redis.ts
+  edit   src/middleware/rateLimit.ts  +64
+  bash   pnpm test -- rateLimit        <span class="cd-good">✓ 18 passed</span>
+<span class="cd-warn">!</span> Agent wants to push and open a PR against main (protected). Approve? [y/N/inbox]
+<span class="cd-prompt">></span> y
+<span class="cd-good">✓</span> collecting · tests 18/18 (runner:local, low trust) · secret scan clean · pushed · PR #432 draft
+<span class="cd-dim">awaiting evidence: CI passed, human approval · this workspace requires CI for local runs</span></div>
+</main>
+<p class="demo-note">The same runner and adapters on the developer's laptop. Keys are read from the environment and never uploaded; the web inbox shows the run within seconds; questions can be answered in the terminal or from the web inbox.</p>
+</body>
+</html>

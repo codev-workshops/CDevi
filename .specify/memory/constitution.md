@@ -12,6 +12,7 @@ Deferred TODOs: none
 Template synchronization: none; dependent artifacts read the constitution at runtime
 Review note: remove this temporary report before committing the constitution.
 -->
+
 # CDevi Constitution
 
 ## Core Principles

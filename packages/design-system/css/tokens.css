@@ -1,0 +1,97 @@
+/* GENERATED from tokens/tokens.json by scripts/build-tokens.mjs — do not edit. */
+:root{
+  --canvas:#F3F4F6;
+  --surface:#FFFFFF;
+  --surface-2:#F8F9FB;
+  --ink:#171A21;
+  --ink-2:#4A5262;
+  --ink-3:#656D7D;
+  --line:#E1E4EA;
+  --line-2:#CED3DC;
+  --line-strong:#808A9A;
+  --saffron:#C9791B;
+  --saffron-soft:#FBEFDF;
+  --saffron-ink:#8A4F0B;
+  --saffron-strong:#A8620F;
+  --indigo:#2F4FD6;
+  --indigo-soft:#E6EBFB;
+  --green:#1A6E50;
+  --green-soft:#DFF3EA;
+  --red:#B23A48;
+  --red-soft:#F9E3E6;
+  --code-bg:#1A1E27;
+  --code-ink:#D8DDE6;
+  --code-read:#8FA3C7;
+  --code-write:#E9C46A;
+  --code-ok:#7BD3A8;
+  --code-err:#F49AA6;
+  --code-dim:#9AA3B2;
+  --ui:"Instrument Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  --sinhala:"Noto Sans Sinhala","Instrument Sans",sans-serif;
+  --r:8px;
+  --r-lg:12px;
+  --radius-pill:999px;
+  --space-1:4px;
+  --space-2:8px;
+  --space-3:12px;
+  --space-4:16px;
+  --space-5:20px;
+  --space-6:24px;
+  --space-8:32px;
+  --text-xs:11.5px;
+  --text-sm:12.5px;
+  --text-base:14px;
+  --text-lg:16px;
+  --text-xl:20px;
+  --text-2xl:24px;
+  --shadow-1:0 1px 0 rgba(0,0,0,.04);
+}
+[data-theme="dark"]{
+  --canvas:#0F1218;
+  --surface:#171B23;
+  --surface-2:#1D222C;
+  --ink:#E6E9EF;
+  --ink-2:#B3BAC7;
+  --ink-3:#8790A0;
+  --line:#2A303C;
+  --line-2:#3A414E;
+  --line-strong:#6B7587;
+  --saffron:#E39A3B;
+  --saffron-soft:#3A2A14;
+  --saffron-ink:#F3C282;
+  --saffron-strong:#9E5C0E;
+  --indigo:#8FA3FF;
+  --indigo-soft:#1F2748;
+  --green:#4CC48F;
+  --green-soft:#153426;
+  --red:#F08A96;
+  --red-soft:#3E1F25;
+  --code-bg:#0B0E14;
+  --code-ink:#D8DDE6;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --canvas:#0F1218;
+    --surface:#171B23;
+    --surface-2:#1D222C;
+    --ink:#E6E9EF;
+    --ink-2:#B3BAC7;
+    --ink-3:#8790A0;
+    --line:#2A303C;
+    --line-2:#3A414E;
+    --line-strong:#6B7587;
+    --saffron:#E39A3B;
+    --saffron-soft:#3A2A14;
+    --saffron-ink:#F3C282;
+    --saffron-strong:#9E5C0E;
+    --indigo:#8FA3FF;
+    --indigo-soft:#1F2748;
+    --green:#4CC48F;
+    --green-soft:#153426;
+    --red:#F08A96;
+    --red-soft:#3E1F25;
+    --code-bg:#0B0E14;
+    --code-ink:#D8DDE6;
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "name": "cdevi",
+  "private": true,
+  "version": "0.0.0",
+  "description": "CDevi SDLC Control Plane monorepo",
+  "packageManager": "pnpm@10.34.5",
+  "engines": {
+    "node": ">=26"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r --filter './packages/*' run build",
+    "lint": "eslint .",
+    "lint:css": "stylelint \"**/*.css\" --ignore-path .gitignore --allow-empty-input",
+    "typecheck": "pnpm -r --filter './packages/*' --filter './apps/*' run typecheck",
+    "test": "vitest run --passWithNoTests",
+    "test:visual": "pnpm --filter @cdevi/design-system run test:visual",
+    "check:tokens": "vitest run --project design-system tokens",
+    "check:contrast": "vitest run --project design-system contrast",
+    "check:classes": "node tools/check-class-prefix.mjs",
+    "check:size": "node tools/check-size.mjs",
+    "check": "pnpm lint && pnpm lint:css && pnpm typecheck && pnpm check:classes && pnpm test && pnpm check:size",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "@types/node": "24.13.3",
+    "eslint": "9.39.5",
+    "eslint-plugin-jsx-a11y": "6.10.2",
+    "eslint-plugin-react": "7.37.5",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "globals": "17.12.0",
+    "prettier": "3.9.6",
+    "stylelint": "17.15.0",
+    "stylelint-declaration-strict-value": "1.12.1",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.69.0",
+    "vitest": "4.1.11"
+  }
+}

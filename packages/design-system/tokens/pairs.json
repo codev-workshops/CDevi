@@ -1,0 +1,194 @@
+[
+  {
+    "fg": "color.ink",
+    "bg": "color.canvas",
+    "where": ".cd-root body text on canvas"
+  },
+  {
+    "fg": "color.ink",
+    "bg": "color.surface",
+    "where": ".cd-card, .cd-list, .cd-side text"
+  },
+  {
+    "fg": "color.ink",
+    "bg": "color.surface-2",
+    "where": "table header row, diff file head"
+  },
+  {
+    "fg": "color.ink-2",
+    "bg": "color.canvas",
+    "where": ".cd-nav a, .cd-side .cd-ws"
+  },
+  {
+    "fg": "color.ink-2",
+    "bg": "color.surface",
+    "where": ".cd-field label, .cd-kv dd, .cd-seg spans"
+  },
+  {
+    "fg": "color.ink-2",
+    "bg": "color.surface-2",
+    "where": "table th, .cd-diff .cd-file-head"
+  },
+  {
+    "fg": "color.ink-3",
+    "bg": "color.canvas",
+    "where": ".cd-nav .cd-grp, .cd-help on canvas, .cd-page-meta"
+  },
+  {
+    "fg": "color.ink-3",
+    "bg": "color.surface",
+    "where": ".cd-row .cd-meta, .cd-check .cd-src, .cd-msg .cd-who, .cd-stat .cd-label, .cd-panel h4"
+  },
+  {
+    "fg": "color.ink-3",
+    "bg": "color.surface-2",
+    "where": "table header meta text"
+  },
+  {
+    "fg": "color.indigo",
+    "bg": "color.surface",
+    "where": ".cd-root a links"
+  },
+  {
+    "fg": "color.indigo",
+    "bg": "color.canvas",
+    "where": "links on canvas"
+  },
+  {
+    "fg": "color.indigo",
+    "bg": "color.indigo-soft",
+    "where": ".cd-pill.cd-run, .cd-msg.cd-user text is ink; .cd-av"
+  },
+  {
+    "fg": "color.ink",
+    "bg": "color.indigo-soft",
+    "where": ".cd-msg.cd-user body text"
+  },
+  {
+    "fg": "color.saffron-ink",
+    "bg": "color.saffron-soft",
+    "where": ".cd-pill.cd-wait, .cd-decision .cd-desc, .cd-nav .cd-count, .cd-stepper .cd-cur b, .cd-risk-high"
+  },
+  {
+    "fg": "color.ink",
+    "bg": "color.saffron-soft",
+    "where": ".cd-decision .cd-head, .cd-row.cd-gate title"
+  },
+  {
+    "fg": "color.saffron-ink",
+    "bg": "color.surface",
+    "where": ".cd-row .cd-ask, .cd-opt .cd-recommended, .cd-brand small"
+  },
+  {
+    "fg": "#FFFFFF",
+    "bg": "color.saffron-strong",
+    "where": ".cd-btn.cd-saffron, .cd-risk-critical"
+  },
+  {
+    "fg": "#FFFFFF",
+    "bg": "color.saffron-strong",
+    "where": ".cd-pill.cd-needs-you"
+  },
+  {
+    "fg": "color.green",
+    "bg": "color.green-soft",
+    "where": ".cd-pill.cd-done, .cd-stepper .cd-done b, .cd-diff .cd-add"
+  },
+  {
+    "fg": "color.green",
+    "bg": "color.surface",
+    "where": ".cd-check .cd-box.cd-ok border, verified text"
+  },
+  {
+    "fg": "color.surface",
+    "bg": "color.green",
+    "where": ".cd-check .cd-box.cd-ok glyph",
+    "large": true
+  },
+  {
+    "fg": "color.red",
+    "bg": "color.red-soft",
+    "where": ".cd-pill.cd-fail, .cd-pill.cd-blocked, .cd-diff .cd-del"
+  },
+  {
+    "fg": "color.red",
+    "bg": "color.surface",
+    "where": ".cd-btn.cd-danger, .cd-field .cd-error"
+  },
+  {
+    "fg": "color.surface",
+    "bg": "color.red",
+    "where": ".cd-check .cd-box.cd-bad glyph",
+    "large": true
+  },
+  {
+    "fg": "color.surface",
+    "bg": "color.ink",
+    "where": ".cd-btn primary, .cd-seg [aria-checked], .cd-chip[aria-pressed], .cd-brand .cd-mark"
+  },
+  {
+    "fg": "color.surface",
+    "bg": "color.ink-2",
+    "where": ".cd-btn:hover"
+  },
+  {
+    "fg": "color.code-ink",
+    "bg": "color.code-bg",
+    "where": ".cd-tools, .cd-term body text"
+  },
+  {
+    "fg": "color.code-read",
+    "bg": "color.code-bg",
+    "where": ".cd-tools .cd-rd, .cd-term .cd-prompt"
+  },
+  {
+    "fg": "color.code-write",
+    "bg": "color.code-bg",
+    "where": ".cd-tools .cd-wr, .cd-term .cd-warn"
+  },
+  {
+    "fg": "color.code-ok",
+    "bg": "color.code-bg",
+    "where": ".cd-tools .cd-ok, .cd-term .cd-good"
+  },
+  {
+    "fg": "color.code-err",
+    "bg": "color.code-bg",
+    "where": ".cd-tools .cd-ex"
+  },
+  {
+    "fg": "color.code-dim",
+    "bg": "color.code-bg",
+    "where": ".cd-tools .cd-dim, .cd-term .cd-dim"
+  },
+  {
+    "fg": "color.line-strong",
+    "bg": "color.surface",
+    "where": "input and button borders (UI boundary)",
+    "large": true
+  },
+  {
+    "fg": "color.indigo",
+    "bg": "color.canvas",
+    "where": ":focus-visible outline on canvas",
+    "large": true
+  },
+  {
+    "fg": "color.indigo",
+    "bg": "color.surface",
+    "where": ":focus-visible outline on surface",
+    "large": true
+  },
+  {
+    "fg": "color.surface",
+    "bg": "color.saffron",
+    "where": ".cd-check .cd-box.cd-override glyph",
+    "large": true
+  },
+  {
+    "fg": "color.line-strong",
+    "bg": "color.canvas",
+    "where": "control borders on canvas",
+    "large": true
+  }
+]

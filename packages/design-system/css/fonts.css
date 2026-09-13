@@ -1,0 +1,10 @@
+/* CDevi fonts — self-hosted via @fontsource (OFL). Latin subsets for UI and mono; Sinhala subset for the wordmark.
+   Loaded from node_modules by the bundler; no third-party requests at runtime. */
+@import "@fontsource/instrument-sans/latin-400.css";
+@import "@fontsource/instrument-sans/latin-400-italic.css";
+@import "@fontsource/instrument-sans/latin-500.css";
+@import "@fontsource/instrument-sans/latin-600.css";
+@import "@fontsource/instrument-sans/latin-700.css";
+@import "@fontsource/jetbrains-mono/latin-400.css";
+@import "@fontsource/jetbrains-mono/latin-500.css";
+@import "@fontsource/noto-sans-sinhala/sinhala-600.css";

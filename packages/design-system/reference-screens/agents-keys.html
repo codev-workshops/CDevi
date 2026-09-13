@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<!-- Pattern reference — not a CDevi screen. See reference-screens/README.md. -->
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CDevi demo — Agents &amp; keys</title>
+
+<link rel="stylesheet" href="../css/cdevi.css">
+<link rel="stylesheet" href="demo.css">
+</head>
+<body class="cd-root">
+<header class="demo-bar">
+  <a href="index.html">← All demo pages</a>
+  <span>Agents &amp; keys</span>
+  <button type="button" onclick="document.documentElement.dataset.theme=document.documentElement.dataset.theme==='dark'?'light':'dark'">Toggle theme</button>
+</header>
+<main class="demo-stage">
+<div class="cd-app cd-with-panel">
+    <aside class="cd-side">
+      <div class="cd-brand"><span class="cd-mark" aria-hidden="true">සී</span>CDevi<small lang="si" aria-hidden="true">සීදේවි</small></div>
+      <div class="cd-nav"><a href="inbox.html">Inbox <span class="cd-count">2</span></a><a href="spec-session.html">Specs</a><a href="run-transcript.html">Tasks</a><a href="repository-settings.html">Repositories</a><div class="cd-grp">Account</div><a class="cd-is-active" aria-current="page" href="agents-keys.html">Agents &amp; keys</a><a href="usage.html">Usage</a><a href="inbox.html">Workspace</a></div>
+      <div class="cd-ws"><span class="cd-av">AC</span> acme · Nadeesha ▾</div>
+    </aside>
+    <div class="cd-main">
+      <div class="cd-topbar"><h1>Agents &amp; keys</h1><button type="button" class="cd-btn cd-saffron">Add a key</button></div>
+      <div class="cd-tabs" role="tablist"><button type="button" role="tab" aria-selected="true">Mine <i>3</i></button><button type="button" role="tab" aria-selected="false" tabindex="-1">Workspace <i>1</i></button><button type="button" role="tab" aria-selected="false" tabindex="-1">Laptop only <i>1</i></button></div>
+      <div class="cd-list">
+        <div class="cd-row"><div class="cd-title">Anthropic · Claude Code</div><span class="cd-pill cd-done">active</span><div class="cd-meta"><span class="cd-key">…8f2a</span> · personal · used 2 h ago · $14.20 of $50 this month · models: any</div></div>
+        <div class="cd-row"><div class="cd-title">OpenAI · Codex</div><span class="cd-pill cd-done">active</span><div class="cd-meta"><span class="cd-key">…c91d</span> · personal · used 18 min ago · $9.06 of $50 · models: gpt-5-codex</div></div>
+        <div class="cd-row"><div class="cd-title">Google · Gemini CLI</div><span class="cd-pill cd-fail">invalid</span><div class="cd-meta"><span class="cd-key">…77e0</span> · personal · validation failed 3 Sep: 403 API key not valid · <span style="color:var(--indigo);font-weight:600">Replace key</span></div></div>
+        <div class="cd-row"><div class="cd-title">OpenAI · Codex <span class="cd-pill cd-neutral" style="margin-left:6px">workspace</span></div><span class="cd-pill cd-done">active</span><div class="cd-meta"><span class="cd-key">…4b0e</span> · added by Kasun · 3 repos allowed · $61.40 of $400 · restricted to gpt-5-codex</div></div>
+        <div class="cd-row"><div class="cd-title">Anthropic · Claude Code <span class="cd-pill cd-neutral" style="margin-left:6px">laptop only</span></div><span class="cd-pill cd-neutral">never uploaded</span><div class="cd-meta"><span class="cd-key">…2d7c</span> · read from nadeesha-mbp environment · used by 4 local runs · $3.90 this month · CDevi holds a fingerprint only</div></div>
+      </div>
+
+      <div style="font-size:12px;color:var(--ink-3);margin:22px 0 6px;font-weight:600">Add a key</div>
+      <div class="cd-card">
+        <div class="cd-field"><label>Provider</label><div class="cd-input">Anthropic <span class="cd-caret">▾</span></div></div>
+        <div class="cd-field"><label>API key<small>paste only, never shown again</small></label><div class="cd-input cd-mono">sk-ant-api03-••••••••••••••••••••••••••••••</div></div>
+        <div class="cd-field"><label>Scope</label><div><div class="cd-seg" role="radiogroup"><button type="button" role="radio" aria-checked="true">Personal</button><button type="button" role="radio" aria-checked="false" tabindex="-1">Workspace</button></div><div class="cd-help">Personal keys are used only by runs you request.</div></div></div>
+        <div class="cd-field"><label>Monthly cap</label><div class="cd-input" style="width:140px">$ 50</div></div>
+        <div class="cd-field"><label>Allowed models</label><div class="cd-chips"><span class="cd-chip cd-is-active">any</span><span class="cd-chip">claude-sonnet-4.5</span><span class="cd-chip">claude-opus-4.1</span></div></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:14px;justify-content:flex-end;align-items:center"><span class="cd-help" style="margin:0">Saving makes one models-list call to Anthropic to confirm the key works.</span><button type="button" class="cd-btn">Validate and save</button></div>
+    </div>
+    <aside class="cd-panel">
+      <div class="cd-blk"><h4>How keys are handled</h4><div class="cd-card" style="padding:10px 12px;font-size:12.5px;line-height:1.5">Cloud runs: encrypted at rest, decrypted only when a sandbox is provisioned, destroyed with it.<br><br>Laptop runs: the key stays on your machine. CDevi records provider and fingerprint for cost attribution.</div></div>
+      <div class="cd-blk"><h4>Provider terms</h4><div style="font-size:12.5px;color:var(--ink-2)">API keys only. Subscription logins (Claude Max, ChatGPT) are not accepted until each provider's terms allow hosted use.</div></div>
+    </aside>
+  </div>
+</main>
+<p class="demo-note">Every credential the user can see, with the facts that matter. Nothing beyond the fingerprint is ever displayed. Validation is part of saving; laptop-held keys appear with a fingerprint only, marked as never uploaded.</p>
+</body>
+</html>

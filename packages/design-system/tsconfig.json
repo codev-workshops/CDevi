@@ -1,0 +1,8 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["vite/client", "node", "@testing-library/jest-dom"],
+    "noEmit": true
+  },
+  "include": ["src", "gallery", "tests", "scripts", "*.ts"]
+}

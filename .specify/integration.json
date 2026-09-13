@@ -1,9 +1,7 @@
 {
   "version": "1.0.6",
   "integration_state_schema": 1,
-  "installed_integrations": [
-    "devin"
-  ],
+  "installed_integrations": ["devin"],
   "integration_settings": {
     "devin": {
       "script": "sh",

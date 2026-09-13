@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+pnpm-lock.yaml
+packages/design-system/css/tokens.css
+packages/design-system/css/cdevi.css
+packages/design-system/tailwind/preset.cjs
+packages/design-system/src/tokens.generated.ts
+packages/design-system/tests/visual/__screenshots__/
+packages/design-system/reference-screens/
+specs/
+docs/

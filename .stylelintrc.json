@@ -1,0 +1,49 @@
+{
+  "plugins": ["stylelint-declaration-strict-value"],
+  "ignoreFiles": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/gallery-dist/**",
+    "packages/design-system/css/**",
+    "packages/design-system/reference-screens/**",
+    "packages/design-system/legacy-gallery.html",
+    "tools/lint-fixtures/**"
+  ],
+  "rules": {
+    "scale-unlimited/declaration-strict-value": [
+      [
+        "color",
+        "/^background/",
+        "/^border(-(top|right|bottom|left))?-color$/",
+        "outline-color",
+        "fill",
+        "stroke",
+        "font-size",
+        "font-family",
+        "border-radius",
+        "box-shadow",
+        "/^margin/",
+        "/^padding/",
+        "gap",
+        "row-gap",
+        "column-gap"
+      ],
+      {
+        "ignoreValues": [
+          "transparent",
+          "inherit",
+          "currentColor",
+          "currentcolor",
+          "0",
+          "none",
+          "auto",
+          "unset",
+          "initial"
+        ],
+        "ignoreFunctions": false,
+        "message": "DR-06: `${property}: ${value}` uses a literal. Use a design token (`var(--\u2026)` from packages/design-system/css/tokens.css) instead.",
+        "expandShorthand": true
+      }
+    ]
+  }
+}

@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cdevi.dev/schemas/design-tokens.json",
+  "title": "CDevi design tokens source (tokens/tokens.json)",
+  "type": "object",
+  "required": ["name", "version", "color", "font", "radius", "space", "text", "shadow", "semantic"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "name": { "type": "string" },
+    "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+    "color": { "$ref": "#/$defs/colorGroup" },
+    "font": { "$ref": "#/$defs/fontGroup" },
+    "radius": { "$ref": "#/$defs/dimensionGroup" },
+    "space": { "$ref": "#/$defs/dimensionGroup" },
+    "text": { "$ref": "#/$defs/dimensionGroup" },
+    "shadow": { "$ref": "#/$defs/shadowGroup" },
+    "semantic": {
+      "type": "object",
+      "required": ["needs-you", "primary-action", "running", "verified", "failed", "evidence", "state", "risk"],
+      "additionalProperties": false,
+      "properties": {
+        "needs-you": { "$ref": "#/$defs/reference" },
+        "primary-action": { "$ref": "#/$defs/reference" },
+        "running": { "$ref": "#/$defs/reference" },
+        "verified": { "$ref": "#/$defs/reference" },
+        "failed": { "$ref": "#/$defs/reference" },
+        "evidence": { "$ref": "#/$defs/reference" },
+        "state": {
+          "type": "object",
+          "required": ["queued", "running", "waiting", "waiting-for-human", "blocked", "failed", "retrying", "completed", "cancelled"],
+          "additionalProperties": false,
+          "patternProperties": { "^[a-z-]+$": { "$ref": "#/$defs/reference" } }
+        },
+        "risk": {
+          "type": "object",
+          "required": ["low", "medium", "high", "critical"],
+          "additionalProperties": false,
+          "patternProperties": { "^[a-z-]+$": { "$ref": "#/$defs/reference" } }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "hex": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+    "cssVarName": { "type": "string", "pattern": "^--[a-z][a-z0-9-]*$" },
+    "colorToken": {
+      "type": "object",
+      "required": ["$type", "$value"],
+      "additionalProperties": false,
+      "properties": {
+        "$type": { "const": "color" },
+        "$value": { "$ref": "#/$defs/hex" },
+        "$description": { "type": "string" },
+        "$extensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cdevi.dark": { "$ref": "#/$defs/hex" },
+            "cdevi.cssVar": { "$ref": "#/$defs/cssVarName" }
+          }
+        }
+      }
+    },
+    "colorGroup": {
+      "type": "object",
+      "minProperties": 1,
+      "patternProperties": { "^[a-z][a-z0-9-]*$": { "$ref": "#/$defs/colorToken" } },
+      "additionalProperties": false
+    },
+    "fontToken": {
+      "type": "object",
+      "required": ["$type", "$value"],
+      "additionalProperties": false,
+      "properties": {
+        "$type": { "const": "fontFamily" },
+        "$value": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "$description": { "type": "string" },
+        "$extensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "cdevi.cssVar": { "$ref": "#/$defs/cssVarName" } }
+        }
+      }
+    },
+    "fontGroup": {
+      "type": "object",
+      "required": ["ui", "mono", "sinhala"],
+      "patternProperties": { "^[a-z][a-z0-9-]*$": { "$ref": "#/$defs/fontToken" } },
+      "additionalProperties": false
+    },
+    "dimensionToken": {
+      "type": "object",
+      "required": ["$type", "$value"],
+      "additionalProperties": false,
+      "properties": {
+        "$type": { "const": "dimension" },
+        "$value": { "type": "string", "pattern": "^\\d+(\\.\\d+)?(px|rem)$" },
+        "$description": { "type": "string" },
+        "$extensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "cdevi.cssVar": { "$ref": "#/$defs/cssVarName" } }
+        }
+      }
+    },
+    "dimensionGroup": {
+      "type": "object",
+      "minProperties": 1,
+      "patternProperties": { "^[a-z0-9][a-z0-9-]*$": { "$ref": "#/$defs/dimensionToken" } },
+      "additionalProperties": false
+    },
+    "shadowToken": {
+      "type": "object",
+      "required": ["$type", "$value"],
+      "additionalProperties": false,
+      "properties": {
+        "$type": { "const": "shadow" },
+        "$value": { "type": "string" },
+        "$description": { "type": "string" },
+        "$extensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "cdevi.cssVar": { "$ref": "#/$defs/cssVarName" } }
+        }
+      }
+    },
+    "shadowGroup": {
+      "type": "object",
+      "minProperties": 1,
+      "patternProperties": { "^[a-z0-9][a-z0-9-]*$": { "$ref": "#/$defs/shadowToken" } },
+      "additionalProperties": false
+    },
+    "reference": {
+      "type": "object",
+      "required": ["$value", "$description"],
+      "additionalProperties": false,
+      "properties": {
+        "$value": { "type": "string", "pattern": "^\\{color\\.[a-z][a-z0-9-]*\\}$" },
+        "$description": { "type": "string", "minLength": 8 }
+      }
+    }
+  }
+}

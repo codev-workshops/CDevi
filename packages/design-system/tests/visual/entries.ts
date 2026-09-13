@@ -1,0 +1,37 @@
+// Kept in sync with gallery/entries.tsx by tests/unit/gallery.test.ts.
+export const ENTRY_NAMES = [
+  'Tokens',
+  'Button',
+  'Pill',
+  'StatePill',
+  'RiskBadge',
+  'Inline',
+  'List',
+  'Tabs',
+  'Form',
+  'Data',
+  'Decision',
+  'Gates',
+  'Transcript',
+  'Diff',
+  'Stepper',
+  'Terminal',
+  'Finding',
+  'Audit',
+  'Shell',
+  'ReferenceScreens',
+] as const;
+
+export const REFERENCE_SCREENS = [
+  'index',
+  'inbox',
+  'spec-session',
+  'new-task',
+  'run-transcript',
+  'run-changes',
+  'review',
+  'agents-keys',
+  'repository-settings',
+  'usage',
+  'cli',
+] as const;

@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<!-- Pattern reference — not a CDevi screen. See reference-screens/README.md. -->
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CDevi demo — Run — transcript with a decision</title>
+
+<link rel="stylesheet" href="../css/cdevi.css">
+<link rel="stylesheet" href="demo.css">
+</head>
+<body class="cd-root">
+<header class="demo-bar">
+  <a href="index.html">← All demo pages</a>
+  <span>Run — transcript with a decision</span>
+  <button type="button" onclick="document.documentElement.dataset.theme=document.documentElement.dataset.theme==='dark'?'light':'dark'">Toggle theme</button>
+</header>
+<main class="demo-stage">
+<div class="cd-app cd-with-panel">
+    <aside class="cd-side">
+      <div class="cd-brand"><span class="cd-mark" aria-hidden="true">සී</span>CDevi<small lang="si" aria-hidden="true">සීදේවි</small></div>
+      <div class="cd-nav"><a href="inbox.html">Inbox <span class="cd-count">2</span></a><a href="spec-session.html">Specs</a><a class="cd-is-active" aria-current="page" href="run-transcript.html">Tasks</a><a href="repository-settings.html">Repositories</a><div class="cd-grp">Account</div><a href="agents-keys.html">Agents &amp; keys</a><a href="usage.html">Usage</a><a href="inbox.html">Workspace</a></div>
+      <div class="cd-ws"><span class="cd-av">AC</span> acme · Nadeesha ▾</div>
+    </aside>
+    <div class="cd-main">
+      <div class="cd-crumbs">Tasks / payments-api / T002 / <b>run 2</b></div>
+      <div class="cd-topbar"><h1>Implement the sliding-window limiter</h1>
+        <div style="display:flex;gap:8px;align-items:center"><span class="cd-pill cd-wait">needs you</span><button type="button" class="cd-btn cd-ghost cd-sm">Pause</button><button type="button" class="cd-btn cd-danger cd-sm">Cancel run</button></div></div>
+      <div style="font-size:12.5px;color:var(--ink-3);display:flex;gap:10px;flex-wrap:wrap;align-items:center">Claude Code 2.1 · claude-sonnet-4.5 · <span class="cd-rt"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18a4 4 0 0 1 0-8 6 6 0 0 1 11.5-1.5A4.5 4.5 0 0 1 18 18z"/></svg>cloud · sbx-7c1e</span> · <span class="cd-key">…8f2a</span> · 14 min of 120 · $1.12 of $5 · branch <span class="cd-mono">cdevi/t002-sliding-window</span></div>
+      <div class="cd-tabs" role="tablist"><button type="button" role="tab" aria-selected="true">Transcript</button><button type="button" role="tab" aria-selected="false" tabindex="-1">Changes <i>3</i></button><button type="button" role="tab" aria-selected="false" tabindex="-1">Tests <i>18 ✓</i></button><button type="button" role="tab" aria-selected="false" tabindex="-1">Evidence <i>2/5</i></button></div>
+
+      <div class="cd-msg"><div class="cd-who"><span>Claude Code</span><span>14:02</span></div>I read the spec and AGENTS.md. Plan: add <span class="cd-mono">rateLimit.ts</span> with a sliding window over the existing Redis client, register it in <span class="cd-mono">auth.ts</span> for the three endpoints, and add unit tests for rollover and both key types.</div>
+      <div class="cd-tools"><span class="cd-rd">read </span> src/lib/redis.ts                     <span class="cd-dim">·  read</span>
+<span class="cd-rd">read </span> specs/042-rate-limiting/spec.md      <span class="cd-dim">·  read</span>
+<span class="cd-wr">edit </span> src/middleware/rateLimit.ts  +64     <span class="cd-dim">·  write_local</span>
+<span class="cd-wr">edit </span> src/middleware/auth.ts       +6 −1   <span class="cd-dim">·  write_local</span>
+<span class="cd-wr">edit </span> test/rateLimit.test.ts       +42     <span class="cd-dim">·  write_local</span>
+<span class="cd-rd">bash </span> pnpm test -- rateLimit      <span class="cd-ok">✓ 18 passed</span>  <span class="cd-dim">·  read</span></div>
+      <div class="cd-msg"><div class="cd-who"><span>Claude Code</span><span>14:15</span></div>Tests pass locally in the sandbox. I would like to push the branch and open a pull request against <span class="cd-mono">main</span> so CI can run.</div>
+      <div class="cd-decision">
+        <div class="cd-head">Open a pull request against main? <span class="cd-pill cd-wait">external</span></div>
+        <div class="cd-desc">Pushes <span class="cd-mono">cdevi/t002-sliding-window</span> (3 files, +112 −1) and opens a draft PR. main is a protected branch, so this always asks. Times out in 3 h 52 m; then the run stops and keeps its branch.</div>
+        <div class="cd-acts"><button type="button" class="cd-btn cd-saffron">Approve</button><button type="button" class="cd-btn cd-ghost">Not now</button><button type="button" class="cd-btn cd-ghost">Approve for this run</button></div>
+      </div>
+      <div class="cd-msg cd-user"><div class="cd-who"><span>You · steer</span><span>14:16</span></div>Before the PR, add a test for the Retry-After header value.</div>
+      <div class="cd-steer"><div class="cd-input">Steer the agent…</div><button type="button" class="cd-btn">Send</button></div>
+    </div>
+    <aside class="cd-panel">
+      <div class="cd-blk"><h4>Gates</h4>
+        <div class="cd-check"><span class="cd-box cd-ok">✓</span><span>Tests passed</span><span class="cd-src">runner:cloud</span></div>
+        <div class="cd-check"><span class="cd-box cd-ok">✓</span><span>No secret in diff</span><span class="cd-src">runner</span></div>
+        <div class="cd-check"><span class="cd-box"></span><span>CI passed</span><span class="cd-src">github</span></div>
+        <div class="cd-check"><span class="cd-box"></span><span>Human approval</span><span class="cd-src">reviewer</span></div>
+        <div class="cd-check"><span class="cd-box cd-ok">✓</span><span>Spec analyzed</span><span class="cd-src">speckit</span></div>
+      </div>
+      <div class="cd-blk"><h4>Budget</h4>
+        <div class="cd-meter"><i style="width:22%"></i></div><div style="font-size:12px;color:var(--ink-3)">$1.12 of $5.00 · 4,310 in / 1,920 out tokens</div>
+        <div class="cd-meter"><i style="width:12%;background:var(--ink-3)"></i></div><div style="font-size:12px;color:var(--ink-3)">14 of 120 minutes</div>
+      </div>
+      <div class="cd-blk"><h4>Spec</h4><dl class="cd-kv"><dt class="cd-mono">spec.md</dt><dd>v4</dd><dt class="cd-mono">tasks.md</dt><dd>T002 of 6</dd><dt>Runs after</dt><dd>T001 verified</dd></dl></div>
+    </aside>
+  </div>
+</main>
+<p class="demo-note">The live surface. Identity and budget in the header, the agent's words as prose, its tools as a compact log grouped by step, and the approval card in the flow where it was raised. The panel carries the gate checklist so the outcome of the run is never out of sight.</p>
+</body>
+</html>

@@ -1,0 +1,5 @@
+/* FIXTURE: must fail DR-06 (literal colour and spacing instead of tokens) */
+.approval-card {
+  color: #123456;
+  padding: 13px;
+}

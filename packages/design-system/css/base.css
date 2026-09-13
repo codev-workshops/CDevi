@@ -1,0 +1,40 @@
+/* CDevi base: font stack, reset for the app surface. Scope everything under .cd-root so the package can live beside other CSS. */
+.cd-root {
+  font-family: var(--ui);
+  font-size: var(--text-base);
+  line-height: 1.45;
+  color: var(--ink);
+  background: var(--canvas);
+  -webkit-font-smoothing: antialiased;
+}
+.cd-root *,
+.cd-root *::before,
+.cd-root *::after {
+  box-sizing: border-box;
+}
+.cd-root a {
+  color: var(--indigo);
+}
+.cd-root :focus-visible {
+  outline: 2px solid var(--indigo);
+  outline-offset: 2px;
+}
+.cd-root h1,
+.cd-root h2,
+.cd-root h3,
+.cd-root h4 {
+  margin: 0;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+}
+.cd-root code,
+.cd-root pre {
+  font-family: var(--mono);
+}
+@media (prefers-reduced-motion: reduce) {
+  .cd-root * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

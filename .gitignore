@@ -25,3 +25,14 @@ replay_pid*
 
 # macOS
 .DS_Store
+
+# Node / tooling
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example

@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<!-- Pattern reference — not a CDevi screen. See reference-screens/README.md. -->
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CDevi demo — Repository settings</title>
+
+<link rel="stylesheet" href="../css/cdevi.css">
+<link rel="stylesheet" href="demo.css">
+</head>
+<body class="cd-root">
+<header class="demo-bar">
+  <a href="index.html">← All demo pages</a>
+  <span>Repository settings</span>
+  <button type="button" onclick="document.documentElement.dataset.theme=document.documentElement.dataset.theme==='dark'?'light':'dark'">Toggle theme</button>
+</header>
+<main class="demo-stage">
+<div class="cd-app cd-with-panel">
+    <aside class="cd-side">
+      <div class="cd-brand"><span class="cd-mark" aria-hidden="true">සී</span>CDevi<small lang="si" aria-hidden="true">සීදේවි</small></div>
+      <div class="cd-nav"><a href="inbox.html">Inbox <span class="cd-count">2</span></a><a href="spec-session.html">Specs</a><a href="run-transcript.html">Tasks</a><a class="cd-is-active" aria-current="page" href="repository-settings.html">Repositories</a><div class="cd-grp">Account</div><a href="agents-keys.html">Agents &amp; keys</a><a href="usage.html">Usage</a><a href="inbox.html">Workspace</a></div>
+      <div class="cd-ws"><span class="cd-av">AC</span> acme · Nadeesha ▾</div>
+    </aside>
+    <div class="cd-main">
+      <div class="cd-crumbs">Repositories / <b>payments-api</b></div>
+      <div class="cd-topbar"><h1>payments-api</h1><span class="cd-pill cd-done">GitHub App installed</span></div>
+      <div style="font-size:12.5px;color:var(--ink-3)">github.com/acme/payments-api · default branch <span class="cd-mono">main</span> · Spec Kit initialised for claude, codex</div>
+      <div class="cd-tabs" role="tablist"><button type="button" role="tab" aria-selected="true">Environment</button><button type="button" role="tab" aria-selected="false" tabindex="-1">Defaults</button><button type="button" role="tab" aria-selected="false" tabindex="-1">Linked laptops <i>2</i></button><button type="button" role="tab" aria-selected="false" tabindex="-1">Runs <i>38</i></button></div>
+      <div class="cd-card">
+        <div class="cd-field"><label>Base image</label><div class="cd-input">node-22 · pinned 2026-09-01 <span class="cd-caret">▾</span></div></div>
+        <div class="cd-field"><label>Setup command</label><div class="cd-input cd-mono">pnpm install --frozen-lockfile</div></div>
+        <div class="cd-field"><label>Test command<small>run by CDevi after the agent stops</small></label><div class="cd-input cd-mono">pnpm test</div></div>
+        <div class="cd-field"><label>Allowed egress<small>cloud: enforced · laptop: advisory</small></label><div class="cd-chips"><span class="cd-chip cd-is-active">github.com</span><span class="cd-chip cd-is-active">api.anthropic.com <span class="cd-chip-note">· from default key</span></span><span class="cd-chip cd-is-active">registry.npmjs.org</span><span class="cd-chip">+ add host</span></div></div>
+        <div class="cd-field"><label>Protected branches<small>always gated</small></label><div class="cd-chips"><span class="cd-chip cd-is-active">main</span><span class="cd-chip cd-is-active">release/*</span><span class="cd-chip">+ add</span></div></div>
+        <div class="cd-field"><label>Conventions</label><div class="cd-input"><span class="cd-mono">AGENTS.md</span> found · included in every run preamble <span class="cd-pill cd-done">detected</span></div></div>
+      </div>
+      <div style="font-size:12px;color:var(--ink-3);margin:22px 0 6px;font-weight:600">Defaults for new tasks</div>
+      <div class="cd-card">
+        <div class="cd-field"><label>Runtime</label><div><div class="cd-seg" role="radiogroup"><button type="button" role="radio" aria-checked="true">Cloud sandbox</button><button type="button" role="radio" aria-checked="false" tabindex="-1">Developer's laptop</button><button type="button" role="radio" aria-checked="false" tabindex="-1">Ask each time</button></div></div></div>
+        <div class="cd-field"><label>Agent and key</label><div class="cd-input">Claude Code · <span class="cd-key">…8f2a</span> <span class="cd-caret">▾</span></div></div>
+        <div class="cd-field"><label>Autonomy ceiling</label><div class="cd-seg" role="radiogroup"><button type="button" role="radio" aria-checked="false" tabindex="-1">Ask first</button><button type="button" role="radio" aria-checked="true">Ask on risk</button><button type="button" role="radio" aria-checked="false" tabindex="-1">Autonomous</button></div></div>
+        <div class="cd-field"><label>Required gates</label><div class="cd-chips"><span class="cd-chip cd-is-active">tests passed</span><span class="cd-chip cd-is-active">no secret in diff</span><span class="cd-chip cd-is-active">CI passed</span><span class="cd-chip cd-is-active">human approval</span><span class="cd-chip cd-is-active">spec analyzed</span></div></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:14px;justify-content:flex-end"><button type="button" class="cd-btn cd-ghost">Discard</button><button type="button" class="cd-btn">Save</button></div>
+    </div>
+    <aside class="cd-panel">
+      <div class="cd-blk"><h4>Sandbox image</h4><dl class="cd-kv"><dt>Base</dt><dd>node-22</dd><dt>Agents</dt><dd>claude 2.1 · codex 0.31 · gemini 0.9</dd><dt>Per-repo image</dt><dd>built 3 d ago · 41 s boot</dd></dl></div>
+      <div class="cd-blk"><h4>Linked laptops</h4><dl class="cd-kv"><dt>nadeesha-mbp</dt><dd>macOS · cli 0.4.2 · online</dd><dt>kasun-linux</dt><dd>Ubuntu · cli 0.4.1 · offline</dd></dl></div>
+    </aside>
+  </div>
+</main>
+<p class="demo-note">How the sandbox is built, how tests are proven, what the agent may reach, and the defaults the composer will pre-fill, including the default runtime.</p>
+</body>
+</html>

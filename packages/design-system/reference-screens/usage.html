@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<!-- Pattern reference — not a CDevi screen. See reference-screens/README.md. -->
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CDevi demo — Usage</title>
+
+<link rel="stylesheet" href="../css/cdevi.css">
+<link rel="stylesheet" href="demo.css">
+</head>
+<body class="cd-root">
+<header class="demo-bar">
+  <a href="index.html">← All demo pages</a>
+  <span>Usage</span>
+  <button type="button" onclick="document.documentElement.dataset.theme=document.documentElement.dataset.theme==='dark'?'light':'dark'">Toggle theme</button>
+</header>
+<main class="demo-stage">
+<div class="cd-app">
+    <aside class="cd-side">
+      <div class="cd-brand"><span class="cd-mark" aria-hidden="true">සී</span>CDevi<small lang="si" aria-hidden="true">සීදේවි</small></div>
+      <div class="cd-nav"><a href="inbox.html">Inbox <span class="cd-count">2</span></a><a href="spec-session.html">Specs</a><a href="run-transcript.html">Tasks</a><a href="repository-settings.html">Repositories</a><div class="cd-grp">Account</div><a href="agents-keys.html">Agents &amp; keys</a><a class="cd-is-active" aria-current="page" href="usage.html">Usage</a><a href="inbox.html">Workspace</a></div>
+      <div class="cd-ws"><span class="cd-av">AC</span> acme · Nadeesha ▾</div>
+    </aside>
+    <div class="cd-main">
+      <div class="cd-topbar"><h1>Usage · September</h1><div style="display:flex;gap:8px"><button type="button" class="cd-btn cd-ghost cd-sm">Export CSV</button><span class="cd-seg"><span class="cd-is-active">Month</span><span>Week</span></span></div></div>
+      <div class="cd-grid2" style="grid-template-columns:repeat(4,1fr)">
+        <div class="cd-stat"><div class="cd-value">$88.56</div><div class="cd-label">Model cost on your keys · not billed by CDevi</div></div>
+        <div class="cd-stat"><div class="cd-value">312</div><div class="cd-label">Cloud minutes of 600 included</div></div>
+        <div class="cd-stat"><div class="cd-value">146</div><div class="cd-label">Laptop minutes · free</div></div>
+        <div class="cd-stat"><div class="cd-value">63%</div><div class="cd-label">Verified rate · 41 of 65 runs</div></div>
+      </div>
+      <div class="cd-grid2" style="margin-top:14px">
+        <div class="cd-card"><div style="font-weight:600;font-size:13px">Model cost by day · cloud vs laptop</div>
+          <div class="cd-bars"><i style="height:30%"></i><i class="cd-local" style="height:14%"></i><i style="height:52%"></i><i class="cd-local" style="height:20%"></i><i style="height:44%"></i><i class="cd-local" style="height:9%"></i><i style="height:71%"></i><i class="cd-local" style="height:31%"></i><i style="height:38%"></i><i class="cd-local" style="height:22%"></i><i style="height:90%"></i><i class="cd-local" style="height:40%"></i></div>
+          <div style="font-size:11.5px;color:var(--ink-3);margin-top:6px">1 Sep — 11 Sep · indigo cloud · grey laptop</div></div>
+        <div class="cd-card"><div style="font-weight:600;font-size:13px;margin-bottom:8px">By key</div>
+          <dl class="cd-kv"><dt><span class="cd-key">…4b0e</span> workspace</dt><dd>$61.40 · 22 runs</dd><dt><span class="cd-key">…8f2a</span> personal</dt><dd>$14.20 · 19 runs</dd><dt><span class="cd-key">…c91d</span> personal</dt><dd>$9.06 · 15 runs</dd><dt><span class="cd-key">…2d7c</span> laptop only</dt><dd>$3.90 · 9 runs</dd></dl></div>
+      </div>
+      <table class="cd-table" style="margin-top:14px">
+        <thead><tr><th>Run</th><th>Task</th><th>Agent · model</th><th>Runtime</th><th>Tokens in / out</th><th>Cost</th><th>Minutes</th><th>Outcome</th></tr></thead>
+        <tbody>
+          <tr><td class="cd-mono">#41a0</td><td>Sliding-window limiter</td><td>Claude Code · sonnet-4.5</td><td>cloud</td><td>4,310 / 1,920</td><td>$1.12</td><td>14</td><td><span class="cd-pill cd-run"><span class="cd-dot"></span>running</span></td></tr>
+          <tr><td class="cd-mono">#4198</td><td>Migrate sessions to Redis</td><td>Codex · gpt-5-codex</td><td>laptop</td><td>18,904 / 6,102</td><td>$2.38</td><td>38</td><td><span class="cd-pill cd-wait">awaiting evidence</span></td></tr>
+          <tr><td class="cd-mono">#4190</td><td>Spec 042 · clarify</td><td>Codex · gpt-5-codex</td><td>laptop</td><td>3,022 / 880</td><td>$0.42</td><td>6</td><td><span class="cd-pill cd-done">done</span></td></tr>
+          <tr><td class="cd-mono">#4187</td><td>Bump dependencies</td><td>Claude Code · sonnet-4.5</td><td>cloud</td><td>2,110 / 640</td><td>$0.31</td><td>9</td><td><span class="cd-pill cd-done">verified</span></td></tr>
+          <tr><td class="cd-mono">#4181</td><td>Add limiter unit tests</td><td>Gemini CLI · 2.5-pro</td><td>laptop</td><td>1,480 / 510</td><td>$0.08</td><td>4</td><td><span class="cd-pill cd-neutral">paused offline</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+<p class="demo-note">Model cost is shown and attributed to keys, people and repositories, never billed by CDevi. Cloud minutes are the platform's own meter; laptop minutes are counted but free.</p>
+</body>
+</html>
