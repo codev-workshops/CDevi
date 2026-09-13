@@ -1,0 +1,109 @@
+import {
+  AppShell,
+  Brand,
+  List,
+  ListRow,
+  Main,
+  Mono,
+  NavItem,
+  RISK_LEVELS,
+  RiskBadge,
+  Side,
+  StatePill,
+  Topbar,
+  type RiskLevel,
+} from '@cdevi/design-system';
+
+/** One pending human intervention (specs/001 US2, scenario 1). */
+interface PendingItem {
+  id: string;
+  /** Requirement / workflow identifier. */
+  workflow: string;
+  kind: 'approval' | 'clarification';
+  /** What is being requested. */
+  ask: string;
+  /** Who or which agent requested it. */
+  requester: string;
+  /** When it was raised. */
+  requestedAt: string;
+  risk: RiskLevel;
+}
+
+const ITEMS: PendingItem[] = [
+  {
+    id: 'APR-201',
+    workflow: 'PAY-1391',
+    kind: 'approval',
+    ask: 'Approve requirement "Refund idempotency for duplicate webhooks" before Analysis starts',
+    requester: 'Requirement Analyst agent',
+    requestedAt: '2026-01-14T08:12:00Z',
+    risk: 'LOW',
+  },
+  {
+    id: 'APR-207',
+    workflow: 'PAY-1388',
+    kind: 'approval',
+    ask: 'Approve merge of PR #4821 — payment-gateway retry policy (touches ledger service)',
+    requester: 'PR agent',
+    requestedAt: '2026-01-14T10:40:00Z',
+    risk: 'MEDIUM',
+  },
+  {
+    id: 'CLR-118',
+    workflow: 'PAY-1402',
+    kind: 'clarification',
+    ask: 'Should partial refunds be rejected or reconciled when the original charge is already disputed?',
+    requester: 'Implementation agent',
+    requestedAt: '2026-01-14T09:05:00Z',
+    risk: 'LOW',
+  },
+];
+
+/** Highest risk first, then oldest first. */
+function byRiskThenAge(a: PendingItem, b: PendingItem): number {
+  const risk = RISK_LEVELS.indexOf(b.risk) - RISK_LEVELS.indexOf(a.risk);
+  return risk !== 0 ? risk : a.requestedAt.localeCompare(b.requestedAt);
+}
+
+const when = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+
+export function ApprovalCenter() {
+  const items = [...ITEMS].sort(byRiskThenAge);
+  return (
+    <AppShell
+      variant="full"
+      side={
+        <Side brand={<Brand mark="සී" name="CDevi" wordmark="සීදේවි" href="/" />}>
+          <NavItem href="/approvals" active count={items.length}>
+            Approval Center
+          </NavItem>
+        </Side>
+      }
+    >
+      <Main>
+        <Topbar title="Approval Center" />
+        <List empty="Nothing needs you right now." aria-label="Pending approvals and clarifications">
+          {items.map((item) => (
+            <ListRow
+              key={item.id}
+              title={
+                <>
+                  <Mono>{item.workflow}</Mono> · {item.kind === 'approval' ? 'Approval' : 'Clarification'}{' '}
+                  <Mono>{item.id}</Mono>
+                </>
+              }
+              trailing={<StatePill state="WAITING_FOR_HUMAN" />}
+              ask={item.ask}
+              meta={
+                <>
+                  <RiskBadge level={item.risk} /> · requested by {item.requester} ·{' '}
+                  <time dateTime={item.requestedAt}>{when.format(new Date(item.requestedAt))}</time>
+                </>
+              }
+            />
+          ))}
+        </List>
+      </Main>
+    </AppShell>
+  );
+}

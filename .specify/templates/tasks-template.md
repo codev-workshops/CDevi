@@ -8,7 +8,7 @@ description: 'Task list template for feature implementation'
 
 **Prerequisites**: plan.md (required), spec.md (required for user stories), research.md, data-model.md, contracts/
 
-**Tests**: The examples below include test tasks. Tests are OPTIONAL - only include them if explicitly requested in the feature specification.
+**Tests**: Tests are REQUIRED for every behaviour change (Constitution Principle II): write the failing test task before its implementation task, and start every bug fix with a regression test.
 
 **Organization**: Tasks are grouped by user story to enable independent implementation and testing of each story.
 
@@ -17,6 +17,14 @@ description: 'Task list template for feature implementation'
 - **[P]**: Can run in parallel (different files, no dependencies)
 - **[Story]**: Which user story this task belongs to (e.g., US1, US2, US3)
 - Include exact file paths in descriptions
+
+### Design-system component task
+
+When a story needs a visual pattern that `@cdevi/design-system` does not provide (see plan.md "Design System Compliance" → components proposed), add **one** task shaped like this, placed **before** any task that consumes the pattern:
+
+- [ ] Tnnn [USn] Add `<Name>` to the design system: CSS in `packages/design-system/css/components.css` (tokens only, new pairs in `tokens/pairs.json`), component + test in `packages/design-system/src/components/<Group>/`, export in `src/index.ts`, gallery entry in `gallery/entries.tsx` + `tests/visual/entries.ts`, row in `DESIGN.md` §3, `CHANGELOG.md` line, version bump
+
+Application tasks MUST NOT introduce local styling or `cd-` classes (`pnpm check` fails otherwise).
 
 ## Path Conventions
 

@@ -27,10 +27,9 @@ describe('self-hosted fonts (FR-005)', () => {
     const bundle = readFileSync(pkgPath('css/cdevi.css'), 'utf8');
     expect(bundle).not.toMatch(/fonts\.googleapis\.com|fonts\.gstatic\.com/);
     expect(bundle).toContain('@fontsource/');
-    const legacy = pkgPath('legacy-gallery.html');
-    if (existsSync(legacy)) {
-      // legacy gallery is retired in Polish; until then it must not be the source of truth
-      expect(readFileSync(pkgPath('README.md'), 'utf8')).not.toContain('legacy-gallery');
-    }
+    expect(
+      existsSync(pkgPath('legacy-gallery.html')),
+      'legacy static gallery must stay retired',
+    ).toBe(false);
   });
 });

@@ -6,7 +6,6 @@
     "**/gallery-dist/**",
     "packages/design-system/css/**",
     "packages/design-system/reference-screens/**",
-    "packages/design-system/legacy-gallery.html",
     "tools/lint-fixtures/**"
   ],
   "rules": {

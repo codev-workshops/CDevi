@@ -1,16 +1,19 @@
 <!--
 Sync Impact Report
-Version change: unversioned scaffold -> 1.0.0 (initial adoption)
+Version change: 1.0.0 -> 1.1.0 (MINOR: expanded obligations under Principle III)
 Modified principles:
-- PRINCIPLE_1_NAME -> I. Maintainable Code Quality
-- PRINCIPLE_2_NAME -> II. Risk-Based, Reliable Testing
-- PRINCIPLE_3_NAME -> III. Consistent and Accessible User Experience
-- PRINCIPLE_4_NAME -> IV. Measurable Performance
-Added sections: Quality Requirements; Development Workflow and Review
-Removed sections: unused fifth principle scaffold slot; no adopted principles removed
+- III. Consistent and Accessible User Experience: adds two bullets making @cdevi/design-system
+  tokens and components mandatory and requiring new visual patterns to land in the package first
+Added sections: none
+Removed sections: none
+Templates synchronized:
+- .specify/templates/plan-template.md: added "Design System Compliance" section
+- .specify/templates/tasks-template.md: tests now REQUIRED; added design-system component task pattern
+Related artifacts: packages/design-system/DESIGN.md (normative rules), AGENTS.md,
+.devin/skills/cdevi-design-system/SKILL.md, specs/002-adopt-design-system
 Deferred TODOs: none
-Template synchronization: none; dependent artifacts read the constitution at runtime
-Review note: remove this temporary report before committing the constitution.
+History: 1.0.0 ratified 2026-09-11 (initial adoption of principles I-IV, Quality Requirements,
+Development Workflow and Review, Governance)
 -->
 
 # CDevi Constitution
@@ -69,6 +72,13 @@ produce trustworthy results.
 - Destructive actions MUST require explicit confirmation or provide a reliable undo. Recoverable
   failures MUST preserve user input. Breaking changes to established workflows MUST include a
   migration or communication plan.
+- User interfaces MUST be built from `@cdevi/design-system` tokens and components as specified in
+  `packages/design-system/DESIGN.md`. Application code MUST NOT declare colours, typography,
+  spacing, radii or shadows outside those tokens, MUST NOT use inline styles, and MUST NOT
+  reference design-system class names the package does not define.
+- A new visual pattern MUST be added to the design-system package first (component, test, gallery
+  entry, accessibility contract, changelog entry) and only then consumed by an application. Plans
+  MUST list the design-system components they use and any they propose.
 
 Rationale: Predictable, accessible behavior is part of correctness, not optional visual polish.
 
@@ -143,4 +153,4 @@ remediation task, and expiry date. Expired exceptions MUST block affected merges
 resolved or explicitly renewed through review. Exceptions MUST NOT silently redefine a principle;
 permanent policy changes require an amendment.
 
-**Version**: 1.0.0 | **Ratified**: 2026-09-11 | **Last Amended**: 2026-09-11
+**Version**: 1.1.0 | **Ratified**: 2026-09-11 | **Last Amended**: 2026-09-11

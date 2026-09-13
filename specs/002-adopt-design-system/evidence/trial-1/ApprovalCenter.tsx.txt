@@ -1,0 +1,181 @@
+import {
+  AppShell,
+  Brand,
+  List,
+  ListRow,
+  Main,
+  Mono,
+  NavGroup,
+  NavItem,
+  PageMeta,
+  RiskBadge,
+  RISK_LEVELS,
+  Side,
+  Topbar,
+  type RiskLevel,
+} from '@cdevi/design-system';
+
+/**
+ * Approval Center list — specs/001-sdlc-control-plane-mvp/spec.md, User Story 2, scenario 1.
+ *
+ * Each pending human intervention (approval or clarification) shows the requirement/workflow
+ * identifier, what is being requested, who/which agent requested it, when, and its risk level.
+ * Items are ordered highest risk first, then oldest first (FR-011 / FR-012).
+ */
+
+export type InterventionKind = 'approval' | 'clarification';
+
+export interface PendingItem {
+  /** Approval or clarification request id. */
+  id: string;
+  kind: InterventionKind;
+  /** Requirement identifier (external ticket key). */
+  requirementId: string;
+  /** Workflow identifier. */
+  workflowId: string;
+  /** Short title of the requirement / workflow. */
+  title: string;
+  /** The exact action or question being put to a person. */
+  request: string;
+  /** Agent or user who raised the request. */
+  requester: string;
+  /** ISO 8601 timestamp of when the request was created. */
+  createdAt: string;
+  risk: RiskLevel;
+  /** Link to the item's detail view. */
+  href: string;
+}
+
+/** Hard-coded sample data matching the User Story 2 independent test. */
+export const SAMPLE_PENDING_ITEMS: readonly PendingItem[] = [
+  {
+    id: 'APR-3101',
+    kind: 'approval',
+    requirementId: 'PAY-1391',
+    workflowId: 'WF-0412',
+    title: 'Refund flow for partially shipped orders',
+    request: 'Approve requirement: analysis and acceptance criteria are ready for implementation',
+    requester: 'Analysis agent (Claude Code)',
+    createdAt: '2026-03-09T08:42:00Z',
+    risk: 'LOW',
+    href: '#/approvals/APR-3101',
+  },
+  {
+    id: 'APR-3107',
+    kind: 'approval',
+    requirementId: 'AUTH-2280',
+    workflowId: 'WF-0418',
+    title: 'Add rate limiting to /api/auth',
+    request: 'Approve PR merge: merge pull request #482 into main (3 files, +112 −1)',
+    requester: 'PR agent (Claude Code)',
+    createdAt: '2026-03-09T10:15:00Z',
+    risk: 'MEDIUM',
+    href: '#/approvals/APR-3107',
+  },
+  {
+    id: 'CLR-0576',
+    kind: 'clarification',
+    requirementId: 'STORE-914',
+    workflowId: 'WF-0405',
+    title: 'Fix flaky checkout test',
+    request:
+      'Clarify: should the retry budget for the checkout integration test be raised to 3, or should the test be quarantined?',
+    requester: 'Testing agent (Claude Code)',
+    createdAt: '2026-03-08T16:20:00Z',
+    risk: 'LOW',
+    href: '#/clarifications/CLR-0576',
+  },
+];
+
+/** Higher index = higher risk. */
+const riskRank: Record<RiskLevel, number> = Object.fromEntries(
+  RISK_LEVELS.map((level, i) => [level, i]),
+) as Record<RiskLevel, number>;
+
+/** Highest risk first, then oldest first. */
+export function sortPendingItems(items: readonly PendingItem[]): PendingItem[] {
+  return [...items].sort((a, b) => {
+    const byRisk = riskRank[b.risk] - riskRank[a.risk];
+    if (byRisk !== 0) return byRisk;
+    return Date.parse(a.createdAt) - Date.parse(b.createdAt);
+  });
+}
+
+const whenFormat = new Intl.DateTimeFormat('en-GB', {
+  day: 'numeric',
+  month: 'short',
+  hour: '2-digit',
+  minute: '2-digit',
+  timeZone: 'UTC',
+  timeZoneName: 'short',
+});
+
+const kindLabel: Record<InterventionKind, string> = {
+  approval: 'Approval',
+  clarification: 'Clarification',
+};
+
+export interface ApprovalCenterProps {
+  items?: readonly PendingItem[];
+}
+
+export function ApprovalCenter({ items = SAMPLE_PENDING_ITEMS }: ApprovalCenterProps) {
+  const ordered = sortPendingItems(items);
+  const approvals = ordered.filter((i) => i.kind === 'approval').length;
+  const clarifications = ordered.length - approvals;
+
+  return (
+    <AppShell
+      side={
+        <Side brand={<Brand mark="සී" name="CDevi" wordmark="සීදේවි" href="#/" />}>
+          <NavGroup>Supervise</NavGroup>
+          <NavItem href="#/">Dashboard</NavItem>
+          <NavItem href="#/workflows">Workflow Center</NavItem>
+          <NavItem href="#/approvals" active count={ordered.length}>
+            Approval Center
+          </NavItem>
+        </Side>
+      }
+    >
+      <Main>
+        <Topbar title="Approval Center" />
+        <PageMeta>
+          <span>All projects</span>
+          <span>
+            {ordered.length} pending · {approvals} approvals · {clarifications} clarifications
+          </span>
+          <span>Highest risk first, then oldest</span>
+        </PageMeta>
+        <List empty="Nothing needs you right now." aria-label="Pending approvals and clarifications">
+          {ordered.map((item) => (
+            <ListRow
+              key={item.id}
+              href={item.href}
+              title={
+                <>
+                  <Mono>{item.requirementId}</Mono> · {item.title}
+                </>
+              }
+              trailing={<RiskBadge level={item.risk} />}
+              ask={item.request}
+              meta={
+                <>
+                  <span>
+                    {kindLabel[item.kind]} <Mono>{item.id}</Mono>
+                  </span>
+                  <span>
+                    workflow <Mono>{item.workflowId}</Mono>
+                  </span>
+                  <span>requested by {item.requester}</span>
+                  <time dateTime={item.createdAt}>
+                    {whenFormat.format(new Date(item.createdAt))}
+                  </time>
+                </>
+              }
+            />
+          ))}
+        </List>
+      </Main>
+    </AppShell>
+  );
+}

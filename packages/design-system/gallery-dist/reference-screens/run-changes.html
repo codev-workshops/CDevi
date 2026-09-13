@@ -1,153 +1,73 @@
-<!doctype html>
+<!DOCTYPE html>
 <!-- Pattern reference — not a CDevi screen. See reference-screens/README.md. -->
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>CDevi demo — Run — changes</title>
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CDevi demo — Run — changes</title>
 
-    <link rel="stylesheet" crossorigin href="/assets/cdevi-D2MsWmPD.css" />
-    <link rel="stylesheet" crossorigin href="/assets/demo-11UjMu47.css" />
-  </head>
-  <body class="cd-root">
-    <header class="demo-bar">
-      <a href="index.html">← All demo pages</a>
-      <span>Run — changes</span>
-      <button
-        type="button"
-        onclick="
-          document.documentElement.dataset.theme =
-            document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'
-        "
-      >
-        Toggle theme
-      </button>
-    </header>
-    <main class="demo-stage">
-      <div class="cd-app cd-with-panel">
-        <aside class="cd-side">
-          <div class="cd-brand">
-            <span class="cd-mark" aria-hidden="true">සී</span>CDevi<small
-              lang="si"
-              aria-hidden="true"
-              >සීදේවි</small
-            >
-          </div>
-          <div class="cd-nav">
-            <a href="inbox.html">Inbox <span class="cd-count">2</span></a
-            ><a href="spec-session.html">Specs</a
-            ><a class="cd-is-active" aria-current="page" href="run-transcript.html">Tasks</a
-            ><a href="repository-settings.html">Repositories</a>
-            <div class="cd-grp">Account</div>
-            <a href="agents-keys.html">Agents &amp; keys</a><a href="usage.html">Usage</a
-            ><a href="inbox.html">Workspace</a>
-          </div>
-          <div class="cd-ws"><span class="cd-av">AC</span> acme · Nadeesha ▾</div>
-        </aside>
-        <div class="cd-main">
-          <div class="cd-crumbs">Tasks / payments-api / T002 / <b>run 2</b></div>
-          <div class="cd-topbar">
-            <h1>Implement the sliding-window limiter</h1>
-            <span class="cd-pill cd-run"><span class="cd-dot"></span>running</span>
-          </div>
-          <div class="cd-tabs" role="tablist">
-            <button type="button" role="tab" aria-selected="false" tabindex="-1">Transcript</button
-            ><button type="button" role="tab" aria-selected="true">Changes <i>3</i></button
-            ><button type="button" role="tab" aria-selected="false" tabindex="-1">
-              Tests <i>18 ✓</i></button
-            ><button type="button" role="tab" aria-selected="false" tabindex="-1">
-              Evidence <i>2/5</i>
-            </button>
-          </div>
-          <div style="display: grid; grid-template-columns: 260px 1fr; gap: 14px">
-            <div class="cd-list">
-              <div class="cd-row cd-is-selected">
-                <div class="cd-title cd-mono" style="font-size: 12px">
-                  src/middleware/rateLimit.ts
-                </div>
-                <span class="cd-pill cd-done">+64</span>
-                <div class="cd-meta">added · write_local</div>
-              </div>
-              <div class="cd-row">
-                <div class="cd-title cd-mono" style="font-size: 12px">src/middleware/auth.ts</div>
-                <span class="cd-pill cd-neutral">+6 −1</span>
-                <div class="cd-meta">modified · write_local</div>
-              </div>
-              <div class="cd-row">
-                <div class="cd-title cd-mono" style="font-size: 12px">test/rateLimit.test.ts</div>
-                <span class="cd-pill cd-done">+42</span>
-                <div class="cd-meta">added · write_local</div>
-              </div>
-              <div class="cd-row">
-                <div class="cd-title cd-mono" style="font-size: 12px; color: var(--ink-3)">
-                  src/lib/redis.ts
-                </div>
-                <span class="cd-pill cd-neutral">read</span>
-                <div class="cd-meta">read only</div>
-              </div>
-            </div>
-            <div class="cd-diff">
-              <div class="cd-file-head">src/middleware/rateLimit.ts · new file</div>
-              <div class="cd-add">+import { redis } from '../lib/redis';</div>
-              <div class="cd-add">+</div>
-              <div class="cd-add">+const WINDOW_MS = 60_000;</div>
-              <div class="cd-add">+const LIMIT = 100;</div>
-              <div class="cd-add">+</div>
-              <div class="cd-add">
-                +export async function rateLimit(key: string, now = Date.now()) {
-              </div>
-              <div class="cd-add">+ const bucket = `rl:${key}`;</div>
-              <div class="cd-add">+ const tx = redis.multi();</div>
-              <div class="cd-add">+ tx.zremrangebyscore(bucket, 0, now - WINDOW_MS);</div>
-              <div class="cd-add">+ tx.zadd(bucket, now, `${now}`);</div>
-              <div class="cd-add">+ tx.zcard(bucket);</div>
-              <div class="cd-add">+ tx.pexpire(bucket, WINDOW_MS);</div>
-              <div class="cd-add">+ const [, , count] = await tx.exec();</div>
-              <div class="cd-add">+ const allowed = Number(count) &lt;= LIMIT;</div>
-              <div class="cd-add">+ return { allowed, retryAfterMs: allowed ? 0 : WINDOW_MS };</div>
-              <div class="cd-add">+}</div>
-              <div class="cd-file-head" style="border-top: 1px solid var(--line)">
-                src/middleware/auth.ts
-              </div>
-              <div>import { requireSession } from './session';</div>
-              <div class="cd-add">+import { rateLimit } from './rateLimit';</div>
-              <div></div>
-              <div class="cd-del">-router.post('/api/auth/login', login);</div>
-              <div class="cd-add">+router.post('/api/auth/login', limited, login);</div>
-            </div>
-          </div>
+  <link rel="stylesheet" crossorigin href="/assets/cdevi-D9mzv2XK.css">
+  <link rel="stylesheet" crossorigin href="/assets/demo-11UjMu47.css">
+</head>
+<body class="cd-root">
+<header class="demo-bar">
+  <a href="index.html">← All demo pages</a>
+  <span>Run — changes</span>
+  <button type="button" onclick="document.documentElement.dataset.theme=document.documentElement.dataset.theme==='dark'?'light':'dark'">Toggle theme</button>
+</header>
+<main class="demo-stage">
+<div class="cd-app cd-with-panel">
+    <aside class="cd-side">
+      <div class="cd-brand"><span class="cd-mark" aria-hidden="true">සී</span>CDevi<small lang="si" aria-hidden="true">සීදේවි</small></div>
+      <div class="cd-nav"><a href="inbox.html">Inbox <span class="cd-count">2</span></a><a href="spec-session.html">Specs</a><a class="cd-is-active" aria-current="page" href="run-transcript.html">Tasks</a><a href="repository-settings.html">Repositories</a><div class="cd-grp">Account</div><a href="agents-keys.html">Agents &amp; keys</a><a href="usage.html">Usage</a><a href="inbox.html">Workspace</a></div>
+      <div class="cd-ws"><span class="cd-av">AC</span> acme · Nadeesha ▾</div>
+    </aside>
+    <div class="cd-main">
+      <div class="cd-crumbs">Tasks / payments-api / T002 / <b>run 2</b></div>
+      <div class="cd-topbar"><h1>Implement the sliding-window limiter</h1><span class="cd-pill cd-run"><span class="cd-dot"></span>running</span></div>
+      <div class="cd-tabs" role="tablist"><button type="button" role="tab" aria-selected="false" tabindex="-1">Transcript</button><button type="button" role="tab" aria-selected="true">Changes <i>3</i></button><button type="button" role="tab" aria-selected="false" tabindex="-1">Tests <i>18 ✓</i></button><button type="button" role="tab" aria-selected="false" tabindex="-1">Evidence <i>2/5</i></button></div>
+      <div style="display:grid;grid-template-columns:260px 1fr;gap:14px">
+        <div class="cd-list">
+          <div class="cd-row cd-is-selected"><div class="cd-title cd-mono" style="font-size:12px">src/middleware/rateLimit.ts</div><span class="cd-pill cd-done">+64</span><div class="cd-meta">added · write_local</div></div>
+          <div class="cd-row"><div class="cd-title cd-mono" style="font-size:12px">src/middleware/auth.ts</div><span class="cd-pill cd-neutral">+6 −1</span><div class="cd-meta">modified · write_local</div></div>
+          <div class="cd-row"><div class="cd-title cd-mono" style="font-size:12px">test/rateLimit.test.ts</div><span class="cd-pill cd-done">+42</span><div class="cd-meta">added · write_local</div></div>
+          <div class="cd-row"><div class="cd-title cd-mono" style="font-size:12px;color:var(--ink-3)">src/lib/redis.ts</div><span class="cd-pill cd-neutral">read</span><div class="cd-meta">read only</div></div>
         </div>
-        <aside class="cd-panel">
-          <div class="cd-blk">
-            <h4>Diff summary</h4>
-            <dl class="cd-kv">
-              <dt>Files</dt>
-              <dd>3 changed, 1 read</dd>
-              <dt>Lines</dt>
-              <dd>+112 −1</dd>
-              <dt>Secret scan</dt>
-              <dd><span class="cd-pill cd-done">clean</span></dd>
-              <dt>Outside brief</dt>
-              <dd>none</dd>
-            </dl>
-          </div>
-          <div class="cd-blk">
-            <h4>Acceptance criteria</h4>
-            <div class="cd-check">
-              <span class="cd-box cd-ok">✓</span><span>Tests cover rollover and both key types</span
-              ><span></span>
-            </div>
-            <div class="cd-check">
-              <span class="cd-box"></span><span>Existing auth tests still pass</span
-              ><span class="cd-src">CI</span>
-            </div>
-          </div>
-        </aside>
+        <div class="cd-diff">
+          <div class="cd-file-head">src/middleware/rateLimit.ts · new file</div>
+<div class="cd-add">+import { redis } from '../lib/redis';</div>
+<div class="cd-add">+</div>
+<div class="cd-add">+const WINDOW_MS = 60_000;</div>
+<div class="cd-add">+const LIMIT = 100;</div>
+<div class="cd-add">+</div>
+<div class="cd-add">+export async function rateLimit(key: string, now = Date.now()) {</div>
+<div class="cd-add">+  const bucket = `rl:${key}`;</div>
+<div class="cd-add">+  const tx = redis.multi();</div>
+<div class="cd-add">+  tx.zremrangebyscore(bucket, 0, now - WINDOW_MS);</div>
+<div class="cd-add">+  tx.zadd(bucket, now, `${now}`);</div>
+<div class="cd-add">+  tx.zcard(bucket);</div>
+<div class="cd-add">+  tx.pexpire(bucket, WINDOW_MS);</div>
+<div class="cd-add">+  const [, , count] = await tx.exec();</div>
+<div class="cd-add">+  const allowed = Number(count) &lt;= LIMIT;</div>
+<div class="cd-add">+  return { allowed, retryAfterMs: allowed ? 0 : WINDOW_MS };</div>
+<div class="cd-add">+}</div>
+          <div class="cd-file-head" style="border-top:1px solid var(--line)">src/middleware/auth.ts</div>
+<div> import { requireSession } from './session';</div>
+<div class="cd-add">+import { rateLimit } from './rateLimit';</div>
+<div> </div>
+<div class="cd-del">-router.post('/api/auth/login', login);</div>
+<div class="cd-add">+router.post('/api/auth/login', limited, login);</div>
+        </div>
       </div>
-    </main>
-    <p class="demo-note">
-      File list on the left of the main column, diff on the right. Effect classes from the tool log
-      are carried into the file list so a reviewer can see which files the agent only read.
-    </p>
-  </body>
+    </div>
+    <aside class="cd-panel">
+      <div class="cd-blk"><h4>Diff summary</h4><dl class="cd-kv"><dt>Files</dt><dd>3 changed, 1 read</dd><dt>Lines</dt><dd>+112 −1</dd><dt>Secret scan</dt><dd><span class="cd-pill cd-done">clean</span></dd><dt>Outside brief</dt><dd>none</dd></dl></div>
+      <div class="cd-blk"><h4>Acceptance criteria</h4>
+        <div class="cd-check"><span class="cd-box cd-ok">✓</span><span>Tests cover rollover and both key types</span><span></span></div>
+        <div class="cd-check"><span class="cd-box"></span><span>Existing auth tests still pass</span><span class="cd-src">CI</span></div>
+      </div>
+    </aside>
+  </div>
+</main>
+<p class="demo-note">File list on the left of the main column, diff on the right. Effect classes from the tool log are carried into the file list so a reviewer can see which files the agent only read.</p>
+</body>
 </html>

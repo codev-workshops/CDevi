@@ -74,7 +74,7 @@ export const ListRow = forwardRef<HTMLDivElement, ListRowProps>(function ListRow
       ) : (
         <div className="cd-title">{title}</div>
       )}
-      {trailing}
+      {trailing ? <span className="cd-trailing">{trailing}</span> : null}
       {ask ? (
         <div className="cd-ask" id={id}>
           {ask}

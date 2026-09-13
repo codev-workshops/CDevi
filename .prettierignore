@@ -10,3 +10,6 @@ packages/design-system/tests/visual/__screenshots__/
 packages/design-system/reference-screens/
 specs/
 docs/
+gallery-dist/
+test-results/
+playwright-report/

@@ -87,7 +87,7 @@
 - [X] T035 [US3] Export everything from `packages/design-system/src/index.ts` (T020 green) and run `pnpm -F @cdevi/design-system build` to produce `dist/` with `.d.ts`
 - [X] T036 [US3] Create gallery app `packages/design-system/gallery/index.html`, `gallery/main.tsx` (theme toggle, entry list, per-entry usage snippet + a11y notes from contracts/components.md) and `gallery/entries/*.tsx` — one entry per component showing every variant/state; wire `gallery` and `gallery:build` scripts
 - [X] T037 [US3] Update `packages/design-system/reference-screens/*.html`: point `<link>` to `../css/cdevi.css`, remove Google Fonts `<link>`s, replace `<span class="cd-btn">` with `<button type="button">`, tabs with `<button role="tab">`, nav active with `aria-current="page"`; add banner comment "Pattern reference — not a CDevi screen"
-- [ ] T038 [US3] Update `packages/design-system/README.md` (install from workspace, React usage, CSS-only usage, fonts self-hosted, gallery command) and `CHANGELOG.md` 1.1.0 "Added" entries for React components, fonts, interactive states, full shell
+- [X] T038 [US3] Update `packages/design-system/README.md` (install from workspace, React usage, CSS-only usage, fonts self-hosted, gallery command) and `CHANGELOG.md` 1.1.0 "Added" entries for React components, fonts, interactive states, full shell
 
 **Checkpoint**: Gallery runs, every component exported and axe-clean, table fixed, fonts self-hosted.
 
@@ -163,7 +163,7 @@
 - [X] T063 [P] [US2] Write `tools/check-size.mjs`: sum bytes of `packages/design-system/css/cdevi.css` (budget 40 960) and of the woff2 files referenced by `css/fonts.css` resolved from `node_modules` (budget 204 800); print measured vs budget; exit 1 over budget; accept `--css-budget`/`--font-budget` flags for the test
 - [X] T064 [US2] Create root `vitest.workspace.ts` (or root `vitest.config.ts` with `projects`) so `pnpm test` runs both `packages/design-system` and `tools/**/*.test.ts`; wire `check:classes` and `check:size` root scripts; make `check` = `lint && lint:css && typecheck && check:classes && test && check:size`
 - [X] T065 [US2] Run `pnpm check` at root; fix any real violations surfaced in `packages/design-system/src` (fixtures excluded from lint globs but included by the fixture test); confirm T059–T061 green
-- [ ] T066 [US2] Finalise `.github/workflows/ci.yml`: `lint` job runs lint, lint:css, typecheck, check:classes; `unit` runs test + check:size; `build` runs build; `visual` installs Chromium and runs test:visual; add `concurrency` and `timeout-minutes` (lint/unit 10, visual 15); document in `AGENTS.md` (T074) that all four are required checks on `develop` and `main`
+- [X] T066 [US2] Finalise `.github/workflows/ci.yml`: `lint` job runs lint, lint:css, typecheck, check:classes; `unit` runs test + check:size; `build` runs build; `visual` installs Chromium and runs test:visual; add `concurrency` and `timeout-minutes` (lint/unit 10, visual 15); document in `AGENTS.md` (T074) that all four are required checks on `develop` and `main`
 
 **Checkpoint**: Every rule category demonstrably fails on its fixture and passes on the package.
 
@@ -177,18 +177,18 @@
 
 ### Tests for User Story 6
 
-- [ ] T067 [P] [US6] Test `tools/governance.test.ts`: constitution contains `**Version**: 1.1.0`, Principle III contains "design system" MUST lines, `**Ratified**: 2026-09-11` unchanged; `plan-template.md` contains `## Design System Compliance`; `tasks-template.md` contains "design-system component" pattern; `AGENTS.md` and `.devin/skills/cdevi-design-system/SKILL.md` both contain `packages/design-system/DESIGN.md`; `DESIGN.md` contains `DR-01`…`DR-10` and the 9 state + 4 risk rows
+- [X] T067 [P] [US6] Test `tools/governance.test.ts`: constitution contains `**Version**: 1.1.0`, Principle III contains "design system" MUST lines, `**Ratified**: 2026-09-11` unchanged; `plan-template.md` contains `## Design System Compliance`; `tasks-template.md` contains "design-system component" pattern; `AGENTS.md` and `.devin/skills/cdevi-design-system/SKILL.md` both contain `packages/design-system/DESIGN.md`; `DESIGN.md` contains `DR-01`…`DR-10` and the 9 state + 4 risk rows
 
 ### Implementation for User Story 6
 
-- [ ] T068 [US6] Write `packages/design-system/DESIGN.md`: §1 purpose; §2 rules DR-01…DR-10 as MUST/MUST NOT with do/don't snippets for DR-01–05; §3 component catalogue table (from contracts/components.md) with a11y contract per component; §4 state and risk mapping tables (from contracts/state-risk-mapping.md); §5 glossary mapping specs/001 concepts; §6 allow-listed dynamic-value mechanism (`--cd-*` props); §7 third-party widget policy; §8 adding a component (steps + checklist); §9 versioning; §10 enforcement table (from contracts/checks.md)
-- [ ] T069 [US6] Amend `.specify/memory/constitution.md` to 1.1.0: add to Principle III "User interfaces MUST be built from `@cdevi/design-system` tokens and components; application code MUST NOT declare colours, typography, spacing or radii outside tokens" and "A new visual pattern MUST be added to the design-system package (component, gallery entry, accessibility contract, changelog) before it is consumed by an application"; update Sync Impact Report comment (1.0.0 → 1.1.0, modified principle III, templates touched), set Last Amended 2026-09-11, keep Ratified
-- [ ] T070 [P] [US6] Add `## Design System Compliance` section to `.specify/templates/plan-template.md` (components used / components proposed / accessibility verification / budgets for UI paths) before Complexity Tracking
-- [ ] T071 [P] [US6] Add to `.specify/templates/tasks-template.md` under Format a "Design-system component task" pattern: one task = component + test + gallery entry + DESIGN.md row + CHANGELOG line, placed before any task that consumes it; also replace the "Tests are OPTIONAL" note with "Tests are REQUIRED for every behaviour change (Constitution Principle II)"
-- [ ] T072 [P] [US6] Update `specs/002-adopt-design-system/spec.md` and `specs/001-sdlc-control-plane-mvp/spec.md` Assumptions to name `@cdevi/design-system` as the UI foundation and reference the state/risk mapping contract
-- [ ] T073 [US6] Create `.devin/skills/cdevi-design-system/SKILL.md` with frontmatter `name`, `description` ("Use when implementing, styling or reviewing any UI, screen, component, page or CSS in CDevi…"), body: where the rules live, component catalogue quick table, state/risk mapping tables, "when a pattern is missing" procedure, pre-commit checklist (`pnpm check`, gallery entry, changelog), link to DESIGN.md
-- [ ] T074 [US6] Create root `AGENTS.md`: repo purpose, toolchain (Node 26, pnpm), commands (`pnpm i`, `pnpm check`, `pnpm build`, `pnpm test:visual`, gallery), Spec Kit workflow pointers, "UI work" section (read DESIGN.md first, use components, mappings, never inline styles, add pattern to package first), required CI checks list
-- [ ] T075 [US6] Run T067 and `/speckit-analyze` on feature 002; resolve any reported inconsistency
+- [X] T068 [US6] Write `packages/design-system/DESIGN.md`: §1 purpose; §2 rules DR-01…DR-10 as MUST/MUST NOT with do/don't snippets for DR-01–05; §3 component catalogue table (from contracts/components.md) with a11y contract per component; §4 state and risk mapping tables (from contracts/state-risk-mapping.md); §5 glossary mapping specs/001 concepts; §6 allow-listed dynamic-value mechanism (`--cd-*` props); §7 third-party widget policy; §8 adding a component (steps + checklist); §9 versioning; §10 enforcement table (from contracts/checks.md)
+- [X] T069 [US6] Amend `.specify/memory/constitution.md` to 1.1.0: add to Principle III "User interfaces MUST be built from `@cdevi/design-system` tokens and components; application code MUST NOT declare colours, typography, spacing or radii outside tokens" and "A new visual pattern MUST be added to the design-system package (component, gallery entry, accessibility contract, changelog) before it is consumed by an application"; update Sync Impact Report comment (1.0.0 → 1.1.0, modified principle III, templates touched), set Last Amended 2026-09-11, keep Ratified
+- [X] T070 [P] [US6] Add `## Design System Compliance` section to `.specify/templates/plan-template.md` (components used / components proposed / accessibility verification / budgets for UI paths) before Complexity Tracking
+- [X] T071 [P] [US6] Add to `.specify/templates/tasks-template.md` under Format a "Design-system component task" pattern: one task = component + test + gallery entry + DESIGN.md row + CHANGELOG line, placed before any task that consumes it; also replace the "Tests are OPTIONAL" note with "Tests are REQUIRED for every behaviour change (Constitution Principle II)"
+- [X] T072 [P] [US6] Update `specs/002-adopt-design-system/spec.md` and `specs/001-sdlc-control-plane-mvp/spec.md` Assumptions to name `@cdevi/design-system` as the UI foundation and reference the state/risk mapping contract
+- [X] T073 [US6] Create `.devin/skills/cdevi-design-system/SKILL.md` with frontmatter `name`, `description` ("Use when implementing, styling or reviewing any UI, screen, component, page or CSS in CDevi…"), body: where the rules live, component catalogue quick table, state/risk mapping tables, "when a pattern is missing" procedure, pre-commit checklist (`pnpm check`, gallery entry, changelog), link to DESIGN.md
+- [X] T074 [US6] Create root `AGENTS.md`: repo purpose, toolchain (Node 26, pnpm), commands (`pnpm i`, `pnpm check`, `pnpm build`, `pnpm test:visual`, gallery), Spec Kit workflow pointers, "UI work" section (read DESIGN.md first, use components, mappings, never inline styles, add pattern to package first), required CI checks list
+- [X] T075 [US6] Run T067 and `/speckit-analyze` on feature 002; resolve any reported inconsistency
 
 **Checkpoint**: Every governance surface points at DESIGN.md; constitution 1.1.0 in force.
 
@@ -202,15 +202,15 @@
 
 ### Tests for User Story 1
 
-- [ ] T076 [US1] Create `apps/web-scratch/` minimal Vite React app (`package.json`, `tsconfig.json`, `src/main.tsx`, imports `@cdevi/design-system/css`) so the agent has a target that is covered by the `apps/**` lint globs; add to workspace
-- [ ] T077 [US1] Write `specs/002-adopt-design-system/evidence/agent-trials.md` template: trial number, prompt used (exact), branch, whether AGENTS.md/skill was read, `pnpm check` result, violations (if any), notes
+- [X] T076 [US1] Create `apps/web-scratch/` minimal Vite React app (`package.json`, `tsconfig.json`, `src/main.tsx`, imports `@cdevi/design-system/css`) so the agent has a target that is covered by the `apps/**` lint globs; add to workspace
+- [X] T077 [US1] Write `specs/002-adopt-design-system/evidence/agent-trials.md` template: trial number, prompt used (exact), branch, whether AGENTS.md/skill was read, `pnpm check` result, violations (if any), notes
 
 ### Implementation for User Story 1
 
-- [ ] T078 [US1] Run trial 1: in branch `trial/us1-1`, prompt an agent "Implement the Approval Center list from specs/001-sdlc-control-plane-mvp/spec.md (User Story 2) as a component in apps/web-scratch/src/ApprovalCenter.tsx with sample data"; run `pnpm check`; record in `evidence/agent-trials.md`
-- [ ] T079 [US1] Run trials 2–5 the same way in `trial/us1-2`…`trial/us1-5` (vary wording slightly); record results
-- [ ] T080 [US1] If <4/5 pass: analyse failures, strengthen the weakest surface (skill description triggers, AGENTS.md placement, lint message wording, missing component), then re-run failed trials; record iteration in `evidence/agent-trials.md`
-- [ ] T081 [US1] Delete trial branches; keep `apps/web-scratch` only if `specs/001` planning wants it, otherwise remove it and the workspace entry (record decision in evidence file)
+- [X] T078 [US1] Run trial 1: in branch `trial/us1-1`, prompt an agent "Implement the Approval Center list from specs/001-sdlc-control-plane-mvp/spec.md (User Story 2) as a component in apps/web-scratch/src/ApprovalCenter.tsx with sample data"; run `pnpm check`; record in `evidence/agent-trials.md`
+- [X] T079 [US1] Run trials 2–5 the same way in `trial/us1-2`…`trial/us1-5` (vary wording slightly); record results
+- [X] T080 [US1] If <4/5 pass: analyse failures, strengthen the weakest surface (skill description triggers, AGENTS.md placement, lint message wording, missing component), then re-run failed trials; record iteration in `evidence/agent-trials.md`
+- [X] T081 [US1] Delete trial branches; keep `apps/web-scratch` only if `specs/001` planning wants it, otherwise remove it and the workspace entry (record decision in evidence file)
 
 **Checkpoint**: SC-001 evidence recorded.
 
@@ -224,11 +224,11 @@
 
 ### Tests for User Story 7
 
-- [ ] T082 [P] [US7] Test `tools/architecture-doc.test.ts`: `docs/architecture.md` contains none of `workbook|duckdb|query-worker|stripe|credit|checkout|obvious` (case-insensitive) and contains `packages/design-system`, `outbox`, `row-level security`, `checkPermission`
+- [X] T082 [P] [US7] Test `tools/architecture-doc.test.ts`: `docs/architecture.md` contains none of `workbook|duckdb|query-worker|stripe|credit|checkout|obvious` (case-insensitive) and contains `packages/design-system`, `outbox`, `row-level security`, `checkPermission`
 
 ### Implementation for User Story 7
 
-- [ ] T083 [US7] Rewrite `docs/architecture.md` per research R14: §1 paragraph; §2 service map (web, api, agent-orchestrator worker, integration worker; runtime boundary from UI spec §44); §3 spec ownership rebuilt from specs/001 + specs/002; §4 sync/async paths for specs/001 journeys (approval resume, clarification, agent run stream, integration webhooks); §5 event bus (outbox + NOTIFY); §6 tenancy (single org now, `organization_id` everywhere, RLS-ready); §7 agent permissions (`checkPermission` → policy engine, risk levels); §8 repository layout with `packages/design-system`; §9 future services (multi-org, realtime co-editing, sandbox fleet) (T082 green)
+- [X] T083 [US7] Rewrite `docs/architecture.md` per research R14: §1 paragraph; §2 service map (web, api, agent-orchestrator worker, integration worker; runtime boundary from UI spec §44); §3 spec ownership rebuilt from specs/001 + specs/002; §4 sync/async paths for specs/001 journeys (approval resume, clarification, agent run stream, integration webhooks); §5 event bus (outbox + NOTIFY); §6 tenancy (single org now, `organization_id` everywhere, RLS-ready); §7 agent permissions (`checkPermission` → policy engine, risk levels); §8 repository layout with `packages/design-system`; §9 future services (multi-org, realtime co-editing, sandbox fleet) (T082 green)
 
 **Checkpoint**: Architecture doc consistent with specs.
 
@@ -240,10 +240,10 @@
 - [X] T085 [P] Write `packages/design-system/tests/visual/reference-screens.spec.ts`: each of the 10 reference screens × theme at 1280×900, screenshot + axe
 - [X] T086 Generate baselines (`pnpm test:visual -- --update-snapshots`), review them visually, commit `tests/visual/__screenshots__/`
 - [X] T091 [P] Write `packages/design-system/tests/visual/perf.spec.ts`: load the built gallery index in Chromium, read `PerformanceNavigationTiming` + LCP via `PerformanceObserver`, assert LCP ≤ 2000 ms (SC-008, Principle IV budget); runs in the `visual` CI job
-- [ ] T087 Run `pnpm check:size`; if fonts exceed 204 800 bytes drop the italic weight or a mono weight and update research R5 + fonts.css + CHANGELOG
-- [ ] T088 Delete `packages/design-system/legacy-gallery.html` once T036/T057 cover every component; update README link to the React gallery
-- [ ] T089 [P] Final `packages/design-system/CHANGELOG.md` pass: 1.0.1 (fix) and 1.1.0 (added/changed/removed) complete; set `package.json` version 1.1.0
-- [ ] T090 Run full quickstart.md §9 gate (`pnpm check && pnpm build && pnpm test:visual`); commit; open PR against `develop` with the four required checks
+- [X] T087 Run `pnpm check:size`; if fonts exceed 204 800 bytes drop the italic weight or a mono weight and update research R5 + fonts.css + CHANGELOG
+- [X] T088 Delete `packages/design-system/legacy-gallery.html` once T036/T057 cover every component; update README link to the React gallery
+- [X] T089 [P] Final `packages/design-system/CHANGELOG.md` pass: 1.0.1 (fix) and 1.1.0 (added/changed/removed) complete; set `package.json` version 1.1.0
+- [X] T090 Run full quickstart.md §9 gate (`pnpm check && pnpm build && pnpm test:visual`); commit; open PR against `develop` with the four required checks
 
 ---
 

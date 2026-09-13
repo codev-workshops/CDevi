@@ -1,204 +1,58 @@
-<!doctype html>
+<!DOCTYPE html>
 <!-- Pattern reference — not a CDevi screen. See reference-screens/README.md. -->
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>CDevi demo — Review and evidence</title>
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CDevi demo — Review and evidence</title>
 
-    <link rel="stylesheet" crossorigin href="/assets/cdevi-D2MsWmPD.css" />
-    <link rel="stylesheet" crossorigin href="/assets/demo-11UjMu47.css" />
-  </head>
-  <body class="cd-root">
-    <header class="demo-bar">
-      <a href="index.html">← All demo pages</a>
-      <span>Review and evidence</span>
-      <button
-        type="button"
-        onclick="
-          document.documentElement.dataset.theme =
-            document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'
-        "
-      >
-        Toggle theme
-      </button>
-    </header>
-    <main class="demo-stage">
-      <div class="cd-app cd-with-panel">
-        <aside class="cd-side">
-          <div class="cd-brand">
-            <span class="cd-mark" aria-hidden="true">සී</span>CDevi<small
-              lang="si"
-              aria-hidden="true"
-              >සීදේවි</small
-            >
-          </div>
-          <div class="cd-nav">
-            <a class="cd-is-active" aria-current="page" href="inbox.html"
-              >Inbox <span class="cd-count">2</span></a
-            ><a href="spec-session.html">Specs</a><a href="run-transcript.html">Tasks</a
-            ><a href="repository-settings.html">Repositories</a>
-            <div class="cd-grp">Account</div>
-            <a href="agents-keys.html">Agents &amp; keys</a><a href="usage.html">Usage</a
-            ><a href="inbox.html">Workspace</a>
-          </div>
-          <div class="cd-ws"><span class="cd-av">AC</span> acme · Nadeesha ▾</div>
-        </aside>
-        <div class="cd-main">
-          <div class="cd-crumbs">Inbox / Done / <b>Review</b></div>
-          <div class="cd-topbar">
-            <h1>Migrate sessions to Redis</h1>
-            <span class="cd-pill cd-wait">awaiting evidence</span>
-          </div>
-          <div
-            style="
-              font-size: 12.5px;
-              color: var(--ink-3);
-              display: flex;
-              gap: 10px;
-              flex-wrap: wrap;
-              align-items: center;
-            "
-          >
-            web-app · Codex 0.31 ·
-            <span class="cd-rt"
-              ><svg viewBox="0 0 24 24" aria-hidden="true">
-                <rect x="3" y="5" width="18" height="12" rx="2" />
-                <path d="M2 20h20" /></svg
-              >laptop · nadeesha-mbp</span
-            >
-            · <span class="cd-key">…c91d</span> · PR #431 · $2.38 · 38 min
-          </div>
-          <div class="cd-tabs" role="tablist">
-            <button type="button" role="tab" aria-selected="true">Evidence</button
-            ><button type="button" role="tab" aria-selected="false" tabindex="-1">
-              Changes <i>7</i></button
-            ><button type="button" role="tab" aria-selected="false" tabindex="-1">Tests</button
-            ><button type="button" role="tab" aria-selected="false" tabindex="-1">
-              Transcript
-            </button>
-          </div>
-          <div class="cd-card">
-            <div class="cd-check">
-              <span class="cd-box cd-ok">✓</span
-              ><span>Tests passed <span style="color: var(--ink-3)">· 42 of 42</span></span
-              ><span class="cd-src">runner:local · low trust</span>
-            </div>
-            <div
-              class="cd-check"
-              style="
-                padding-left: 26px;
-                font-size: 12px;
-                color: var(--saffron-ink);
-                border-top: 0;
-                margin-top: -6px;
-              "
-            >
-              <span></span><span>Local test results need CI confirmation in this workspace.</span
-              ><span></span>
-            </div>
-            <div class="cd-check">
-              <span class="cd-box cd-ok">✓</span
-              ><span>CI passed <span style="color: var(--ink-3)">· 4 checks · 6 min ago</span></span
-              ><span class="cd-src">github_checks · high</span>
-            </div>
-            <div class="cd-check">
-              <span class="cd-box cd-ok">✓</span><span>No secret in diff</span
-              ><span class="cd-src">runner · high</span>
-            </div>
-            <div class="cd-check">
-              <span class="cd-box cd-ok">✓</span
-              ><span>PR opened <span style="color: var(--ink-3)">· #431 draft → ready</span></span
-              ><span class="cd-src">github · high</span>
-            </div>
-            <div class="cd-check">
-              <span class="cd-box cd-override">!</span
-              ><span
-                >Spec analyzed
-                <span style="color: var(--ink-3)"
-                  >· overridden by Kasun: "ad hoc migration agreed in standup"</span
-                ></span
-              ><span class="cd-src">override:kasun · high</span>
-            </div>
-            <div class="cd-check">
-              <span class="cd-box cd-wait"></span><span>Human approval</span
-              ><span class="cd-src">you</span>
-            </div>
-          </div>
-          <div style="font-size: 12px; color: var(--ink-3); margin: 16px 0 6px; font-weight: 600">
-            Acceptance criteria — tick each to approve
-          </div>
-          <div class="cd-card">
-            <div class="cd-check">
-              <span class="cd-box cd-ok">✓</span><span>Sessions survive an app restart</span
-              ><span></span>
-            </div>
-            <div class="cd-check">
-              <span class="cd-box cd-ok">✓</span><span>No change to the cookie format</span
-              ><span></span>
-            </div>
-            <div class="cd-check">
-              <span class="cd-box"></span><span>Legacy /session/v1 kept behind a flag</span
-              ><span></span>
-            </div>
-          </div>
-          <div style="font-size: 12px; color: var(--ink-3); margin: 16px 0 6px; font-weight: 600">
-            Summary from the agent — not evidence
-          </div>
-          <div class="cd-msg" style="border-style: dashed">
-            Moved session storage from memory to Redis using the existing client, kept the cookie
-            unchanged, and added a <span class="cd-mono">SESSION_LEGACY_V1</span> flag that keeps
-            the old endpoint mounted. Two tests were added for restart survival.
-          </div>
-          <div style="display: flex; gap: 8px; margin-top: 14px; justify-content: flex-end">
-            <button type="button" class="cd-btn cd-ghost">Request changes</button
-            ><button type="button" class="cd-btn cd-saffron" disabled>Approve and merge</button>
-          </div>
-          <div class="cd-help" style="text-align: right">
-            Tick the remaining criterion to enable Approve and merge.
-          </div>
-        </div>
-        <aside class="cd-panel">
-          <div class="cd-blk">
-            <h4>Pull request</h4>
-            <dl class="cd-kv">
-              <dt>#431</dt>
-              <dd>Migrate sessions to Redis</dd>
-              <dt>Base</dt>
-              <dd class="cd-mono">main</dd>
-              <dt>Diff</dt>
-              <dd>7 files · +214 −88</dd>
-              <dt>Checks</dt>
-              <dd>lint, unit, e2e, build ✓</dd>
-            </dl>
-          </div>
-          <div class="cd-blk">
-            <h4>Overrides</h4>
-            <div
-              class="cd-card"
-              style="padding: 10px 12px; font-size: 12.5px; border-color: var(--saffron)"
-            >
-              1 gate overridden by an admin. Recorded in the audit log with reason.
-              <span class="cd-mono">no_secret_in_diff</span> can never be overridden.
-            </div>
-          </div>
-          <div class="cd-blk">
-            <h4>History</h4>
-            <dl class="cd-kv">
-              <dt>run 1</dt>
-              <dd>failed · tests · laptop</dd>
-              <dt>run 2</dt>
-              <dd>this run · laptop</dd>
-            </dl>
-          </div>
-        </aside>
+  <link rel="stylesheet" crossorigin href="/assets/cdevi-D9mzv2XK.css">
+  <link rel="stylesheet" crossorigin href="/assets/demo-11UjMu47.css">
+</head>
+<body class="cd-root">
+<header class="demo-bar">
+  <a href="index.html">← All demo pages</a>
+  <span>Review and evidence</span>
+  <button type="button" onclick="document.documentElement.dataset.theme=document.documentElement.dataset.theme==='dark'?'light':'dark'">Toggle theme</button>
+</header>
+<main class="demo-stage">
+<div class="cd-app cd-with-panel">
+    <aside class="cd-side">
+      <div class="cd-brand"><span class="cd-mark" aria-hidden="true">සී</span>CDevi<small lang="si" aria-hidden="true">සීදේවි</small></div>
+      <div class="cd-nav"><a class="cd-is-active" aria-current="page" href="inbox.html">Inbox <span class="cd-count">2</span></a><a href="spec-session.html">Specs</a><a href="run-transcript.html">Tasks</a><a href="repository-settings.html">Repositories</a><div class="cd-grp">Account</div><a href="agents-keys.html">Agents &amp; keys</a><a href="usage.html">Usage</a><a href="inbox.html">Workspace</a></div>
+      <div class="cd-ws"><span class="cd-av">AC</span> acme · Nadeesha ▾</div>
+    </aside>
+    <div class="cd-main">
+      <div class="cd-crumbs">Inbox / Done / <b>Review</b></div>
+      <div class="cd-topbar"><h1>Migrate sessions to Redis</h1><span class="cd-pill cd-wait">awaiting evidence</span></div>
+      <div style="font-size:12.5px;color:var(--ink-3);display:flex;gap:10px;flex-wrap:wrap;align-items:center">web-app · Codex 0.31 · <span class="cd-rt"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M2 20h20"/></svg>laptop · nadeesha-mbp</span> · <span class="cd-key">…c91d</span> · PR #431 · $2.38 · 38 min</div>
+      <div class="cd-tabs" role="tablist"><button type="button" role="tab" aria-selected="true">Evidence</button><button type="button" role="tab" aria-selected="false" tabindex="-1">Changes <i>7</i></button><button type="button" role="tab" aria-selected="false" tabindex="-1">Tests</button><button type="button" role="tab" aria-selected="false" tabindex="-1">Transcript</button></div>
+      <div class="cd-card">
+        <div class="cd-check"><span class="cd-box cd-ok">✓</span><span>Tests passed <span style="color:var(--ink-3)">· 42 of 42</span></span><span class="cd-src">runner:local · low trust</span></div>
+        <div class="cd-check" style="padding-left:26px;font-size:12px;color:var(--saffron-ink);border-top:0;margin-top:-6px"><span></span><span>Local test results need CI confirmation in this workspace.</span><span></span></div>
+        <div class="cd-check"><span class="cd-box cd-ok">✓</span><span>CI passed <span style="color:var(--ink-3)">· 4 checks · 6 min ago</span></span><span class="cd-src">github_checks · high</span></div>
+        <div class="cd-check"><span class="cd-box cd-ok">✓</span><span>No secret in diff</span><span class="cd-src">runner · high</span></div>
+        <div class="cd-check"><span class="cd-box cd-ok">✓</span><span>PR opened <span style="color:var(--ink-3)">· #431 draft → ready</span></span><span class="cd-src">github · high</span></div>
+        <div class="cd-check"><span class="cd-box cd-override">!</span><span>Spec analyzed <span style="color:var(--ink-3)">· overridden by Kasun: "ad hoc migration agreed in standup"</span></span><span class="cd-src">override:kasun · high</span></div>
+        <div class="cd-check"><span class="cd-box cd-wait"></span><span>Human approval</span><span class="cd-src">you</span></div>
       </div>
-    </main>
-    <p class="demo-note">
-      The promise made visible. Every required gate with its source and trust; a local test result
-      is shown as needing CI in this workspace; the agent's own summary sits below the checklist and
-      is labelled as not evidence. Approve and merge stays disabled until the acceptance checklist
-      is complete.
-    </p>
-  </body>
+      <div style="font-size:12px;color:var(--ink-3);margin:16px 0 6px;font-weight:600">Acceptance criteria — tick each to approve</div>
+      <div class="cd-card">
+        <div class="cd-check"><span class="cd-box cd-ok">✓</span><span>Sessions survive an app restart</span><span></span></div>
+        <div class="cd-check"><span class="cd-box cd-ok">✓</span><span>No change to the cookie format</span><span></span></div>
+        <div class="cd-check"><span class="cd-box"></span><span>Legacy /session/v1 kept behind a flag</span><span></span></div>
+      </div>
+      <div style="font-size:12px;color:var(--ink-3);margin:16px 0 6px;font-weight:600">Summary from the agent — not evidence</div>
+      <div class="cd-msg" style="border-style:dashed">Moved session storage from memory to Redis using the existing client, kept the cookie unchanged, and added a <span class="cd-mono">SESSION_LEGACY_V1</span> flag that keeps the old endpoint mounted. Two tests were added for restart survival.</div>
+      <div style="display:flex;gap:8px;margin-top:14px;justify-content:flex-end"><button type="button" class="cd-btn cd-ghost">Request changes</button><button type="button" class="cd-btn cd-saffron" disabled>Approve and merge</button></div>
+      <div class="cd-help" style="text-align:right">Tick the remaining criterion to enable Approve and merge.</div>
+    </div>
+    <aside class="cd-panel">
+      <div class="cd-blk"><h4>Pull request</h4><dl class="cd-kv"><dt>#431</dt><dd>Migrate sessions to Redis</dd><dt>Base</dt><dd class="cd-mono">main</dd><dt>Diff</dt><dd>7 files · +214 −88</dd><dt>Checks</dt><dd>lint, unit, e2e, build ✓</dd></dl></div>
+      <div class="cd-blk"><h4>Overrides</h4><div class="cd-card" style="padding:10px 12px;font-size:12.5px;border-color:var(--saffron)">1 gate overridden by an admin. Recorded in the audit log with reason. <span class="cd-mono">no_secret_in_diff</span> can never be overridden.</div></div>
+      <div class="cd-blk"><h4>History</h4><dl class="cd-kv"><dt>run 1</dt><dd>failed · tests · laptop</dd><dt>run 2</dt><dd>this run · laptop</dd></dl></div>
+    </aside>
+  </div>
+</main>
+<p class="demo-note">The promise made visible. Every required gate with its source and trust; a local test result is shown as needing CI in this workspace; the agent's own summary sits below the checklist and is labelled as not evidence. Approve and merge stays disabled until the acceptance checklist is complete.</p>
+</body>
 </html>

@@ -252,4 +252,5 @@ A planning agent reads `docs/architecture.md` and finds a description of CDevi's
 - Visual-regression baselines are stored in the repository and updated only through an intentional, reviewed change.
 - The constitution amendment follows the governance process already defined there (maintainer approval, minor version bump to 1.1.0, amendment date updated, ratification date preserved).
 - Numeric performance budgets beyond SC-008 (for example component render cost) will be set in the implementation plan per Principle IV.
+- After adoption, `@cdevi/design-system` is the UI foundation named by every subsequent specification; the state/risk mapping contract in this feature is the reference those specifications cite.
 - The `.DS_Store` file and any operating-system artifacts in the source folder are excluded from the import.

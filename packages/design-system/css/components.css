@@ -1506,3 +1506,11 @@ table.cd-table.cd-audit .cd-audit-target {
 .cd-chip .cd-chip-note {
   opacity: 0.8;
 }
+.cd-row .cd-trailing {
+  display: inline-flex;
+  gap: var(--space-2);
+  align-items: center;
+  justify-self: end;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}

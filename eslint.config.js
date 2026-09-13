@@ -33,12 +33,12 @@ export default tseslint.config(
       '**/playwright-report/**',
       '**/test-results/**',
       'packages/design-system/reference-screens/**',
-      'packages/design-system/legacy-gallery.html',
       'packages/design-system/tailwind/preset.cjs',
       'packages/design-system/src/tokens.generated.ts',
       // Fixtures are linted by tools/lint-fixtures/fixtures.test.ts and are expected to fail.
       'tools/lint-fixtures/*.tsx',
       'tools/lint-fixtures/*.css',
+      'specs/**',
     ],
   },
   js.configs.recommended,

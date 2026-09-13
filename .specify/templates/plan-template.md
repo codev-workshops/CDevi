@@ -104,6 +104,16 @@ ios/ or android/
 **Structure Decision**: [Document the selected structure and reference the real
 directories captured above]
 
+## Design System Compliance
+
+_Required by Constitution Principle III. Rules: `packages/design-system/DESIGN.md`._
+
+- **Components used**: [list `@cdevi/design-system` components this feature renders, e.g. AppShell, List/ListRow, StatePill, DecisionCard]
+- **Components proposed**: [patterns that do not exist yet; each becomes a "design-system component task" completed before the consuming task, or "none"]
+- **Vocabulary mapping**: [which workflow states, risk levels, finding classes appear and confirm they use `stateToPill` / `riskToVariant`; or "none"]
+- **Accessibility verification**: [component axe tests, page-level axe in Playwright, keyboard walkthrough of the critical flow, contrast pairs added to `tokens/pairs.json`]
+- **UI performance budgets**: [numeric budgets for screens added by this feature, or "covered by the design-system budgets"]
+
 ## Complexity Tracking
 
 > **Fill ONLY if Constitution Check has violations that must be justified**

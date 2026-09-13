@@ -1,0 +1,190 @@
+import { useState } from 'react';
+import {
+  AppShell,
+  Brand,
+  Button,
+  DecisionCard,
+  Main,
+  Mono,
+  NavGroup,
+  NavItem,
+  PageMeta,
+  RiskBadge,
+  Side,
+  StatePill,
+  Topbar,
+  type RiskLevel,
+} from '@cdevi/design-system';
+
+/**
+ * Approval Center list — specs/001-sdlc-control-plane-mvp/spec.md, User Story 2, scenario 1.
+ *
+ * Each pending item shows the requirement/workflow identifier, what is being requested, who or
+ * which agent requested it, when, and its risk level; ordered highest risk first, then oldest first.
+ */
+
+export type ApprovalKind = 'requirement-approval' | 'pr-merge-approval' | 'clarification';
+
+export interface ApprovalItem {
+  /** Approval / clarification identifier. */
+  id: string;
+  kind: ApprovalKind;
+  /** Requirement or workflow the item belongs to. */
+  subjectId: string;
+  /** What is being requested, phrased as the question the person must answer. */
+  request: string;
+  /** Person or agent that raised the item. */
+  requester: string;
+  /** ISO-8601 timestamp of when the item was raised. */
+  requestedAt: string;
+  risk: RiskLevel;
+}
+
+const RISK_ORDER: Record<RiskLevel, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
+
+/** Highest risk first; within the same risk, oldest first. Returns a new array. */
+export function sortApprovals(items: readonly ApprovalItem[]): ApprovalItem[] {
+  return [...items].sort((a, b) => {
+    const byRisk = RISK_ORDER[a.risk] - RISK_ORDER[b.risk];
+    if (byRisk !== 0) return byRisk;
+    return Date.parse(a.requestedAt) - Date.parse(b.requestedAt);
+  });
+}
+
+const KIND_LABEL: Record<ApprovalKind, string> = {
+  'requirement-approval': 'Requirement approval',
+  'pr-merge-approval': 'PR merge approval',
+  clarification: 'Clarification',
+};
+
+export const SAMPLE_APPROVALS: readonly ApprovalItem[] = [
+  {
+    id: 'APR-1042',
+    kind: 'requirement-approval',
+    subjectId: 'REQ-0218',
+    request: 'Approve requirement "Rate limiting for /api/auth" to start the SDLC workflow',
+    requester: 'Nimali Perera (Product)',
+    requestedAt: '2025-09-13T06:40:00Z',
+    risk: 'LOW',
+  },
+  {
+    id: 'APR-1047',
+    kind: 'pr-merge-approval',
+    subjectId: 'WF-0511',
+    request: 'Approve merge of PR #482 "Move session store to Redis" into main',
+    requester: 'Claude Code agent · run RUN-8831',
+    requestedAt: '2025-09-13T09:15:00Z',
+    risk: 'MEDIUM',
+  },
+  {
+    id: 'CLR-0309',
+    kind: 'clarification',
+    subjectId: 'REQ-0221',
+    request: 'Should expired sessions be revoked immediately or at the next request?',
+    requester: 'Analysis agent · run RUN-8840',
+    requestedAt: '2025-09-13T08:05:00Z',
+    risk: 'LOW',
+  },
+];
+
+const RELATIVE = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
+const ABSOLUTE = new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short' });
+
+function formatAge(iso: string, now: number): string {
+  const minutes = Math.round((Date.parse(iso) - now) / 60_000);
+  if (Math.abs(minutes) < 60) return RELATIVE.format(minutes, 'minute');
+  const hours = Math.round(minutes / 60);
+  if (Math.abs(hours) < 48) return RELATIVE.format(hours, 'hour');
+  return RELATIVE.format(Math.round(hours / 24), 'day');
+}
+
+export interface ApprovalCenterProps {
+  items?: readonly ApprovalItem[];
+  /** Reference instant for relative times; defaults to now. */
+  now?: number;
+}
+
+export function ApprovalCenter({ items = SAMPLE_APPROVALS, now: nowProp }: ApprovalCenterProps) {
+  // Captured once on mount so relative times are stable across re-renders (react-hooks/purity).
+  const [mountedAt] = useState(() => Date.now());
+  const now = nowProp ?? mountedAt;
+  const ordered = sortApprovals(items);
+  const pending = ordered.length;
+
+  const review = (item: ApprovalItem) => () => console.log('review', item.id);
+  const approve = (item: ApprovalItem) => () => console.log('approve', item.id);
+  const reject = (item: ApprovalItem) => () => console.log('reject', item.id);
+
+  return (
+    <AppShell
+      side={
+        <Side brand={<Brand mark="සී" name="CDevi" wordmark="සීදේවි" href="#/" />}>
+          <NavGroup>
+            <NavItem href="#/">Dashboard</NavItem>
+            <NavItem href="#/workflows">Workflow Center</NavItem>
+            <NavItem href="#/requirements">Requirements</NavItem>
+            <NavItem href="#/approvals" active count={pending}>
+              Approval Center
+            </NavItem>
+          </NavGroup>
+        </Side>
+      }
+    >
+      <Main>
+        <Topbar title="Approval Center" />
+        <PageMeta>
+          <span>{pending === 1 ? '1 item needs you' : `${pending} items need you`}</span>
+          <span>all projects</span>
+          <span>highest risk first, then oldest</span>
+        </PageMeta>
+
+        {ordered.map((item) => {
+          const isPrMerge = item.kind === 'pr-merge-approval';
+          return (
+            <DecisionCard
+              key={item.id}
+              tone="needs-you"
+              title={
+                <>
+                  <Mono>{item.id}</Mono> · {KIND_LABEL[item.kind]} · <Mono>{item.subjectId}</Mono>
+                </>
+              }
+              badge={<RiskBadge level={item.risk} />}
+              description={
+                <>
+                  {item.request}
+                  <br />
+                  Requested by {item.requester} ·{' '}
+                  <time
+                    dateTime={item.requestedAt}
+                    title={ABSOLUTE.format(new Date(item.requestedAt))}
+                  >
+                    {formatAge(item.requestedAt, now)}
+                  </time>{' '}
+                  · <StatePill state="WAITING_FOR_HUMAN" />
+                </>
+              }
+              actions={
+                <>
+                  <Button variant="ghost" size="sm" onClick={review(item)}>
+                    Review
+                  </Button>
+                  {isPrMerge ? (
+                    <>
+                      <Button variant="danger" size="sm" onClick={reject(item)}>
+                        Reject
+                      </Button>
+                      <Button variant="saffron" size="sm" onClick={approve(item)}>
+                        Approve
+                      </Button>
+                    </>
+                  ) : null}
+                </>
+              }
+            />
+          );
+        })}
+      </Main>
+    </AppShell>
+  );
+}

@@ -1,0 +1,261 @@
+import {
+  AppShell,
+  Brand,
+  Button,
+  Crumbs,
+  KeyValue,
+  List,
+  ListRow,
+  Main,
+  Mono,
+  NavGroup,
+  NavItem,
+  PageMeta,
+  Panel,
+  PanelBlock,
+  Pill,
+  RiskBadge,
+  Side,
+  Stat,
+  StatGrid,
+  StatePill,
+  Topbar,
+  type RiskLevel,
+} from '@cdevi/design-system';
+
+/* ---------- Sample data (specs/001 US2, acceptance scenario 1) ---------- */
+
+type PendingKind = 'approval' | 'clarification';
+
+interface PendingItem {
+  /** Requirement / workflow identifier. */
+  id: string;
+  kind: PendingKind;
+  /** Short label of the request type, e.g. "Approve PR merge". */
+  request: string;
+  /** The exact thing being asked of the person. */
+  ask: string;
+  /** Who or which agent raised it. */
+  requester: string;
+  /** Agent run that raised it, when applicable. */
+  run?: string;
+  /** Workflow stage the item belongs to. */
+  stage: string;
+  requestedAt: string;
+  risk: RiskLevel;
+  href: string;
+}
+
+/** Fixed "now" so the sample data renders the same relative times on every load. */
+const NOW = new Date('2025-09-13T14:00:00Z');
+
+const SAMPLE_ITEMS: PendingItem[] = [
+  {
+    id: 'PAY-1388',
+    kind: 'approval',
+    request: 'Approve requirement',
+    ask: 'Approve the requirement "Add refund processing for partial captures" so analysis can begin.',
+    requester: 'Nadeesha Perera',
+    stage: 'Requirement',
+    requestedAt: '2025-09-13T09:42:00Z',
+    risk: 'LOW',
+    href: '#/approvals/PAY-1388',
+  },
+  {
+    id: 'PAY-1391',
+    kind: 'approval',
+    request: 'Approve PR merge',
+    ask: 'Merge PR #418 "Implement refund processing" into main — 12 files (+412 −38), CI passed.',
+    requester: 'Implementation Agent',
+    run: 'run-7c1e',
+    stage: 'PR',
+    requestedAt: '2025-09-13T12:05:00Z',
+    risk: 'MEDIUM',
+    href: '#/approvals/PAY-1391',
+  },
+  {
+    id: 'AUTH-204',
+    kind: 'clarification',
+    request: 'Answer clarification',
+    ask: 'Should the rate limit on /api/auth apply per user account or per client IP address?',
+    requester: 'Analysis Agent',
+    run: 'run-2b90',
+    stage: 'Analysis',
+    requestedAt: '2025-09-13T11:20:00Z',
+    risk: 'LOW',
+    href: '#/approvals/AUTH-204',
+  },
+];
+
+/* ---------- Ordering: highest risk first, then oldest first ---------- */
+
+const RISK_RANK: Record<RiskLevel, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
+
+export function sortPending(items: readonly PendingItem[]): PendingItem[] {
+  return [...items].sort((a, b) => {
+    const byRisk = RISK_RANK[a.risk] - RISK_RANK[b.risk];
+    if (byRisk !== 0) return byRisk;
+    return Date.parse(a.requestedAt) - Date.parse(b.requestedAt);
+  });
+}
+
+/* ---------- Formatting ---------- */
+
+function relativeTime(iso: string, now: Date = NOW): string {
+  const minutes = Math.max(0, Math.round((now.getTime() - Date.parse(iso)) / 60_000));
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m === 0 ? `${h} h ago` : `${h} h ${m} min ago`;
+}
+
+function absoluteTime(iso: string): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'UTC',
+    timeZoneName: 'short',
+  }).format(new Date(iso));
+}
+
+function kindLabel(kind: PendingKind): string {
+  return kind === 'approval' ? 'approval' : 'clarification';
+}
+
+/* ---------- Page ---------- */
+
+export function ApprovalCenter() {
+  const items = sortPending(SAMPLE_ITEMS);
+  const approvals = items.filter((i) => i.kind === 'approval').length;
+  const clarifications = items.filter((i) => i.kind === 'clarification').length;
+  const top = items[0];
+  const highestRisk = top?.risk ?? 'LOW';
+
+  return (
+    <AppShell
+      side={
+        <Side
+          brand={<Brand mark="සී" name="CDevi" wordmark="සීදේවි" href="#/" />}
+          footer={<span className="cd-label">acme · Nadeesha</span>}
+        >
+          <NavItem href="#/">Dashboard</NavItem>
+          <NavItem href="#/approvals" active count={items.length}>
+            Approval Center
+          </NavItem>
+          <NavItem href="#/workflows">Workflow Center</NavItem>
+          <NavItem href="#/requirements">Requirements</NavItem>
+          <NavItem href="#/agents">Agent runs</NavItem>
+          <NavGroup>Governance</NavGroup>
+          <NavItem href="#/audit">Audit log</NavItem>
+          <NavItem href="#/policies">Policies</NavItem>
+        </Side>
+      }
+      panel={
+        <Panel>
+          <PanelBlock title="Queue">
+            <StatGrid columns={2}>
+              <Stat value={items.length} label="pending" />
+              <Stat value={approvals} label={approvals === 1 ? 'approval' : 'approvals'} />
+              <Stat
+                value={clarifications}
+                label={clarifications === 1 ? 'clarification' : 'clarifications'}
+              />
+              <Stat value={<RiskBadge level={highestRisk} />} label="highest risk" />
+            </StatGrid>
+          </PanelBlock>
+          <PanelBlock title="Ordering">
+            <KeyValue
+              items={[
+                { term: '1st', detail: 'Highest risk level' },
+                { term: '2nd', detail: 'Oldest request' },
+              ]}
+            />
+          </PanelBlock>
+          <PanelBlock title="Next up">
+            {top ? (
+              <KeyValue
+                items={[
+                  { term: 'Item', detail: <Mono>{top.id}</Mono> },
+                  { term: 'Request', detail: top.request },
+                  { term: 'Risk', detail: <RiskBadge level={top.risk} /> },
+                  { term: 'Workflow', detail: <StatePill state="WAITING_FOR_HUMAN" /> },
+                ]}
+              />
+            ) : (
+              <KeyValue items={[{ term: 'Item', detail: 'Nothing pending' }]} />
+            )}
+          </PanelBlock>
+        </Panel>
+      }
+    >
+      <Main>
+        <Crumbs items={[{ label: 'CDevi', href: '#/' }, { label: 'Approval Center' }]} />
+        <Topbar
+          title="Approval Center"
+          actions={
+            <>
+              <Button variant="ghost" size="sm" href="#/audit">
+                View audit log
+              </Button>
+              {top ? (
+                <Button variant="saffron" size="sm" href={top.href}>
+                  Review highest risk
+                </Button>
+              ) : null}
+            </>
+          }
+        />
+        <PageMeta>
+          <span>
+            {items.length} {items.length === 1 ? 'item needs' : 'items need'} a person
+          </span>
+          <span>
+            {approvals} {approvals === 1 ? 'approval' : 'approvals'}
+          </span>
+          <span>
+            {clarifications} {clarifications === 1 ? 'clarification' : 'clarifications'}
+          </span>
+          <span>ordered by highest risk, then oldest first</span>
+        </PageMeta>
+
+        <List empty="Nothing needs you right now.">
+          {items.map((item) => (
+            <ListRow
+              key={item.id}
+              title={
+                <>
+                  <Mono>{item.id}</Mono> · {item.request}
+                </>
+              }
+              href={item.href}
+              trailing={<RiskBadge level={item.risk} />}
+              ask={item.ask}
+              meta={
+                <>
+                  <Pill>{kindLabel(item.kind)}</Pill>
+                  <span>
+                    requested by <b>{item.requester}</b>
+                    {item.run ? (
+                      <>
+                        {' '}
+                        (<Mono>{item.run}</Mono>)
+                      </>
+                    ) : null}
+                  </span>
+                  <span>{item.stage} stage</span>
+                  <time dateTime={item.requestedAt} title={absoluteTime(item.requestedAt)}>
+                    {relativeTime(item.requestedAt)}
+                  </time>
+                  <StatePill state="WAITING_FOR_HUMAN" />
+                </>
+              }
+            />
+          ))}
+        </List>
+      </Main>
+    </AppShell>
+  );
+}

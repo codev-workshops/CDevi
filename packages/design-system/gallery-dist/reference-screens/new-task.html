@@ -1,190 +1,61 @@
-<!doctype html>
+<!DOCTYPE html>
 <!-- Pattern reference — not a CDevi screen. See reference-screens/README.md. -->
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>CDevi demo — New task</title>
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CDevi demo — New task</title>
 
-    <link rel="stylesheet" crossorigin href="/assets/cdevi-D2MsWmPD.css" />
-    <link rel="stylesheet" crossorigin href="/assets/demo-11UjMu47.css" />
-  </head>
-  <body class="cd-root">
-    <header class="demo-bar">
-      <a href="index.html">← All demo pages</a>
-      <span>New task</span>
-      <button
-        type="button"
-        onclick="
-          document.documentElement.dataset.theme =
-            document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'
-        "
-      >
-        Toggle theme
-      </button>
-    </header>
-    <main class="demo-stage">
-      <div class="cd-app cd-with-panel">
-        <aside class="cd-side">
-          <div class="cd-brand">
-            <span class="cd-mark" aria-hidden="true">සී</span>CDevi<small
-              lang="si"
-              aria-hidden="true"
-              >සීදේවි</small
-            >
-          </div>
-          <div class="cd-nav">
-            <a href="inbox.html">Inbox <span class="cd-count">2</span></a
-            ><a href="spec-session.html">Specs</a
-            ><a class="cd-is-active" aria-current="page" href="run-transcript.html">Tasks</a
-            ><a href="repository-settings.html">Repositories</a>
-            <div class="cd-grp">Account</div>
-            <a href="agents-keys.html">Agents &amp; keys</a><a href="usage.html">Usage</a
-            ><a href="inbox.html">Workspace</a>
-          </div>
-          <div class="cd-ws"><span class="cd-av">AC</span> acme · Nadeesha ▾</div>
-        </aside>
-        <div class="cd-main">
-          <div class="cd-crumbs">Tasks / <b>New task</b> · from spec 042-rate-limiting · T002</div>
-          <div class="cd-topbar">
-            <h1>Implement the sliding-window limiter</h1>
-            <span class="cd-pill cd-done">spec analyzed</span>
-          </div>
-          <div class="cd-card">
-            <div class="cd-field">
-              <label>Repository</label>
-              <div class="cd-input">payments-api <span class="cd-caret">▾</span></div>
-            </div>
-            <div class="cd-field">
-              <label>Base branch</label>
-              <div class="cd-input">spec/042-rate-limiting <span class="cd-caret">▾</span></div>
-            </div>
-            <div class="cd-field">
-              <label>Brief<small>@ to mention a path</small></label>
-              <div class="cd-input cd-area">
-                Implement FR-042-01 to FR-042-04 from specs/042-rate-limiting/spec.md: a
-                sliding-window limiter keyed per IP and per authenticated account, 100 requests per
-                60 s, using the client in @src/lib/redis.ts. Return 429 with Retry-After. Do not
-                change @src/middleware/auth.ts beyond registering the limiter.
-              </div>
-            </div>
-            <div class="cd-field">
-              <label>Acceptance criteria</label>
-              <div>
-                <div class="cd-input" style="margin-bottom: 6px">
-                  Unit tests cover window rollover and both key types
-                </div>
-                <div class="cd-input" style="margin-bottom: 6px">
-                  Existing auth tests still pass
-                </div>
-                <div class="cd-help">
-                  + Add criterion · each becomes a checkbox for the reviewer
-                </div>
-              </div>
-            </div>
-            <div class="cd-field">
-              <label>Agent and key</label>
-              <div class="cd-input">
-                Claude Code · <span class="cd-key">…8f2a</span> personal · claude-sonnet-4.5
-                <span class="cd-caret">▾</span>
-              </div>
-            </div>
-            <div class="cd-field">
-              <label>Runtime<small>your decision, per task</small></label>
-              <div>
-                <div class="cd-seg" role="radiogroup">
-                  <button type="button" role="radio" aria-checked="true">Cloud sandbox</button
-                  ><button type="button" role="radio" aria-checked="false" tabindex="-1">
-                    My laptop (nadeesha-mbp)
-                  </button>
-                </div>
-                <div class="cd-help">
-                  Cloud: fresh sandbox, key injected from the vault, egress enforced. Laptop: your
-                  checkout and your key, egress advisory, test results need CI in this workspace.
-                </div>
-              </div>
-            </div>
-            <div class="cd-field">
-              <label>Autonomy</label>
-              <div>
-                <div class="cd-seg" role="radiogroup">
-                  <button type="button" role="radio" aria-checked="false" tabindex="-1">
-                    Ask first</button
-                  ><button type="button" role="radio" aria-checked="true">Ask on risk</button
-                  ><button type="button" role="radio" aria-checked="false" tabindex="-1">
-                    Autonomous
-                  </button>
-                </div>
-                <div class="cd-help">
-                  Pauses for external and irreversible side effects and blocking questions.
-                  Protected branches always pause.
-                </div>
-              </div>
-            </div>
-            <div class="cd-field">
-              <label>Budget</label>
-              <div style="display: flex; gap: 8px">
-                <div class="cd-input" style="width: 120px">$ 5.00</div>
-                <div class="cd-input" style="width: 140px">120 min</div>
-              </div>
-            </div>
-            <div class="cd-field">
-              <label>Gates</label>
-              <div class="cd-chips">
-                <span class="cd-chip cd-is-active">tests passed</span
-                ><span class="cd-chip cd-is-active">no secret in diff</span
-                ><span class="cd-chip cd-is-active">CI passed</span
-                ><span class="cd-chip cd-is-active">human approval</span
-                ><span class="cd-chip cd-is-active">spec analyzed</span
-                ><span class="cd-chip">PR merged</span>
-              </div>
-            </div>
-            <div class="cd-field">
-              <label>Runs after</label>
-              <div class="cd-input">
-                T001 · Add Redis limiter key helpers <span class="cd-pill cd-neutral">queued</span>
-              </div>
-            </div>
-          </div>
-          <div style="display: flex; gap: 8px; margin-top: 14px; justify-content: flex-end">
-            <button type="button" class="cd-btn cd-ghost">Save draft</button
-            ><button type="button" class="cd-btn cd-saffron">Delegate</button>
-          </div>
-        </div>
-        <aside class="cd-panel">
-          <div class="cd-blk">
-            <h4>From tasks.md</h4>
-            <div class="cd-card" style="padding: 10px 12px; font-size: 12.5px">
-              <span class="cd-mono">T002 [P]</span> Implement sliding-window limiter<br /><span
-                class="cd-mono"
-                style="color: var(--ink-3)"
-                >src/middleware/rateLimit.ts</span
-              ><br />depends on T001
-            </div>
-          </div>
-          <div class="cd-blk">
-            <h4>Repository conventions</h4>
-            <div class="cd-card" style="padding: 10px 12px; font-size: 12.5px">
-              <span class="cd-mono">AGENTS.md</span> found · 1.2 KB · included in the run preamble.
-              Tests: <span class="cd-mono">pnpm test</span>.
-            </div>
-          </div>
-          <div class="cd-blk">
-            <h4>Recent runs on these files</h4>
-            <dl class="cd-kv">
-              <dt>#3ff2</dt>
-              <dd>auth.ts · verified · 3 d ago</dd>
-              <dt>#3e91</dt>
-              <dd>redis.ts · failed (tests) · 9 d ago</dd>
-            </dl>
-          </div>
-        </aside>
+  <link rel="stylesheet" crossorigin href="/assets/cdevi-D9mzv2XK.css">
+  <link rel="stylesheet" crossorigin href="/assets/demo-11UjMu47.css">
+</head>
+<body class="cd-root">
+<header class="demo-bar">
+  <a href="index.html">← All demo pages</a>
+  <span>New task</span>
+  <button type="button" onclick="document.documentElement.dataset.theme=document.documentElement.dataset.theme==='dark'?'light':'dark'">Toggle theme</button>
+</header>
+<main class="demo-stage">
+<div class="cd-app cd-with-panel">
+    <aside class="cd-side">
+      <div class="cd-brand"><span class="cd-mark" aria-hidden="true">සී</span>CDevi<small lang="si" aria-hidden="true">සීදේවි</small></div>
+      <div class="cd-nav"><a href="inbox.html">Inbox <span class="cd-count">2</span></a><a href="spec-session.html">Specs</a><a class="cd-is-active" aria-current="page" href="run-transcript.html">Tasks</a><a href="repository-settings.html">Repositories</a><div class="cd-grp">Account</div><a href="agents-keys.html">Agents &amp; keys</a><a href="usage.html">Usage</a><a href="inbox.html">Workspace</a></div>
+      <div class="cd-ws"><span class="cd-av">AC</span> acme · Nadeesha ▾</div>
+    </aside>
+    <div class="cd-main">
+      <div class="cd-crumbs">Tasks / <b>New task</b> · from spec 042-rate-limiting · T002</div>
+      <div class="cd-topbar"><h1>Implement the sliding-window limiter</h1><span class="cd-pill cd-done">spec analyzed</span></div>
+      <div class="cd-card">
+        <div class="cd-field"><label>Repository</label><div class="cd-input">payments-api <span class="cd-caret">▾</span></div></div>
+        <div class="cd-field"><label>Base branch</label><div class="cd-input">spec/042-rate-limiting <span class="cd-caret">▾</span></div></div>
+        <div class="cd-field"><label>Brief<small>@ to mention a path</small></label><div class="cd-input cd-area">Implement FR-042-01 to FR-042-04 from specs/042-rate-limiting/spec.md: a sliding-window limiter keyed per IP and per authenticated account, 100 requests per 60 s, using the client in @src/lib/redis.ts. Return 429 with Retry-After. Do not change @src/middleware/auth.ts beyond registering the limiter.</div></div>
+        <div class="cd-field"><label>Acceptance criteria</label><div>
+          <div class="cd-input" style="margin-bottom:6px">Unit tests cover window rollover and both key types</div>
+          <div class="cd-input" style="margin-bottom:6px">Existing auth tests still pass</div>
+          <div class="cd-help">+ Add criterion · each becomes a checkbox for the reviewer</div></div></div>
+        <div class="cd-field"><label>Agent and key</label><div class="cd-input">Claude Code · <span class="cd-key">…8f2a</span> personal · claude-sonnet-4.5 <span class="cd-caret">▾</span></div></div>
+        <div class="cd-field"><label>Runtime<small>your decision, per task</small></label><div>
+          <div class="cd-seg" role="radiogroup"><button type="button" role="radio" aria-checked="true">Cloud sandbox</button><button type="button" role="radio" aria-checked="false" tabindex="-1">My laptop (nadeesha-mbp)</button></div>
+          <div class="cd-help">Cloud: fresh sandbox, key injected from the vault, egress enforced. Laptop: your checkout and your key, egress advisory, test results need CI in this workspace.</div></div></div>
+        <div class="cd-field"><label>Autonomy</label><div><div class="cd-seg" role="radiogroup"><button type="button" role="radio" aria-checked="false" tabindex="-1">Ask first</button><button type="button" role="radio" aria-checked="true">Ask on risk</button><button type="button" role="radio" aria-checked="false" tabindex="-1">Autonomous</button></div><div class="cd-help">Pauses for external and irreversible side effects and blocking questions. Protected branches always pause.</div></div></div>
+        <div class="cd-field"><label>Budget</label><div style="display:flex;gap:8px"><div class="cd-input" style="width:120px">$ 5.00</div><div class="cd-input" style="width:140px">120 min</div></div></div>
+        <div class="cd-field"><label>Gates</label><div class="cd-chips"><span class="cd-chip cd-is-active">tests passed</span><span class="cd-chip cd-is-active">no secret in diff</span><span class="cd-chip cd-is-active">CI passed</span><span class="cd-chip cd-is-active">human approval</span><span class="cd-chip cd-is-active">spec analyzed</span><span class="cd-chip">PR merged</span></div></div>
+        <div class="cd-field"><label>Runs after</label><div class="cd-input">T001 · Add Redis limiter key helpers <span class="cd-pill cd-neutral">queued</span></div></div>
       </div>
-    </main>
-    <p class="demo-note">
-      Reached from Delegate all (pre-filled from tasks.md) or as an ad hoc task, which requires a
-      reason. Every default comes from the repository settings so a returning developer only reads
-      and confirms.
-    </p>
-  </body>
+      <div style="display:flex;gap:8px;margin-top:14px;justify-content:flex-end"><button type="button" class="cd-btn cd-ghost">Save draft</button><button type="button" class="cd-btn cd-saffron">Delegate</button></div>
+    </div>
+    <aside class="cd-panel">
+      <div class="cd-blk"><h4>From tasks.md</h4>
+        <div class="cd-card" style="padding:10px 12px;font-size:12.5px"><span class="cd-mono">T002 [P]</span> Implement sliding-window limiter<br><span class="cd-mono" style="color:var(--ink-3)">src/middleware/rateLimit.ts</span><br>depends on T001</div>
+      </div>
+      <div class="cd-blk"><h4>Repository conventions</h4>
+        <div class="cd-card" style="padding:10px 12px;font-size:12.5px"><span class="cd-mono">AGENTS.md</span> found · 1.2 KB · included in the run preamble. Tests: <span class="cd-mono">pnpm test</span>.</div>
+      </div>
+      <div class="cd-blk"><h4>Recent runs on these files</h4>
+        <dl class="cd-kv"><dt>#3ff2</dt><dd>auth.ts · verified · 3 d ago</dd><dt>#3e91</dt><dd>redis.ts · failed (tests) · 9 d ago</dd></dl>
+      </div>
+    </aside>
+  </div>
+</main>
+<p class="demo-note">Reached from Delegate all (pre-filled from tasks.md) or as an ad hoc task, which requires a reason. Every default comes from the repository settings so a returning developer only reads and confirms.</p>
+</body>
 </html>

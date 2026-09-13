@@ -1,0 +1,23 @@
+{
+  "name": "@cdevi/web-scratch",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Scratch target for design-system conformance trials (specs/002 US1). Not a product app.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@cdevi/design-system": "workspace:*",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.7",
+    "@vitejs/plugin-react": "6.1.1",
+    "typescript": "5.9.3",
+    "vite": "8.2.2"
+  }
+}
