@@ -142,7 +142,7 @@ describe('US2 decision schemas (specs/001 data-model.md §13–§14)', () => {
     expect(ApprovalCenterQuery.safeParse({ project: 'mine' }).success).toBe(false);
   });
 
-  it('FR-014 ClarificationUpsert accepts whyItMatters ≤ 1000, ≤ 8 options with one recommended, 4 link keys; rejects 9 options, two recommended, unknown link key', () => {
+  it('FR-014 ClarificationUpsert accepts whyItMatters ≤ 1000, ≤ 8 options with one recommended, 5 link keys; rejects 9 options, two recommended, unknown link key', () => {
     const base = { workflowExternalId: 'wf-1', question: 'Which provider?', requestedAt: T };
     const ok = ClarificationUpsert.parse({
       ...base,
@@ -153,8 +153,10 @@ describe('US2 decision schemas (specs/001 data-model.md §13–§14)', () => {
         pullRequest: 'https://github.com/acme/api/pull/1',
         externalTicket: 'https://jira.example/PLAT-42',
         workflow: '/workflows/1',
+        agentRun: '/agent-runs/1',
       },
     });
+    expect(ok.links.agentRun).toBe('/agent-runs/1');
     expect(ok.hasRecommendedAnswer).toBe(true);
     expect(ok.options).toHaveLength(2);
     expect(ClarificationUpsert.parse(base)).toMatchObject({ options: [], links: {} });

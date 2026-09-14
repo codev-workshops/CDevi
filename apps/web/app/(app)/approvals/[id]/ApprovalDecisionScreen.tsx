@@ -61,12 +61,14 @@ const ANSWER_MAX = 2000;
 const LINK_LABEL: Record<keyof DecisionLinks, string> = {
   requirement: 'Requirement',
   workflow: 'Workflow',
+  agentRun: 'Agent run',
   externalTicket: 'External ticket',
   pullRequest: 'Pull request',
 };
 const LINK_ORDER: (keyof DecisionLinks)[] = [
   'requirement',
   'workflow',
+  'agentRun',
   'externalTicket',
   'pullRequest',
 ];

@@ -417,7 +417,11 @@ describe.skipIf(skipDb)('Approval Center API (specs/001 US2, FR-011..FR-015, FR-
       riskLevel: null,
       result: 'RUNNING',
     });
-    expect(d.audit[0]!.details).toMatchObject({ option: 'oidc', text: 'OpenID Connect' });
+    expect(d.audit[0]!.details).toMatchObject({
+      question: 'Which sign-in method?',
+      answerOption: 'oidc',
+      answerText: 'OpenID Connect',
+    });
     const row = (
       await app.pool.query(
         `SELECT c.answer_option, c.answer_text, c.answered_by, u.email FROM clarifications c JOIN users u ON u.id = c.answered_by_user_id WHERE c.id = $1`,
@@ -520,6 +524,132 @@ describe.skipIf(skipDb)('Approval Center API (specs/001 US2, FR-011..FR-015, FR-
     const d: ApprovalCenterDetail = (await detail(approver, a.id)).json();
     expect(d.canDecide).toBe(false);
     expect(d.workflowState).toBe('CANCELLED');
+  });
+
+  it('FR-015 a workflow cancelled while a decision waits for the lock is not reverted: the decision sees the committed state', async () => {
+    const a = await raiseApproval('LOW');
+    const wf = (
+      await app.pool.query<{ id: string }>(`SELECT id FROM workflows WHERE external_id = $1`, [
+        a.ext,
+      ])
+    ).rows[0]!;
+    const holder = await app.pool.connect();
+    try {
+      await holder.query('BEGIN');
+      await holder.query(`SELECT id FROM workflows WHERE id = $1 FOR UPDATE`, [wf.id]);
+      const pending = approve(approver, a.id);
+      await new Promise((r) => setTimeout(r, 150));
+      await holder.query(
+        `UPDATE workflows SET state = 'CANCELLED', state_observed_at = now(), finished_at = now() WHERE id = $1`,
+        [wf.id],
+      );
+      await holder.query('COMMIT');
+      const r = await pending;
+      expect(r.statusCode, r.body).toBe(409);
+      expect(r.json().type).toBe('urn:cdevi:problem:invalid-transition');
+    } finally {
+      holder.release();
+    }
+    expect(await workflowState(a.ext)).toBe('CANCELLED');
+    const row = (
+      await app.pool.query(`SELECT decision FROM approvals WHERE id = $1`, [a.id])
+    ).rows[0];
+    expect(row.decision).toBeNull();
+  });
+
+  it('FR-014 a decision resumes only the stage linked to the item (other waiting stages keep waiting) and stamps started_at', async () => {
+    const a = await raiseApproval('MEDIUM');
+    const stage = (position: number, body: Record<string, unknown>) =>
+      app.inject(
+        asIngest({
+          method: 'PUT',
+          url: `/api/ingest/workflows/${a.ext}/stages/${position}`,
+          payload: {
+            name: `Stage ${position}`,
+            state: 'RUNNING',
+            observedAt: iso(plus(-7 * MIN)),
+            count: 2,
+            ...body,
+          },
+        }),
+      );
+    for (const [position, link] of [[1, { approvalExternalId: `${a.ext}-a` }], [2, {}]] as const) {
+      expect((await stage(position, link)).statusCode).toBe(200);
+      const waiting = await stage(position, {
+        state: 'WAITING_FOR_HUMAN',
+        observedAt: iso(plus(-6 * MIN)),
+        ...link,
+      });
+      expect(waiting.statusCode, waiting.body).toBe(200);
+    }
+    await app.pool.query(
+      `UPDATE workflow_stages s SET started_at = NULL FROM workflows w WHERE w.id = s.workflow_id AND w.external_id = $1`,
+      [a.ext],
+    );
+    const r = await approve(approver, a.id);
+    expect(r.statusCode, r.body).toBe(200);
+    const stages = (
+      await app.pool.query<{ position: number; state: string; started_at: Date | null }>(
+        `SELECT s.position, s.state, s.started_at FROM workflow_stages s JOIN workflows w ON w.id = s.workflow_id WHERE w.external_id = $1 ORDER BY s.position`,
+        [a.ext],
+      )
+    ).rows;
+    expect(stages.map((s) => s.state)).toEqual(['RUNNING', 'WAITING_FOR_HUMAN']);
+    expect(stages[0]!.started_at).toBeInstanceOf(Date);
+    expect(stages[1]!.started_at).toBeNull();
+  });
+
+  it('FR-014 agent replays after a human decision cannot overwrite the decision or the answer', async () => {
+    const a = await raiseApproval('LOW');
+    expect((await approve(approver, a.id)).statusCode).toBe(200);
+    const replay = await app.inject(
+      asIngest({
+        method: 'PUT',
+        url: `/api/ingest/approvals/${a.ext}-a`,
+        payload: {
+          workflowExternalId: a.ext,
+          ask: 'Approve: merge PR #LOW',
+          riskLevel: 'LOW',
+          requestedAt: iso(plus(-5 * MIN)),
+          decision: { outcome: 'rejected', decidedAt: iso(plus(-1 * MIN)), decidedBy: 'bot' },
+        },
+      }),
+    );
+    expect(replay.statusCode, replay.body).toBe(200);
+    const ap = (
+      await app.pool.query(`SELECT decision, decided_by FROM approvals WHERE id = $1`, [a.id])
+    ).rows[0];
+    expect(ap).toEqual({ decision: 'approved', decided_by: 'Approver 1' });
+
+    const c = await raiseClarification();
+    expect((await answer(approver, c.id, { option: 'saml' })).statusCode).toBe(200);
+    const creplay = await app.inject(
+      asIngest({
+        method: 'PUT',
+        url: `/api/ingest/clarifications/${c.ext}-c`,
+        payload: {
+          workflowExternalId: c.ext,
+          question: 'Which sign-in method?',
+          requestedAt: iso(plus(-4 * MIN)),
+          answer: { answeredAt: iso(plus(-1 * MIN)), answeredBy: 'bot' },
+          links: { agentRun: '/agent-runs/abc' },
+        },
+      }),
+    );
+    expect(creplay.statusCode, creplay.body).toBe(200);
+    const cl = (
+      await app.pool.query(
+        `SELECT answered_by, answer_option, links FROM clarifications WHERE id = $1`,
+        [c.id],
+      )
+    ).rows[0];
+    expect(cl).toEqual({
+      answered_by: 'Approver 1',
+      answer_option: 'saml',
+      links: { agentRun: '/agent-runs/abc' },
+    });
+    const d: ApprovalCenterDetail = (await detail(approver, c.id)).json();
+    expect(d.clarification?.links.agentRun).toBe('/agent-runs/abc');
   });
 
   it('answering an approval id or approving a clarification id is a 404', async () => {

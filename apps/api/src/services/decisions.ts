@@ -1,7 +1,7 @@
 /**
  * Human decisions on approvals and clarifications (specs/001 US2, FR-012..FR-015, research R11–R13). Distinct from
  * the agent ingestion path: a session user, role-gated with `canDecide`, one READ COMMITTED transaction that locks the
- * item row (`SELECT … FOR UPDATE`) so an item is resolved exactly once — a later caller receives the recorded outcome
+ * workflow row and then the item row (`SELECT … FOR UPDATE`, the ingestion lock order) so an item is resolved exactly once — a later caller receives the recorded outcome
  * as a 409 `already-resolved` Problem. Writes the decision, the workflow transition out of WAITING_FOR_HUMAN via the
  * 0001 state machine, an `audit_events` row; the existing triggers append the inbox change for SSE.
  */
@@ -117,7 +117,7 @@ export async function applyDecision(
     to = resultingState({ kind: 'answer' });
     action = 'clarification.answered';
     reason = `Answered by ${who}: ${v.text}`;
-    details = { question: row.ask, option: v.option, text: v.text };
+    details = { question: row.ask, answerOption: v.option, answerText: v.text };
     await client.query(
       `UPDATE clarifications SET answered_at = $2, answered_by = $3, answered_by_user_id = $4, answer_option = $5, answer_text = $6 WHERE id = $1`,
       [row.id, now, who, user.id, v.option, v.text],
@@ -167,11 +167,24 @@ async function transitionWorkflow(
       [organizationId, row.workflow_id, stageId, f, t, now, reason, user.id],
     );
   const finished = to === 'CANCELLED';
-  for (const s of await loadStages(client, row.workflow_id)) {
-    if (s.state !== 'WAITING_FOR_HUMAN' || !canTransition(s.state, to)) continue;
+  const waiting = (await loadStages(client, row.workflow_id)).filter(
+    (s) => s.state === 'WAITING_FOR_HUMAN' && canTransition(s.state, to),
+  );
+  const linked = waiting.filter((s) =>
+    row.kind === 'approval' ? s.approvalId === row.id : s.clarificationId === row.id,
+  );
+  // Stages that reference another pending item keep waiting; an item with no linked stage (legacy ingestion) moves
+  // the stages that reference nothing.
+  const stages = linked.length
+    ? linked
+    : waiting.filter((s) => s.approvalId == null && s.clarificationId == null);
+  for (const s of stages) {
     await client.query(
-      `UPDATE workflow_stages SET state = $2, state_observed_at = $3, state_reason = $4, finished_at = $5 WHERE id = $1`,
-      [s.id, to, now, reason, finished ? now : null],
+      `UPDATE workflow_stages SET state = $2, state_observed_at = $3, state_reason = $4,
+              started_at = COALESCE(started_at, CASE WHEN $2::workflow_state = 'RUNNING' THEN $3::timestamptz END),
+              finished_at = CASE WHEN $5::boolean THEN $3::timestamptz ELSE NULL END
+        WHERE id = $1`,
+      [s.id, to, now, reason, finished],
     );
     await record(s.id, s.state, to);
   }

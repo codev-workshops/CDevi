@@ -271,7 +271,10 @@ export class IngestionService {
         `INSERT INTO approvals (organization_id, project_id, workflow_id, external_id, ask, risk_level, requested_by_agent, requested_at, expires_at, decision, decided_at, decided_by, context, links)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
          ON CONFLICT (organization_id, external_id) DO UPDATE SET ask = EXCLUDED.ask, risk_level = EXCLUDED.risk_level, requested_by_agent = COALESCE(EXCLUDED.requested_by_agent, approvals.requested_by_agent),
-           expires_at = EXCLUDED.expires_at, decision = COALESCE(EXCLUDED.decision, approvals.decision), decided_at = COALESCE(EXCLUDED.decided_at, approvals.decided_at), decided_by = COALESCE(EXCLUDED.decided_by, approvals.decided_by),
+           expires_at = EXCLUDED.expires_at,
+           decision = CASE WHEN approvals.decided_by_user_id IS NULL THEN COALESCE(EXCLUDED.decision, approvals.decision) ELSE approvals.decision END,
+           decided_at = CASE WHEN approvals.decided_by_user_id IS NULL THEN COALESCE(EXCLUDED.decided_at, approvals.decided_at) ELSE approvals.decided_at END,
+           decided_by = CASE WHEN approvals.decided_by_user_id IS NULL THEN COALESCE(EXCLUDED.decided_by, approvals.decided_by) ELSE approvals.decided_by END,
            context = COALESCE(EXCLUDED.context, approvals.context), links = EXCLUDED.links
          RETURNING id`,
         [
@@ -598,7 +601,9 @@ export class IngestionService {
         `INSERT INTO clarifications (organization_id, project_id, workflow_id, external_id, question, requested_by_agent, requested_at, has_recommended_answer, answered_at, answered_by, why_it_matters, options, links)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
          ON CONFLICT (organization_id, external_id) DO UPDATE SET question = EXCLUDED.question, requested_by_agent = COALESCE(EXCLUDED.requested_by_agent, clarifications.requested_by_agent),
-           has_recommended_answer = EXCLUDED.has_recommended_answer, answered_at = COALESCE(EXCLUDED.answered_at, clarifications.answered_at), answered_by = COALESCE(EXCLUDED.answered_by, clarifications.answered_by),
+           has_recommended_answer = EXCLUDED.has_recommended_answer,
+           answered_at = CASE WHEN clarifications.answered_by_user_id IS NULL THEN COALESCE(EXCLUDED.answered_at, clarifications.answered_at) ELSE clarifications.answered_at END,
+           answered_by = CASE WHEN clarifications.answered_by_user_id IS NULL THEN COALESCE(EXCLUDED.answered_by, clarifications.answered_by) ELSE clarifications.answered_by END,
            why_it_matters = COALESCE(EXCLUDED.why_it_matters, clarifications.why_it_matters), options = EXCLUDED.options, links = EXCLUDED.links
          RETURNING id`,
         [

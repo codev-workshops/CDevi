@@ -36,6 +36,7 @@ export const DECISION_LINK_KEYS = [
   'pullRequest',
   'externalTicket',
   'workflow',
+  'agentRun',
 ] as const;
 export const DecisionLinks = z
   .object({
@@ -43,6 +44,7 @@ export const DecisionLinks = z
     pullRequest: DecisionLink.optional(),
     externalTicket: DecisionLink.optional(),
     workflow: DecisionLink.optional(),
+    agentRun: DecisionLink.optional(),
   })
   .strict();
 export type DecisionLinks = z.infer<typeof DecisionLinks>;

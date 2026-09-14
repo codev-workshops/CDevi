@@ -1589,6 +1589,9 @@ components:
                 workflow:
                   type: string
                   maxLength: 500
+                agentRun:
+                  type: string
+                  maxLength: 500
               additionalProperties: false
             requiresConfirmation:
               type: boolean
@@ -1635,6 +1638,9 @@ components:
                   type: string
                   maxLength: 500
                 workflow:
+                  type: string
+                  maxLength: 500
+                agentRun:
                   type: string
                   maxLength: 500
               additionalProperties: false
@@ -1935,6 +1941,9 @@ components:
                     workflow:
                       type: string
                       maxLength: 500
+                    agentRun:
+                      type: string
+                      maxLength: 500
                   additionalProperties: false
                 requiresConfirmation:
                   type: boolean
@@ -1981,6 +1990,9 @@ components:
                       type: string
                       maxLength: 500
                     workflow:
+                      type: string
+                      maxLength: 500
+                    agentRun:
                       type: string
                       maxLength: 500
                   additionalProperties: false

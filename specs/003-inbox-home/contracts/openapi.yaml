@@ -1078,6 +1078,9 @@ components:
             workflow:
               type: string
               maxLength: 500
+            agentRun:
+              type: string
+              maxLength: 500
           additionalProperties: false
         requestedByAgent:
           nullable: true
@@ -1181,6 +1184,9 @@ components:
               type: string
               maxLength: 500
             workflow:
+              type: string
+              maxLength: 500
+            agentRun:
               type: string
               maxLength: 500
           additionalProperties: false

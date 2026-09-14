@@ -151,7 +151,11 @@ export async function approvalCenterSnapshot(
   };
 }
 
-/** One item by id (either kind) within the visible projects; `forUpdate` locks the underlying row (FR-015). */
+/**
+ * One item by id (either kind) within the visible projects. With `forUpdate` the workflow row is locked first and
+ * the concrete item row second — the same order ingestion and workflow actions use — and the item is re-read under
+ * those locks so the caller validates the current workflow state (FR-015).
+ */
 export async function loadDecisionRow(
   client: pg.PoolClient,
   scope: Pick<CenterScope, 'organizationId' | 'projectIds'>,
@@ -159,22 +163,21 @@ export async function loadDecisionRow(
   forUpdate = false,
 ): Promise<DecisionRow | undefined> {
   if (scope.projectIds.length === 0) return undefined;
-  if (forUpdate) {
-    // Lock the concrete row first: FOR UPDATE cannot be applied through the UNION.
-    await client.query(
-      `SELECT id FROM approvals WHERE id = $1 AND organization_id = $2 FOR UPDATE`,
-      [id, scope.organizationId],
-    );
-    await client.query(
-      `SELECT id FROM clarifications WHERE id = $1 AND organization_id = $2 FOR UPDATE`,
-      [id, scope.organizationId],
-    );
-  }
-  const r = await client.query<DecisionRow>(
-    `${ITEM_SELECT} WHERE x.organization_id = $1 AND x.id = $2 AND x.project_id = ANY($3::uuid[])`,
-    [scope.organizationId, id, scope.projectIds],
+  const read = async () =>
+    (
+      await client.query<DecisionRow>(
+        `${ITEM_SELECT} WHERE x.organization_id = $1 AND x.id = $2 AND x.project_id = ANY($3::uuid[])`,
+        [scope.organizationId, id, scope.projectIds],
+      )
+    ).rows[0];
+  const first = await read();
+  if (!first || !forUpdate) return first;
+  await client.query(`SELECT id FROM workflows WHERE id = $1 FOR UPDATE`, [first.workflow_id]);
+  await client.query(
+    `SELECT id FROM ${first.kind === 'approval' ? 'approvals' : 'clarifications'} WHERE id = $1 FOR UPDATE`,
+    [first.id],
   );
-  return r.rows[0];
+  return read();
 }
 
 export function resolutionOf(r: DecisionRow): Resolution | null {
