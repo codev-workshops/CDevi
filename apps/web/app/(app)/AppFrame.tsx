@@ -14,6 +14,7 @@ import {
 import { usePathname } from 'next/navigation';
 import { createContext, useContext, useMemo, useState, type ReactNode } from 'react';
 import { NAV_ITEMS } from '../../lib/navigation';
+import { ThemeSwitch } from './ThemeSwitch';
 
 interface InboxCountStore {
   count: number | undefined;
@@ -64,6 +65,7 @@ export function AppFrame({ me, needsYouCount, panel, children }: AppFrameProps) 
                     Sign out
                   </Button>
                 </form>
+                <ThemeSwitch />
               </>
             }
           >

@@ -19,6 +19,8 @@ changes bump the minor version; renames or removals bump the major version and c
 
 - `List` renders `role="group"` (instead of no role) when it has no rows, so an `aria-label` on an empty or
   loading list is permitted (axe `aria-prohibited-attr`).
+- `body` loses its default margin when a `.cd-root.cd-full` shell or `.cd-root.cd-focus` layout is its direct child,
+  so the application fills the viewport edge to edge.
 - `ListRow` derives its `aria-describedby` id from `useId()` instead of a module counter, so server-rendered
   gate rows hydrate without attribute mismatches.
 - Icon-rail navigation links (768–1199px) keep a 32px minimum target even without an icon (WCAG 2.5.8 target size,

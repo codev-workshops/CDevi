@@ -118,6 +118,11 @@
   background: var(--canvas);
   -webkit-font-smoothing: antialiased;
 }
+/* A full-viewport shell or focus layout mounted directly in <body> owns the whole page. */
+body:has(> .cd-root.cd-full),
+body:has(> .cd-root.cd-focus) {
+  margin: 0;
+}
 .cd-root *,
 .cd-root *::before,
 .cd-root *::after {

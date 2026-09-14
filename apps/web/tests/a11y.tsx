@@ -1,3 +1,4 @@
+import { ThemeProvider } from '@cdevi/design-system';
 import { render, type RenderResult } from '@testing-library/react';
 import axe, { type AxeResults, type RunOptions } from 'axe-core';
 import type { ReactElement } from 'react';
@@ -9,9 +10,12 @@ const AXE_OPTIONS: RunOptions = {
   rules: { 'color-contrast': { enabled: false } },
 };
 
+/** Renders like the app does: under a ThemeProvider (light) so components using `useTheme` work. */
 export function renderApp(ui: ReactElement): RenderResult {
   document.documentElement.dataset['theme'] = 'light';
-  return render(ui);
+  return render(ui, {
+    wrapper: ({ children }) => <ThemeProvider theme="light">{children}</ThemeProvider>,
+  });
 }
 
 export async function expectNoViolations(container: Element): Promise<void> {
