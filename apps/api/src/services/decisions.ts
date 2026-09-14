@@ -168,19 +168,6 @@ async function transitionWorkflow(
   const waiting = (await loadStages(client, row.workflow_id)).filter(
     (s) => s.state === 'WAITING_FOR_HUMAN' && canTransition(s.state, to),
   );
-  const observedAt = new Date(
-    Math.max(
-      now.getTime(),
-      row.workflow_state_observed_at.getTime(),
-      ...waiting.map((s) => s.stateObservedAt.getTime()),
-    ),
-  );
-  const record = (stageId: string | null, f: WorkflowState, t: WorkflowState) =>
-    client.query(
-      `INSERT INTO workflow_transitions (organization_id, workflow_id, stage_id, from_state, to_state, observed_at, reason, user_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [organizationId, row.workflow_id, stageId, f, t, observedAt, reason, user.id],
-    );
   const linked = waiting.filter((s) =>
     row.kind === 'approval' ? s.approvalId === row.id : s.clarificationId === row.id,
   );
@@ -189,6 +176,19 @@ async function transitionWorkflow(
   const stages = linked.length
     ? linked
     : waiting.filter((s) => s.approvalId == null && s.clarificationId == null);
+  const observedAt = new Date(
+    Math.max(
+      now.getTime(),
+      row.workflow_state_observed_at.getTime(),
+      ...stages.map((s) => s.stateObservedAt.getTime()),
+    ),
+  );
+  const record = (stageId: string | null, f: WorkflowState, t: WorkflowState) =>
+    client.query(
+      `INSERT INTO workflow_transitions (organization_id, workflow_id, stage_id, from_state, to_state, observed_at, reason, user_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [organizationId, row.workflow_id, stageId, f, t, observedAt, reason, user.id],
+    );
   for (const s of stages) {
     await client.query(
       `UPDATE workflow_stages SET state = $2, state_observed_at = $3, state_reason = $4,

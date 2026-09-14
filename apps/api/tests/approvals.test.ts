@@ -694,6 +694,44 @@ describe.skipIf(skipDb)('Approval Center API (specs/001 US2, FR-011..FR-015, FR-
     );
     expect(stale.statusCode, stale.body).toBe(200);
     expect(await workflowState(a.ext)).toBe('RUNNING');
+
+    // A waiting stage the decision does not move keeps its own clock and does not advance the workflow's.
+    const b = await raiseApproval('MEDIUM');
+    const stage = (position: number, body: Record<string, unknown>) =>
+      app.inject(
+        asIngest({
+          method: 'PUT',
+          url: `/api/ingest/workflows/${b.ext}/stages/${position}`,
+          payload: { name: `Stage ${position}`, state: 'RUNNING', count: 2, ...body },
+        }),
+      );
+    const link = { approvalExternalId: `${b.ext}-a` };
+    expect((await stage(1, { observedAt: iso(plus(-7 * MIN)), ...link })).statusCode).toBe(200);
+    expect(
+      (await stage(1, { state: 'WAITING_FOR_HUMAN', observedAt: iso(plus(-6 * MIN)), ...link }))
+        .statusCode,
+    ).toBe(200);
+    expect((await stage(2, { observedAt: iso(plus(-7 * MIN)) })).statusCode).toBe(200);
+    expect(
+      (await stage(2, { state: 'WAITING_FOR_HUMAN', observedAt: iso(plus(120 * MIN)) })).statusCode,
+    ).toBe(200);
+    expect((await approve(approver, b.id)).statusCode).toBe(200);
+    const wb = (
+      await app.pool.query<{ state_observed_at: Date }>(
+        `SELECT state_observed_at FROM workflows WHERE external_id = $1`,
+        [b.ext],
+      )
+    ).rows[0]!;
+    expect(wb.state_observed_at.getTime()).toBe(plus(0).getTime());
+    const later = await app.inject(
+      asIngest({
+        method: 'POST',
+        url: `/api/ingest/workflows/${b.ext}/transitions`,
+        payload: { toState: 'COMPLETED', observedAt: iso(plus(1 * MIN)) },
+      }),
+    );
+    expect(later.statusCode, later.body).toBe(200);
+    expect(await workflowState(b.ext)).toBe('COMPLETED');
   });
 
   it('FR-015 a resolution reports the state the decision produced even after the workflow moves on', async () => {
@@ -730,6 +768,26 @@ describe.skipIf(skipDb)('Approval Center API (specs/001 US2, FR-011..FR-015, FR-
     const db: ApprovalCenterDetail = (await detail(approver, b.id)).json();
     expect(db.workflowState).toBe('RUNNING');
     expect(db.resolution).toMatchObject({ outcome: 'rejected', workflowState: 'BLOCKED' });
+
+    // An outcome ingested from an agent moves no workflow, so its resolution reports the live state.
+    const c = await raiseClarification({
+      answer: { answeredAt: iso(plus(-1 * MIN)), answeredBy: 'bot' },
+    });
+    const dc: ApprovalCenterDetail = (await detail(approver, c.id)).json();
+    expect(dc.workflowState).toBe('WAITING_FOR_HUMAN');
+    expect(dc.resolution).toMatchObject({
+      outcome: 'answered',
+      by: { id: null, name: 'bot' },
+      workflowState: 'WAITING_FOR_HUMAN',
+    });
+    const ag = await raiseApproval('LOW', {
+      decision: { outcome: 'approved', decidedAt: iso(plus(-1 * MIN)), decidedBy: 'bot' },
+    });
+    const dag: ApprovalCenterDetail = (await detail(approver, ag.id)).json();
+    expect(dag.resolution).toMatchObject({
+      outcome: 'approved',
+      workflowState: 'WAITING_FOR_HUMAN',
+    });
   });
 
   it('answering an approval id or approving a clarification id is a 404', async () => {
