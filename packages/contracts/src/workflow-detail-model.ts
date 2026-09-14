@@ -194,9 +194,13 @@ export function describeStage(stage: StageRow, run: RunRow | null): string {
 
 export function latestRunFor(stage: StageRow | null, runs: readonly RunRow[]): RunRow | null {
   if (!stage) return null;
-  const forStage = runs.filter((r) => r.stageId === stage.id);
-  if (forStage.length === 0) return null;
-  return forStage.reduce((a, b) => (b.startedAt.getTime() >= a.startedAt.getTime() ? b : a));
+  return runs.reduce<RunRow | null>(
+    (latest, r) =>
+      r.stageId === stage.id && (!latest || r.startedAt.getTime() >= latest.startedAt.getTime())
+        ? r
+        : latest,
+    null,
+  );
 }
 
 // ---- §6.4 activity

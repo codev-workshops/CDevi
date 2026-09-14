@@ -328,9 +328,7 @@ export function WorkflowDetailScreen({ initial, userRole }: WorkflowDetailScreen
               />
             </Field>
           ) : null}
-          <ActionBar
-            help={anyDisabled ? roleHelp : undefined}
-          >
+          <ActionBar help={anyDisabled ? roleHelp : undefined}>
             <Button
               variant="primary"
               disabled={!actions.retry || pending !== null}
