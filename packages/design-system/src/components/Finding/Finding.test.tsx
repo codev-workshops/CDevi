@@ -165,7 +165,14 @@ describe('FindingRow and AuditTable', () => {
     renderThemed(
       <AuditTable
         events={[
-          { id: 'e2', time: 't', actor: 'Approver 1', action: 'clarification.answered', target: 'c', result: 'RUNNING' },
+          {
+            id: 'e2',
+            time: 't',
+            actor: 'Approver 1',
+            action: 'clarification.answered',
+            target: 'c',
+            result: 'RUNNING',
+          },
         ]}
       />,
     );
