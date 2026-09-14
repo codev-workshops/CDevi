@@ -39,7 +39,9 @@ States legend: **H** hover, **A** active, **F** focus-visible, **S** selected/cu
 | Component | Root / role | Key props | States | Keyboard | ARIA |
 |-----------|-------------|-----------|--------|----------|------|
 | `Card` | `<div class="cd-card">` | `as?` | — | — | — |
-| `List` | `<div class="cd-list" role="list">` | `empty?: ReactNode` | E | — | — |
+| `List` | `<div class="cd-list" role="list">` | `empty?: ReactNode`, `loading?: boolean` (1.2.0) | E L | — | `loading` → `aria-busy="true"`, 3 skeleton rows `aria-hidden` |
+| `Notice` (1.2.0) | `<div class="cd-notice cd-info\|cd-error">` | `tone: 'info' \| 'error'`, `action?: ReactNode` | — | — | `role="status"` (info) / `role="alert"` (error) |
+| `FocusLayout` (1.2.0) | `<main class="cd-root cd-focus">` | `brand?: ReactNode` | — | — | main landmark; single centred card |
 | `ListRow` | `<div class="cd-row" role="listitem">` | `title`, `trailing?`, `ask?`, `meta?`, `gate?`, `href?` | H F | Tab (when `href`) | `gate` rows add `aria-describedby` ask |
 | `Tabs` / `Tab` / `TabPanel` | `<div role="tablist">` / `<button role="tab">` / `<div role="tabpanel">` | `Tabs.value`, `onChange`; `Tab.value`, `count?` | H F S D | ←/→ Home/End roving focus; Enter/Space | `aria-selected`, `aria-controls`, `tabIndex` roving |
 | `KeyValue` | `<dl class="cd-kv">` | `items: {term, detail}[]` | — | — | — |

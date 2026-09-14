@@ -3,6 +3,27 @@
 Tokens, CSS variable names, `cd-` class names, component names and props are the public API. Additive
 changes bump the minor version; renames or removals bump the major version and carry a migration note.
 
+## 1.2.0 — 2026-09-14
+
+### Added
+
+- `Notice` (`tone="info" | "error"`, `action` slot): inline message for load errors with a retry, session notices
+  and demonstration-data banners. `info` renders `role="status"`, `error` renders `role="alert"`. Contrast pairs
+  `ink/indigo-soft` and `ink/red-soft` added to `tokens/pairs.json`.
+- `List loading` prop: `aria-busy` plus three `.cd-row.cd-skeleton` placeholders when there are no rows yet, so a
+  loading list is never read as empty (specs/003 FR-025). Skeleton animation is disabled under reduced motion.
+- `FocusLayout` (`brand` slot): `<main class="cd-root cd-focus">` with one centred card, for sign-in.
+- CSS: `.cd-notice*`, `.cd-row.cd-skeleton`, `.cd-root.cd-focus`, `.cd-focus-brand`, `.cd-focus-card`.
+
+### Fixed
+
+- `List` renders `role="group"` (instead of no role) when it has no rows, so an `aria-label` on an empty or
+  loading list is permitted (axe `aria-prohibited-attr`).
+- `ListRow` derives its `aria-describedby` id from `useId()` instead of a module counter, so server-rendered
+  gate rows hydrate without attribute mismatches.
+- Icon-rail navigation links (768–1199px) keep a 32px minimum target even without an icon (WCAG 2.5.8 target size,
+  found by the specs/003 viewport matrix).
+
 ## 1.1.0 — 2026-09-11
 
 ### Added

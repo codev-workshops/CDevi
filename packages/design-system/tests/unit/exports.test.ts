@@ -18,11 +18,13 @@ export const CONTRACT_COMPONENTS = [
   'Crumbs',
   'PageMeta',
   'ActionBar',
+  'FocusLayout',
   // Primitives
   'Button',
   'Pill',
   'StatePill',
   'RiskBadge',
+  'Notice',
   'RuntimeGlyph',
   'KeyFingerprint',
   'Mono',

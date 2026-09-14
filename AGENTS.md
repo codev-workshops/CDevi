@@ -18,7 +18,20 @@ pnpm build                  # tokens → css bundle → library dist
 pnpm format                 # Prettier
 pnpm -F @cdevi/design-system gallery   # component gallery at http://127.0.0.1:5173/gallery/
 pnpm -F @cdevi/design-system build:tokens   # after editing tokens/tokens.json (never edit generated files)
+
+# Application (specs/003 onwards) — needs PostgreSQL and a .env (copy .env.example)
+docker compose up -d        # postgres:17 with roles migrator + app_user
+pnpm db:migrate             # packages/db/migrations/*.sql as migrator (CDEVI_RLS=on enables RLS)
+pnpm db:seed                # deterministic S-500 demo data; prints demo credentials once; refuses in production
+pnpm dev                    # api on :3001 and web on :3000 (web rewrites /api/* to the api)
+pnpm test:api               # Vitest projects `db` + `api`: real Postgres, re-seeds the database at a fixed clock
+pnpm test:e2e               # Playwright in apps/web: migrates + seeds, builds and starts api (:3101) + web (:3100)
+pnpm perf:api               # autocannon budgets (GET /api/inbox p95 ≤ 300 ms, ingest p95 ≤ 200 ms)
+pnpm -F @cdevi/contracts openapi        # regenerate specs/003-inbox-home/contracts/openapi.yaml from the Zod schemas
+pnpm -F @cdevi/design-system exec playwright test --update-snapshots all   # refresh visual baselines intentionally
 ```
+
+`pnpm test:api` and `pnpm test:e2e` truncate and re-seed the configured database — do not point `DATABASE_URL` at data you want to keep. Without `DATABASE_URL` those projects skip locally; in CI they fail.
 
 CI (`.github/workflows/ci.yml`) runs four required jobs on every PR: `lint`, `unit`, `build`, `visual`. A red job blocks merge; do not weaken a rule to get green — fix the code or, if a rule is wrong, change it in the package with a CHANGELOG entry.
 
@@ -38,12 +51,24 @@ All user interfaces are built from `@cdevi/design-system` (`packages/design-syst
 - Missing a pattern? Add it to the package first (DESIGN.md §8: CSS → component + test → gallery entry → DESIGN.md row → CHANGELOG), then consume it.
 - Reference screens in `packages/design-system/reference-screens/` are pattern references, not CDevi screens; the screen inventory comes from `specs/001-sdlc-control-plane-mvp/spec.md`.
 
+## Backend and web app work
+
+- `packages/contracts` (Zod) is the single source for request/response types, the OpenAPI document and the pure Inbox read-model rules; the API validates every input with it and the web imports types from it. Browser code imports only the zod-free subpaths (`@cdevi/contracts/read-model`, `/vocabulary`) to stay inside the 200 KB route JS budget.
+- `packages/db/migrations/*.sql` are hand-reviewed and are the source of truth (triggers, partial indexes, RLS, grants); `src/schema.ts` mirrors them for typed queries. Password hashing lives only in `packages/db/src/password.ts`.
+- API routes are Fastify plugins under `apps/api/src/routes`; errors are `application/problem+json` and never carry SQL, stack traces or request bodies. Every list is bounded (50, keyset cursor). Remote calls have timeouts.
+- Web: Server Components fetch through `apps/web/lib/api.ts`/`session.ts` and import design-system components via `apps/web/lib/ds.ts` (client boundary). Client components own tabs, the project selector and the SSE subscription. No `style=`, no `cd-` classes.
+- Test names start with the spec id they prove (`FR-010 …`, `SC-004 …`).
+
 ## Repository layout
 
 ```
+apps/web/                 @cdevi/web — Next.js app (Inbox home page; placeholders for specs/001 screens)
+apps/api/                 @cdevi/api — Fastify API (auth, Inbox read model, ingestion, SSE)
+packages/contracts/       @cdevi/contracts — Zod schemas, OpenAPI generator, pure read-model rules
+packages/db/              @cdevi/db — Drizzle schema, SQL migrations, seed, admin CLIs
 packages/design-system/   @cdevi/design-system — tokens, CSS, React components, gallery, reference screens, DESIGN.md
 tools/                    repo checks: check-class-prefix.mjs, check-size.mjs, lint fixtures (must fail), governance tests
-specs/                    Spec Kit features (001 control-plane MVP, 002 design-system adoption)
+specs/                    Spec Kit features (001 control-plane MVP, 002 design-system adoption, 003 inbox home page)
 docs/                     product and architecture documents
 .specify/                 constitution, templates, scripts
 .devin/skills/            agent skills (speckit-*, cdevi-design-system)

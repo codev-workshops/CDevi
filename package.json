@@ -9,7 +9,7 @@
   },
   "type": "module",
   "scripts": {
-    "build": "pnpm -r --filter './packages/*' run build",
+    "build": "pnpm -r --filter './packages/*' --filter './apps/*' run build",
     "lint": "eslint .",
     "lint:css": "stylelint \"**/*.css\" --ignore-path .gitignore --allow-empty-input",
     "typecheck": "pnpm -r --filter './packages/*' --filter './apps/*' run typecheck",
@@ -21,7 +21,15 @@
     "check:size": "node tools/check-size.mjs",
     "check": "pnpm lint && pnpm lint:css && pnpm typecheck && pnpm check:classes && pnpm test && pnpm check:size",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "dev": "pnpm -r --parallel --filter @cdevi/api --filter @cdevi/web run dev",
+    "db:migrate": "pnpm -F @cdevi/db run migrate",
+    "db:seed": "pnpm -F @cdevi/db run seed",
+    "db:user:create": "pnpm -F @cdevi/db run user:create",
+    "db:ingest-key:create": "pnpm -F @cdevi/db run ingest-key:create",
+    "test:api": "vitest run --project db --project api",
+    "test:e2e": "pnpm -F @cdevi/web run test:e2e",
+    "perf:api": "pnpm -F @cdevi/api run perf"
   },
   "devDependencies": {
     "@eslint/js": "9.39.5",

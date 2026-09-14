@@ -1,6 +1,6 @@
 # CDevi System Architecture
 
-**Status**: Draft for MVP (rewritten 2026-09-11 for CDevi; supersedes the earlier document that described a different product). **Reads**: constitution v1.1.0, `docs/SDLC Control Plane — High-Level UI Specification.md`, `specs/001-sdlc-control-plane-mvp`, `specs/002-adopt-design-system`. Decisions here are defaults for `/speckit-plan`; a plan that needs to deviate records the reason in its research.md and updates this file in the same change.
+**Status**: Draft for MVP (rewritten 2026-09-11 for CDevi; updated 2026-09-14 by `specs/003-inbox-home`, the first feature to land `apps/web`, `apps/api`, `packages/contracts` and `packages/db`). **Reads**: constitution v1.1.0, `docs/SDLC Control Plane — High-Level UI Specification.md`, `specs/001-sdlc-control-plane-mvp`, `specs/002-adopt-design-system`, `specs/003-inbox-home`. Decisions here are defaults for `/speckit-plan`; a plan that needs to deviate records the reason in its research.md and updates this file in the same change.
 
 ## 1. In one paragraph
 
@@ -12,8 +12,8 @@ CDevi is one TypeScript monorepo shipped as one container image with a handful o
 
 | Service | Runs as | Responsibility | Talks to | Never does |
 |---------|---------|----------------|----------|------------|
-| **web** | Next.js app (server-rendered pages + browser client) | Dashboard, Workflow Center and Detail, Requirements, Approval Center, Agent Activity, Testing, PR Review, Integrations, Policies, Audit Log (specs/001). Subscribes to run streams. Renders only `@cdevi/design-system` components. | api only (HTTP + SSE) | Touch the database, call a model, talk to the agent runtime |
-| **api** | Node HTTP service (Fastify) | Authentication and roles, every CRUD path, requirement and workflow state machines, approvals and clarifications, **policy engine** (`checkPermission`), audit log, artifact store, SSE fan-out of stream events, outbox relay, integration OAuth | Postgres (as `app_user`), object storage, workflow engine (publish), identity provider, GitHub/Jira APIs (read + write on behalf of a user or run) | Execute an agent step itself; hold a database role that bypasses RLS |
+| **web** | Next.js app (server-rendered pages + browser client) | **Inbox home page (specs/003 — landed)**; Dashboard, Workflow Center and Detail, Requirements, Approval Center, Agent Activity, Testing, PR Review, Integrations, Policies, Audit Log (specs/001). Subscribes to run streams. Renders only `@cdevi/design-system` components; Server Components import them through a `'use client'` boundary (`apps/web/lib/ds.ts`). `/api/*` is rewritten to the API so the session cookie is first-party. | api only (HTTP + SSE) | Touch the database, call a model, talk to the agent runtime |
+| **api** | Node HTTP service (Fastify) | Authentication and roles (**landed: email/password, server-side sessions**), every CRUD path, requirement and workflow state machines, approvals and clarifications (**landed: Inbox read model + SSE `inbox.changed`**), **ingestion API** (`PUT/POST /api/ingest/*` — authenticated write path for workflow, approval and clarification records; until the orchestrator exists it is the only way state enters the system), **policy engine** (`checkPermission`), audit log, artifact store, SSE fan-out of stream events, outbox relay, integration OAuth | Postgres (as `app_user`), object storage, workflow engine (publish), identity provider, GitHub/Jira APIs (read + write on behalf of a user or run) | Execute an agent step itself; hold a database role that bypasses RLS |
 | **agent-orchestrator** | Durable functions invoked by the workflow engine | Stage execution: assembles context, starts an agent run in the runtime, translates runtime events into run events / decisions / artifacts, asks the API's `checkPermission` before every tool effect, pauses the run on `approval_required`, resumes on approval | Postgres (as `app_user`, scoped per run), agent runtime (replaceable — see §7), api | Accept a request from the browser directly; apply a policy locally |
 | **integration-worker** | Durable functions invoked by the workflow engine | Inbound webhooks (issue created/updated, PR checks, CI results) → requirements and test runs; outbound sync (PR creation, comments, status); health probes for integrations; cron | Postgres (as `app_user`), GitHub/Jira, api | Call a model; make a policy decision |
 
@@ -42,7 +42,8 @@ Every specification has exactly one owning service; other services render or cal
 
 | Path | Mode | Sequence |
 |------|------|----------|
-| Sign in, invite, role change | sync | web → api → identity provider / Postgres |
+| Sign in (email/password, specs/003) | sync | web server action → api `POST /auth/sign-in` (scrypt verify, session row, `cdevi_session` cookie) → Postgres. SSO can be added later without changing roles or memberships |
+| Ingestion write (orchestrator / external system / tests, specs/003) | sync | principal (Bearer token) → api `/api/ingest/*` → validate state machine + `observedAt` ordering → Postgres → trigger `NOTIFY inbox_changed` + `inbox_change_log` → SSE → web refetches the Inbox snapshot |
 | Read or list anything | sync | web → api → Postgres (organization- and role-scoped) |
 | Create / edit a requirement (human) | sync | web → api → Postgres → outbox event `requirement.updated` |
 | Issue tracker webhook | async | Jira → integration-worker → api upsert requirement → outbox → web stream |
@@ -56,7 +57,7 @@ Every specification has exactly one owning service; other services render or cal
 
 ### Streaming to the browser
 
-Stream events are written to a `run_events` table as they happen (durable, replayable) and announced with Postgres `NOTIFY`. The API's SSE endpoint sends events after the client's `Last-Event-ID`, so a dropped connection resumes without loss or duplication (specs/001 FR-034). No Redis or pub/sub service.
+Stream events are written to a `run_events` table as they happen (durable, replayable) and announced with Postgres `NOTIFY`. The API's SSE endpoint sends events after the client's `Last-Event-ID`, so a dropped connection resumes without loss or duplication (specs/001 FR-034). No Redis or pub/sub service. **Landed in specs/003** for the Inbox: `inbox_change_log` (24 h retention) + `NOTIFY inbox_changed`, `GET /api/inbox/stream` with replay, and `Cache-Control: no-transform` so the Next rewrite does not gzip-buffer the stream.
 
 ## 5. Event bus
 
@@ -69,7 +70,8 @@ Event names follow `<entity>.<past_tense_verb>` (`workflow.stage_started`, `appr
 
 The MVP serves one organization per installation (specs/001 FR-033), but the model is multi-organization-ready:
 
-- Every table carries `organization_id`; the API and workers connect as `app_user`, a role without `BYPASSRLS`, and set `app.organization_id` / `app.user_id` per transaction. Row-level security policies are written now and enabled behind a flag so turning on multi-organization tenancy is a configuration change, not a migration.
+- Every table carries `organization_id`; the API and workers connect as `app_user`, a role without `BYPASSRLS`, and set `app.organization_id` / `app.user_id` per transaction. Row-level security policies are written now (`packages/db/migrations/0001_init.sql`) and enabled behind a flag (`CDEVI_RLS=on`, applied by `packages/db/src/migrate.ts`) so turning on multi-organization tenancy is a configuration change, not a migration. Migrations run as the separate `migrator` role.
+- Users are CDevi-managed accounts (email + scrypt password hash, one role, project memberships) with server-side sessions (12 h idle / 7 d absolute) — specs/003 decision; the identity-provider integration is a later feature. Administrators see every project; other roles see their memberships.
 - Migrations run as a separate role from a deploy job, never from a running service.
 - Object storage keys are prefixed `org/<organization_id>/…`; presigned URLs are issued only by the API after a permission check.
 - Roles (Administrator, Approver, Engineer, Viewer — specs/001 FR-032) are enforced in the API on every mutation and reflected in the UI as disabled actions with an explanation.
@@ -85,14 +87,14 @@ The **agent runtime** (OpenHands per the UI specification §44, or any equivalen
 ```text
 cdevi/
 ├── apps/
-│   ├── web/                # Next.js: screens from specs/001, built only from @cdevi/design-system
-│   ├── api/                # Fastify: auth, state machines, policy engine, audit, SSE, outbox relay
+│   ├── web/                # Next.js: Inbox (specs/003, landed) + screens from specs/001, built only from @cdevi/design-system
+│   ├── api/                # Fastify: auth, Inbox read model, ingestion API, SSE (specs/003, landed); state machines, policy engine, audit, outbox relay (specs/001)
 │   ├── agent-orchestrator/ # durable functions: stage execution, runtime adapter calls, run events
 │   └── integration-worker/ # durable functions: webhooks, sync, health probes, cron
 ├── packages/
 │   ├── design-system/      # @cdevi/design-system — tokens, CSS, React components, gallery, DESIGN.md (spec 002)
-│   ├── db/                 # schema, migrations, RLS policies, outbox
-│   ├── contracts/          # types generated from specs/*/contracts (OpenAPI, AsyncAPI, JSON Schema)
+│   ├── db/                 # schema (Drizzle), hand-reviewed SQL migrations, RLS policies, seed, admin CLIs (specs/003, landed); outbox (specs/001)
+│   ├── contracts/          # Zod schemas → OpenAPI (specs/003/contracts/openapi.yaml is generated from here) + pure Inbox read-model rules (landed)
 │   ├── policy/             # checkPermission, risk classification, policy versioning
 │   ├── agent-runtime/      # runtime adapter interface + OpenHands implementation
 │   └── telemetry/          # OpenTelemetry setup, cost-record emitter

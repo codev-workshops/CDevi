@@ -16,6 +16,7 @@ import {
   DiffLine,
   Field,
   FindingRow,
+  FocusLayout,
   GateCheck,
   GateList,
   Help,
@@ -30,6 +31,7 @@ import {
   Mono,
   NavGroup,
   NavItem,
+  Notice,
   OptionRow,
   PageMeta,
   Panel,
@@ -436,8 +438,8 @@ export const entries: GalleryEntry[] = [
     title: 'List rows',
     description:
       'Gate rows carry the exact question so a decision can be made from the list. Empty state is explicit.',
-    usage: `<List empty="No runs yet.">\n  <ListRow title="…" href="/runs/1" trailing={<StatePill state="WAITING_FOR_HUMAN" />} ask="Approve: open a PR against main" meta="payments-api · asked 4 min ago" />\n</List>`,
-    a11y: 'role=list / listitem; a gate row is aria-describedby its ask; the title is a link when href is given.',
+    usage: `<List loading />\n<List empty="No runs yet.">\n  <ListRow title="…" href="/runs/1" trailing={<StatePill state="WAITING_FOR_HUMAN" />} ask="Approve: open a PR against main" meta="payments-api · asked 4 min ago" />\n</List>`,
+    a11y: 'role=list / listitem; a gate row is aria-describedby its ask; the title is a link when href is given; `loading` sets aria-busy and shows skeleton rows (hidden from AT) so loading is never read as empty.',
     render: () => (
       <>
         <List>
@@ -474,6 +476,23 @@ export const entries: GalleryEntry[] = [
           />
         </List>
         <List empty="Nothing needs you right now." />
+        <List loading aria-label="Loading example" />
+      </>
+    ),
+  },
+  {
+    name: 'Notice',
+    title: 'Notice',
+    description:
+      'Inline message: `info` for polite status (session expired, demonstration data), `error` for failures with an action such as Retry. Never used for workflow state — that is a pill.',
+    usage: `<Notice tone="error" action={<Button variant="ghost">Retry</Button>}>Couldn't load the Inbox.</Notice>\n<Notice tone="info">You are looking at demonstration data.</Notice>`,
+    a11y: 'tone="info" renders role="status" (polite); tone="error" renders role="alert". The action is a real Button; text colour on the tinted background is contrast-checked in both themes.',
+    render: () => (
+      <>
+        <Notice tone="info">You are looking at demonstration data.</Notice>
+        <Notice tone="error" action={<Button variant="ghost">Retry</Button>}>
+          Couldn&apos;t load the Inbox.
+        </Notice>
       </>
     ),
   },
@@ -813,6 +832,28 @@ export const entries: GalleryEntry[] = [
     a11y: 'Landmarks: aside[aria-label=Primary] with nav, main, aside[aria-label=Details]. Active nav item has aria-current=page; counts announce "n pending"; the menu toggle reports aria-expanded. No sticky headers (DR-05).',
     shell: true,
     render: () => shell('framed'),
+  },
+  {
+    name: 'FocusLayout',
+    title: 'Focus layout',
+    description:
+      'One centred card on the canvas for focused flows such as sign-in. Renders the main landmark.',
+    usage: `<FocusLayout brand={<Brand mark="සී" name="CDevi" wordmark="සීදේවි" />}>\n  <h1>Sign in to CDevi</h1>\n  <Field label="Email"><Input type="email" /></Field>\n  <Button variant="saffron">Sign in</Button>\n</FocusLayout>`,
+    a11y: 'Renders <main class="cd-root cd-focus">; the page must not render a second main. Contains exactly one card; the single saffron button per screen rule (DR-02) applies to the form inside.',
+    render: () => (
+      <FocusLayout brand={<Brand mark="සී" name="CDevi" wordmark="සීදේවි" />}>
+        <h1>Sign in to CDevi</h1>
+        <Field label="Email" htmlFor="g-focus-email">
+          <Input id="g-focus-email" type="email" autoComplete="username" />
+        </Field>
+        <Field label="Password" htmlFor="g-focus-pw">
+          <Input id="g-focus-pw" type="password" autoComplete="current-password" />
+        </Field>
+        <ActionBar>
+          <Button variant="saffron">Sign in</Button>
+        </ActionBar>
+      </FocusLayout>
+    ),
   },
   {
     name: 'ReferenceScreens',

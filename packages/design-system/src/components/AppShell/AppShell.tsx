@@ -298,3 +298,22 @@ export const ActionBar = forwardRef<HTMLDivElement, ActionBarProps>(function Act
     </div>
   );
 });
+
+export interface FocusLayoutProps extends HTMLAttributes<HTMLElement> {
+  /** Usually a `Brand`; rendered above the card. */
+  brand?: ReactNode;
+  children: ReactNode;
+}
+
+/** Single centred card on the canvas, for focused flows such as sign-in. Renders the `<main>` landmark. */
+export const FocusLayout = forwardRef<HTMLElement, FocusLayoutProps>(function FocusLayout(
+  { brand, className, children, ...rest },
+  ref,
+) {
+  return (
+    <main ref={ref} {...rest} className={cx('cd-root', 'cd-focus', className)}>
+      {brand ? <div className="cd-focus-brand">{brand}</div> : null}
+      <div className="cd-card cd-focus-card">{children}</div>
+    </main>
+  );
+});

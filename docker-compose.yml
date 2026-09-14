@@ -1,0 +1,20 @@
+# Local PostgreSQL for development and the identified `api` / `db` test projects (specs/003 research R5, R11).
+services:
+  postgres:
+    image: postgres:17
+    ports:
+      - '5432:5432'
+    environment:
+      POSTGRES_DB: cdevi
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - cdevi-pg:/var/lib/postgresql/data
+      - ./packages/db/docker/init-roles.sql:/docker-entrypoint-initdb.d/10-roles.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d cdevi']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+volumes:
+  cdevi-pg:

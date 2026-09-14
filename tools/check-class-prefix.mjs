@@ -11,6 +11,7 @@ const DEFAULT_SCOPES = ['apps', 'packages/design-system/src', 'packages/design-s
 const EXT = new Set(['.ts', '.tsx', '.js', '.jsx', '.html', '.css', '.mdx']);
 const IGNORE_DIRS = new Set([
   'node_modules',
+  '.next',
   'dist',
   'gallery-dist',
   'coverage',

@@ -1,0 +1,60 @@
+/**
+ * SSE subscription for `inbox.changed` (research R6). Notifications only — the caller refetches the snapshot.
+ * EventSource handles `Last-Event-ID` itself; we add debounce and a capped reconnect back-off (1 s → 30 s).
+ */
+export interface InboxStreamOptions {
+  url?: string | undefined;
+  debounceMs?: number | undefined;
+  onChange: () => void;
+  onStatus?: ((connected: boolean) => void) | undefined;
+}
+
+export function streamUrl(): string {
+  const direct =
+    typeof process !== 'undefined' ? process.env['NEXT_PUBLIC_API_STREAM_URL'] : undefined;
+  return direct ? `${direct.replace(/\/$/, '')}/api/inbox/stream` : '/api/inbox/stream';
+}
+
+export function subscribeInboxStream(opts: InboxStreamOptions): () => void {
+  if (typeof EventSource === 'undefined') return () => {};
+  const debounceMs = opts.debounceMs ?? 250;
+  let es: EventSource | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let retry: ReturnType<typeof setTimeout> | null = null;
+  let backoff = 1000;
+  let closed = false;
+
+  const fire = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      opts.onChange();
+    }, debounceMs);
+  };
+
+  const open = () => {
+    if (closed) return;
+    es = new EventSource(opts.url ?? streamUrl(), { withCredentials: true });
+    es.addEventListener('open', () => {
+      backoff = 1000;
+      opts.onStatus?.(true);
+    });
+    es.addEventListener('inbox.changed', fire);
+    es.addEventListener('error', () => {
+      opts.onStatus?.(false);
+      es?.close();
+      es = null;
+      if (closed) return;
+      retry = setTimeout(open, backoff);
+      backoff = Math.min(backoff * 2, 30_000);
+    });
+  };
+  open();
+
+  return () => {
+    closed = true;
+    if (timer) clearTimeout(timer);
+    if (retry) clearTimeout(retry);
+    es?.close();
+  };
+}

@@ -6,7 +6,8 @@
     "**/gallery-dist/**",
     "packages/design-system/css/**",
     "packages/design-system/reference-screens/**",
-    "tools/lint-fixtures/**"
+    "tools/lint-fixtures/**",
+    "**/.next/**"
   ],
   "rules": {
     "scale-unlimited/declaration-strict-value": [
@@ -40,7 +41,7 @@
           "initial"
         ],
         "ignoreFunctions": false,
-        "message": "DR-06: `${property}: ${value}` uses a literal. Use a design token (`var(--\u2026)` from packages/design-system/css/tokens.css) instead.",
+        "message": "DR-06: `${property}: ${value}` uses a literal. Use a design token (`var(--…)` from packages/design-system/css/tokens.css) instead.",
         "expandShorthand": true
       }
     ]

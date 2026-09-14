@@ -32,6 +32,8 @@ export default tseslint.config(
       '**/coverage/**',
       '**/playwright-report/**',
       '**/test-results/**',
+      '**/.next/**',
+      'apps/web/next-env.d.ts',
       'packages/design-system/reference-screens/**',
       'packages/design-system/tailwind/preset.cjs',
       'packages/design-system/src/tokens.generated.ts',

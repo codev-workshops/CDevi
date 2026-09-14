@@ -190,5 +190,15 @@
     "bg": "color.canvas",
     "where": "control borders on canvas",
     "large": true
+  },
+  {
+    "fg": "color.ink",
+    "bg": "color.indigo-soft",
+    "where": ".cd-notice.cd-info"
+  },
+  {
+    "fg": "color.ink",
+    "bg": "color.red-soft",
+    "where": ".cd-notice.cd-error"
   }
 ]

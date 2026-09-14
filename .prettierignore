@@ -13,3 +13,6 @@ docs/
 gallery-dist/
 test-results/
 playwright-report/
+.next/
+apps/web/test-results/
+apps/web/playwright-report/

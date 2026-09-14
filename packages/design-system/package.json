@@ -1,6 +1,6 @@
 {
   "name": "@cdevi/design-system",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "CDevi (සීදේවි) design tokens, CSS and accessible React components.",
   "license": "UNLICENSED",
   "private": true,

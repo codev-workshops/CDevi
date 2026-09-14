@@ -30,4 +30,4 @@ Observations fed back into the package:
 - Agents differed on whether the list screen should carry a saffron primary action (trials 1/3/5: none; 2/4: one). Both satisfy DR-02; the plan for specs/001 US2 should decide which.
 - No agent hand-wrote `cd-` markup, used `style=`, or introduced a literal colour.
 
-`apps/web-scratch` is kept as the conformance-trial target for future design-system changes (decision recorded here per T081); it is a private workspace package and not a product app.
+`apps/web-scratch` was kept as the conformance-trial target after these trials (T081). It was removed by specs/003 (T063) once the product app `apps/web` existed, so that there is one web app; future conformance trials target a scratch route in `apps/web` (e.g. `apps/web/app/(app)/[section]/page.tsx`) and are checked by the same `pnpm check` rules.

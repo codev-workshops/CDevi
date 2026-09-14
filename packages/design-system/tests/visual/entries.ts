@@ -7,6 +7,7 @@ export const ENTRY_NAMES = [
   'RiskBadge',
   'Inline',
   'List',
+  'Notice',
   'Tabs',
   'Form',
   'Data',
@@ -19,6 +20,7 @@ export const ENTRY_NAMES = [
   'Finding',
   'Audit',
   'Shell',
+  'FocusLayout',
   'ReferenceScreens',
 ] as const;
 

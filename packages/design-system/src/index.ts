@@ -4,6 +4,7 @@ export {
   AppShell,
   Brand,
   Crumbs,
+  FocusLayout,
   Main,
   Nav,
   NavGroup,
@@ -20,6 +21,7 @@ export type {
   BrandProps,
   CrumbItem,
   CrumbsProps,
+  FocusLayoutProps,
   NavGroupProps,
   NavItemProps,
   PageMetaProps,
@@ -34,6 +36,8 @@ export type { ThemeProviderProps, ThemeSetting } from './components/ThemeProvide
 export { Button } from './components/Button/Button';
 export type { ButtonProps, ButtonSize, ButtonVariant } from './components/Button/Button';
 export { Pill } from './components/Pill/Pill';
+export { Notice } from './components/Notice/Notice';
+export type { NoticeProps, NoticeTone } from './components/Notice/Notice';
 export type { PillProps, PillVariant } from './components/Pill/Pill';
 export { KeyFingerprint, Mono, RuntimeGlyph } from './components/Inline/Inline';
 export type {

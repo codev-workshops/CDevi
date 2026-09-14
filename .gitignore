@@ -36,3 +36,9 @@ test-results/
 .env
 .env.*
 !.env.example
+
+# Next.js / e2e
+.next/
+apps/web/playwright-report/
+apps/web/test-results/
+next-env.d.ts

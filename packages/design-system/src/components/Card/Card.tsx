@@ -1,4 +1,4 @@
-import { forwardRef, type ElementType, type HTMLAttributes, type ReactNode } from 'react';
+import { forwardRef, useId, type ElementType, type HTMLAttributes, type ReactNode } from 'react';
 import { cx } from '../../lib/cx';
 
 export interface CardProps extends HTMLAttributes<HTMLElement> {
@@ -17,22 +17,42 @@ export const Card = forwardRef<HTMLElement, CardProps>(function Card(
 export interface ListProps extends HTMLAttributes<HTMLDivElement> {
   /** Rendered instead of children when there are none. */
   empty?: ReactNode;
+  /**
+   * Data is being fetched: marks the list `aria-busy` and, when there are no rows yet, renders three
+   * skeleton rows so loading is never mistaken for "nothing here".
+   */
+  loading?: boolean;
 }
 
-/** Bordered list of `ListRow`s with an explicit empty state. */
+const SKELETON_ROWS = [0, 1, 2];
+
+/** Bordered list of `ListRow`s with explicit empty and loading states. */
 export const List = forwardRef<HTMLDivElement, ListProps>(function List(
-  { empty = 'Nothing here yet.', className, children, ...rest },
+  { empty = 'Nothing here yet.', loading = false, className, children, ...rest },
   ref,
 ) {
   const hasChildren = Array.isArray(children) ? children.some(Boolean) : Boolean(children);
+  const showSkeleton = loading && !hasChildren;
   return (
     <div
       ref={ref}
-      role={hasChildren ? 'list' : undefined}
+      role={hasChildren ? 'list' : 'group'}
+      aria-busy={loading || undefined}
       {...rest}
       className={cx('cd-list', className)}
     >
-      {hasChildren ? children : <p className="cd-empty">{empty}</p>}
+      {hasChildren ? (
+        children
+      ) : showSkeleton ? (
+        SKELETON_ROWS.map((i) => (
+          <div key={i} className="cd-row cd-skeleton" aria-hidden="true">
+            <span className="cd-title" />
+            <span className="cd-meta" />
+          </div>
+        ))
+      ) : (
+        <p className="cd-empty">{empty}</p>
+      )}
     </div>
   );
 });
@@ -50,14 +70,13 @@ export interface ListRowProps extends Omit<HTMLAttributes<HTMLDivElement>, 'titl
   gate?: boolean;
 }
 
-let rowId = 0;
-
 /** One row in a `List`. Gate rows carry the question so a decision can be made from the list. */
 export const ListRow = forwardRef<HTMLDivElement, ListRowProps>(function ListRow(
   { title, href, trailing, ask, meta, gate, className, ...rest },
   ref,
 ) {
-  const id = `cd-row-ask-${++rowId}`;
+  // useId is stable across server and client renders (a module counter caused hydration mismatches).
+  const id = `cd-row-ask-${useId()}`;
   const isGate = gate ?? Boolean(ask);
   return (
     <div

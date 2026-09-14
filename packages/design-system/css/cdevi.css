@@ -1367,6 +1367,9 @@ select.cd-input:disabled {
   .cd-app.cd-full .cd-nav a {
     justify-content: center;
     padding: 9px 0;
+    /* WCAG 2.5.8: rail links stay a real target even without an icon */
+    min-height: var(--space-8);
+    min-width: var(--space-8);
   }
   .cd-app.cd-full .cd-nav a .cd-count {
     position: absolute;
@@ -1665,4 +1668,89 @@ table.cd-table.cd-audit .cd-audit-target {
   justify-self: end;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+/* ---------- Notice, List loading, FocusLayout (1.2.0) ---------- */
+.cd-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 10px 14px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r);
+  background: var(--surface-2);
+  color: var(--ink);
+  font-size: var(--text-sm);
+  margin: 0 0 var(--space-3);
+}
+.cd-notice.cd-info {
+  border-color: var(--indigo);
+  background: var(--indigo-soft);
+  color: var(--ink);
+}
+.cd-notice.cd-error {
+  border-color: var(--red);
+  background: var(--red-soft);
+  color: var(--ink);
+}
+.cd-notice .cd-notice-body {
+  flex: 1 1 auto;
+}
+.cd-notice .cd-notice-action {
+  flex: 0 0 auto;
+}
+.cd-row.cd-skeleton {
+  pointer-events: none;
+}
+.cd-row.cd-skeleton .cd-title,
+.cd-row.cd-skeleton .cd-meta {
+  display: block;
+  height: 12px;
+  border-radius: var(--r);
+  background: var(--line);
+  animation: cdevi-skeleton-pulse 1.4s ease-in-out infinite;
+}
+.cd-row.cd-skeleton .cd-title {
+  width: 42%;
+}
+.cd-row.cd-skeleton .cd-meta {
+  width: 68%;
+  grid-column: 1/-1;
+}
+@keyframes cdevi-skeleton-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cd-row.cd-skeleton .cd-title,
+  .cd-row.cd-skeleton .cd-meta {
+    animation: none;
+  }
+}
+.cd-root.cd-focus {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-5);
+  padding: var(--space-8) var(--space-4);
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--ui);
+}
+.cd-root.cd-focus .cd-focus-brand {
+  display: flex;
+  justify-content: center;
+}
+.cd-root.cd-focus .cd-focus-card {
+  width: 100%;
+  max-width: 400px;
+  padding: var(--space-6);
+}
+.cd-root.cd-focus .cd-focus-card h1 {
+  margin: 0 0 var(--space-4);
+  font-size: var(--text-xl);
 }
