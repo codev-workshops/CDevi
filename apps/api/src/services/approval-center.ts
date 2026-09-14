@@ -36,6 +36,7 @@ interface ItemRow {
   workflow_external_id: string;
   workflow_title: string;
   workflow_state: WorkflowState;
+  workflow_state_observed_at: Date;
   project_id: string;
   project_key: string;
   project_name: string;
@@ -68,7 +69,7 @@ export interface DecisionRow extends ItemRow {
 
 const ITEM_SELECT = `
   SELECT x.id, x.kind, x.workflow_id, w.external_id AS workflow_external_id, w.title AS workflow_title, w.state AS workflow_state,
-         p.id AS project_id, p.key AS project_key, p.name AS project_name,
+         w.state_observed_at AS workflow_state_observed_at, p.id AS project_id, p.key AS project_key, p.name AS project_name,
          x.ask, x.risk_level, x.requested_by, x.requested_at, x.expires_at, x.has_recommended_answer,
          x.context, x.why_it_matters, x.options, x.links,
          x.decision, x.decided_at, x.decided_by, x.decided_by_user_id, x.rejection_reason, x.rejection_target,
@@ -180,6 +181,11 @@ export async function loadDecisionRow(
   return read();
 }
 
+/**
+ * The recorded outcome of a resolved item. `workflowState` is the state the decision produced (decision-rules.md
+ * `resultingState`), not the workflow's current state, so the resolution reads the same after the workflow moves on.
+ * Agent-ingested rejections carry no target; for those the live state is the only record.
+ */
 export function resolutionOf(r: DecisionRow): Resolution | null {
   if (r.kind === 'approval') {
     if (!r.decision || !r.decided_at) return null;
@@ -190,7 +196,8 @@ export function resolutionOf(r: DecisionRow): Resolution | null {
       answer: null,
       reason: r.rejection_reason,
       target: r.rejection_target,
-      workflowState: r.workflow_state,
+      workflowState:
+        r.decision === 'approved' ? 'RUNNING' : (r.rejection_target ?? r.workflow_state),
     };
   }
   if (!r.answered_at) return null;
@@ -201,7 +208,7 @@ export function resolutionOf(r: DecisionRow): Resolution | null {
     answer: r.answer_text != null ? { option: r.answer_option, text: r.answer_text } : null,
     reason: null,
     target: null,
-    workflowState: r.workflow_state,
+    workflowState: 'RUNNING',
   };
 }
 

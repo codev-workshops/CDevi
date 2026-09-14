@@ -147,7 +147,11 @@ export async function applyDecision(
   return row.id;
 }
 
-/** Moves the workflow (and any stage waiting on this item) out of WAITING_FOR_HUMAN with the 0001 state machine. */
+/**
+ * Moves the workflow (and any stage waiting on this item) out of WAITING_FOR_HUMAN with the 0001 state machine.
+ * `state_observed_at` is the monotonic clock ingestion compares against, so the transition is stamped no earlier than
+ * the clocks it replaces; the decision and audit rows keep the request time.
+ */
 async function transitionWorkflow(
   client: pg.PoolClient,
   organizationId: string,
@@ -160,16 +164,23 @@ async function transitionWorkflow(
   const from = row.workflow_state;
   if (!canTransition(from, to))
     throw problems.invalidTransition(`Cannot move a ${from} workflow to ${to}.`);
-  const record = (stageId: string | null, f: WorkflowState, t: WorkflowState) =>
-    client.query(
-      `INSERT INTO workflow_transitions (organization_id, workflow_id, stage_id, from_state, to_state, observed_at, reason, user_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [organizationId, row.workflow_id, stageId, f, t, now, reason, user.id],
-    );
   const finished = to === 'CANCELLED';
   const waiting = (await loadStages(client, row.workflow_id)).filter(
     (s) => s.state === 'WAITING_FOR_HUMAN' && canTransition(s.state, to),
   );
+  const observedAt = new Date(
+    Math.max(
+      now.getTime(),
+      row.workflow_state_observed_at.getTime(),
+      ...waiting.map((s) => s.stateObservedAt.getTime()),
+    ),
+  );
+  const record = (stageId: string | null, f: WorkflowState, t: WorkflowState) =>
+    client.query(
+      `INSERT INTO workflow_transitions (organization_id, workflow_id, stage_id, from_state, to_state, observed_at, reason, user_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [organizationId, row.workflow_id, stageId, f, t, observedAt, reason, user.id],
+    );
   const linked = waiting.filter((s) =>
     row.kind === 'approval' ? s.approvalId === row.id : s.clarificationId === row.id,
   );
@@ -184,7 +195,7 @@ async function transitionWorkflow(
               started_at = COALESCE(started_at, CASE WHEN $2::workflow_state = 'RUNNING' THEN $3::timestamptz END),
               finished_at = CASE WHEN $5::boolean THEN $3::timestamptz ELSE NULL END
         WHERE id = $1`,
-      [s.id, to, now, reason, finished],
+      [s.id, to, observedAt, reason, finished],
     );
     await record(s.id, s.state, to);
   }
@@ -193,7 +204,7 @@ async function transitionWorkflow(
             started_at = COALESCE(started_at, CASE WHEN $2::workflow_state = 'RUNNING' THEN $3::timestamptz END),
             finished_at = CASE WHEN $5::boolean THEN $3::timestamptz ELSE NULL END
       WHERE id = $1`,
-    [row.workflow_id, to, now, reason, finished],
+    [row.workflow_id, to, observedAt, reason, finished],
   );
   await syncWorkflowStagePointer(client, row.workflow_id);
   await record(null, from, to);

@@ -23,12 +23,15 @@ export const Transition = z.object({
 });
 export type Transition = z.infer<typeof Transition>;
 
-/** http(s) URL or app-relative path, ≤ 500 chars (data-model.md §13). */
+/**
+ * http(s) URL or app-relative path, ≤ 500 chars (data-model.md §13). A relative path must start with a single `/`:
+ * `//host` and `/\host` are protocol-relative and would leave the app.
+ */
 export const DecisionLink = z
   .string()
   .trim()
   .max(500)
-  .refine((s) => /^https?:\/\//.test(s) || s.startsWith('/'), {
+  .refine((s) => /^https?:\/\//.test(s) || /^\/(?![/\\])/.test(s), {
     message: 'must be an http(s) URL or an app-relative path',
   });
 export const DECISION_LINK_KEYS = [

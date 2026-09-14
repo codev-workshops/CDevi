@@ -178,6 +178,10 @@ describe('US2 decision schemas (specs/001 data-model.md §13–§14)', () => {
     expect(
       ClarificationUpsert.safeParse({ ...base, links: { requirement: 'ftp://x' } }).success,
     ).toBe(false);
+    for (const hostile of ['//evil.example/x', '/\\evil.example', 'javascript:alert(1)'])
+      expect(
+        ClarificationUpsert.safeParse({ ...base, links: { requirement: hostile } }).success,
+      ).toBe(false);
     expect(ClarificationUpsert.safeParse({ ...base, whyItMatters: 'x'.repeat(1001) }).success).toBe(
       false,
     );

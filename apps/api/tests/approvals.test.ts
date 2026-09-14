@@ -654,6 +654,84 @@ describe.skipIf(skipDb)('Approval Center API (specs/001 US2, FR-011..FR-015, FR-
     expect(d.clarification?.links.agentRun).toBe('/agent-runs/abc');
   });
 
+  it('FR-014 a decision never moves state_observed_at backwards: a future-dated waiting observation keeps its clock, later stale ingestion is refused, audit keeps request time', async () => {
+    const a = await raiseApproval('LOW');
+    const ahead = plus(2 * MIN);
+    await app.pool.query(`UPDATE workflows SET state_observed_at = $2 WHERE external_id = $1`, [
+      a.ext,
+      ahead,
+    ]);
+    const r = await approve(approver, a.id);
+    expect(r.statusCode, r.body).toBe(200);
+    const w = (
+      await app.pool.query<{ state: string; state_observed_at: Date }>(
+        `SELECT state, state_observed_at FROM workflows WHERE external_id = $1`,
+        [a.ext],
+      )
+    ).rows[0]!;
+    expect(w.state).toBe('RUNNING');
+    expect(w.state_observed_at.getTime()).toBeGreaterThanOrEqual(ahead.getTime());
+    const t = (
+      await app.pool.query<{ observed_at: Date }>(
+        `SELECT t.observed_at FROM workflow_transitions t JOIN workflows w ON w.id = t.workflow_id WHERE w.external_id = $1 AND t.from_state = 'WAITING_FOR_HUMAN' AND t.stage_id IS NULL`,
+        [a.ext],
+      )
+    ).rows[0]!;
+    expect(t.observed_at.getTime()).toBeGreaterThanOrEqual(ahead.getTime());
+    const audit = (
+      await app.pool.query<{ occurred_at: Date }>(
+        `SELECT occurred_at FROM audit_events WHERE target_id = $1`,
+        [a.id],
+      )
+    ).rows[0]!;
+    expect(audit.occurred_at.getTime()).toBe(plus(0).getTime());
+    const stale = await app.inject(
+      asIngest({
+        method: 'POST',
+        url: `/api/ingest/workflows/${a.ext}/transitions`,
+        payload: { toState: 'COMPLETED', observedAt: iso(plus(1 * MIN)) },
+      }),
+    );
+    expect(stale.statusCode, stale.body).toBe(200);
+    expect(await workflowState(a.ext)).toBe('RUNNING');
+  });
+
+  it('FR-015 a resolution reports the state the decision produced even after the workflow moves on', async () => {
+    const a = await raiseApproval('LOW');
+    expect((await approve(approver, a.id)).statusCode).toBe(200);
+    const done = await app.inject(
+      asIngest({
+        method: 'POST',
+        url: `/api/ingest/workflows/${a.ext}/transitions`,
+        payload: { toState: 'COMPLETED', observedAt: iso(plus(5 * MIN)) },
+      }),
+    );
+    expect(done.statusCode, done.body).toBe(200);
+    expect(await workflowState(a.ext)).toBe('COMPLETED');
+    const d: ApprovalCenterDetail = (await detail(approver, a.id)).json();
+    expect(d.workflowState).toBe('COMPLETED');
+    expect(d.resolution?.workflowState).toBe('RUNNING');
+    const again = await approve(admin, a.id);
+    expect(again.statusCode).toBe(409);
+    expect(again.json().resolution.workflowState).toBe('RUNNING');
+
+    const b = await raiseApproval('LOW');
+    expect(
+      (await reject(approver, b.id, { reason: 'Not now', target: 'BLOCKED' })).statusCode,
+    ).toBe(200);
+    const resumed = await app.inject(
+      asIngest({
+        method: 'POST',
+        url: `/api/ingest/workflows/${b.ext}/transitions`,
+        payload: { toState: 'RUNNING', observedAt: iso(plus(5 * MIN)) },
+      }),
+    );
+    expect(resumed.statusCode, resumed.body).toBe(200);
+    const db: ApprovalCenterDetail = (await detail(approver, b.id)).json();
+    expect(db.workflowState).toBe('RUNNING');
+    expect(db.resolution).toMatchObject({ outcome: 'rejected', workflowState: 'BLOCKED' });
+  });
+
   it('answering an approval id or approving a clarification id is a 404', async () => {
     const a = await raiseApproval('LOW');
     const c = await raiseClarification();

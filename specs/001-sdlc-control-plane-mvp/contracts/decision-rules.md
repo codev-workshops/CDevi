@@ -54,7 +54,7 @@ Persisted: `answered_at = now`, `answered_by = user.displayName`, `answered_by_u
 
 ## 8. Exactly once (FR-015, edge case)
 
-The item row is read `FOR UPDATE` first. If it is already decided/answered the request is refused with **409** `urn:cdevi:problem:already-resolved` and the body carries `resolution { outcome, by { id, displayName }, at, reason, target, answerOption, answerText, workflowState }`. Two concurrent callers: the first commit wins; the second receives the 409 with the first caller's resolution. The web renders it as `Notice tone="info"` "Already resolved — {outcome} by {displayName} {relative at}." and disables the controls.
+The item row is read `FOR UPDATE` first. If it is already decided/answered the request is refused with **409** `urn:cdevi:problem:already-resolved` and the body carries `resolution { outcome, by { id, displayName }, at, reason, target, answerOption, answerText, workflowState }`. `resolution.workflowState` is the state the decision produced (`resultingState`), not the workflow's current state — it reads the same after the workflow moves on. Two concurrent callers: the first commit wins; the second receives the 409 with the first caller's resolution. The web renders it as `Notice tone="info"` "Already resolved — {outcome} by {displayName} {relative at}." and disables the controls.
 
 ## 9. Audit (FR-029, SC-004)
 
