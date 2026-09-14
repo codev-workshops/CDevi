@@ -98,7 +98,12 @@ export function RecordStub({
       <p>
         <Button variant="ghost" href={backHref}>
           Back to Inbox
-        </Button>
+        </Button>{' '}
+        {kind === 'approvals' ? (
+          <Button variant="ghost" href={`/workflows/${encodeURIComponent(item.workflowId)}`}>
+            Open workflow
+          </Button>
+        ) : null}
       </p>
     </>
   );

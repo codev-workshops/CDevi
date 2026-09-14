@@ -7,6 +7,23 @@ export interface InboxStreamOptions {
   debounceMs?: number | undefined;
   onChange: () => void;
   onStatus?: ((connected: boolean) => void) | undefined;
+  /** When set, only `inbox.changed` frames whose data carries this `workflowId` fire `onChange` (specs/001 R3). */
+  workflowId?: string | undefined;
+}
+
+/** Reads `workflowId` from an `inbox.changed` frame; unparsable frames match nothing. */
+export function frameWorkflowId(data: unknown): string | null {
+  if (typeof data !== 'string') return null;
+  try {
+    const parsed: unknown = JSON.parse(data);
+    if (parsed && typeof parsed === 'object' && 'workflowId' in parsed) {
+      const id = (parsed as { workflowId: unknown }).workflowId;
+      return typeof id === 'string' ? id : null;
+    }
+  } catch {
+    /* not JSON */
+  }
+  return null;
 }
 
 export function streamUrl(): string {
@@ -39,7 +56,10 @@ export function subscribeInboxStream(opts: InboxStreamOptions): () => void {
       backoff = 1000;
       opts.onStatus?.(true);
     });
-    es.addEventListener('inbox.changed', fire);
+    es.addEventListener('inbox.changed', (ev) => {
+      if (opts.workflowId && frameWorkflowId((ev as MessageEvent).data) !== opts.workflowId) return;
+      fire();
+    });
     es.addEventListener('error', () => {
       opts.onStatus?.(false);
       es?.close();
