@@ -16,6 +16,10 @@ const RLS_TABLES = [
   'clarifications',
   'ingestion_log',
   'inbox_change_log',
+  'workflow_stages',
+  'agent_runs',
+  'artifacts',
+  'test_runs',
 ];
 
 export interface MigrateOptions {
