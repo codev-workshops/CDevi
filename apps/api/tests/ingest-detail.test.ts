@@ -85,6 +85,110 @@ describe.skipIf(skipDb)('US1 ingestion: stages, agent runs, artifacts, test runs
     expect(s.rows[0].finished_at).toEqual(plus(-27 * MIN));
   });
 
+  it('FR-002 a same-state observation that is not newer is stale and leaves stage metadata untouched', async () => {
+    const { ext, id } = await newWorkflow();
+    await putStage(ext, 2, { name: 'Plan', state: 'RUNNING', observedAt: iso(plus(-28 * MIN)) });
+    const current = await putStage(ext, 2, {
+      name: 'Plan',
+      state: 'WAITING_FOR_HUMAN',
+      observedAt: iso(plus(-20 * MIN)),
+      reason: 'Approval required',
+      requiresApproval: true,
+    });
+    expect(current.statusCode, current.body).toBe(200);
+    const replay = await putStage(ext, 2, {
+      name: 'Planning (old)',
+      state: 'WAITING_FOR_HUMAN',
+      observedAt: iso(plus(-25 * MIN)),
+      reason: 'Obsolete reason',
+      requiresApproval: false,
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json().outcome).toBe('stale');
+    const s = await app.pool.query(
+      `SELECT name, state_reason, requires_approval, state_observed_at FROM workflow_stages WHERE workflow_id = $1 AND position = 2`,
+      [id],
+    );
+    expect(s.rows[0]).toEqual({
+      name: 'Plan',
+      state_reason: 'Approval required',
+      requires_approval: true,
+      state_observed_at: plus(-20 * MIN),
+    });
+
+    const newer = await putStage(ext, 2, {
+      name: 'Plan',
+      state: 'WAITING_FOR_HUMAN',
+      observedAt: iso(plus(-15 * MIN)),
+      reason: 'Still waiting on the approver',
+      requiresApproval: true,
+    });
+    expect(newer.json().outcome).toBe('accepted');
+    const s2 = await app.pool.query(
+      `SELECT state_reason, state_observed_at FROM workflow_stages WHERE workflow_id = $1 AND position = 2`,
+      [id],
+    );
+    expect(s2.rows[0]).toEqual({
+      state_reason: 'Still waiting on the approver',
+      state_observed_at: plus(-15 * MIN),
+    });
+  });
+
+  it('FR-002 an external id that already belongs to another workflow is rejected (409)', async () => {
+    const a = await newWorkflow();
+    const b = await newWorkflow();
+    await putStage(a.ext, 1, { name: 'Plan', state: 'RUNNING', observedAt: iso(plus(-29 * MIN)) });
+    await putStage(b.ext, 1, { name: 'Plan', state: 'RUNNING', observedAt: iso(plus(-29 * MIN)) });
+    const runExt = uniq('run');
+    const artExt = uniq('art');
+    const trExt = uniq('tr');
+    const put = (url: string, payload: Record<string, unknown>) =>
+      app.inject(asIngest({ method: 'PUT', url, payload }));
+    const runBody = (ext: string) => ({
+      workflowExternalId: ext,
+      stagePosition: 1,
+      agent: 'planner',
+      state: 'RUNNING',
+      startedAt: iso(plus(-28 * MIN)),
+    });
+    const artBody = (ext: string) => ({
+      workflowExternalId: ext,
+      stagePosition: 1,
+      type: 'implementation_plan',
+      title: 'Plan',
+      producedAt: iso(plus(-27 * MIN)),
+    });
+    const trBody = (ext: string) => ({
+      workflowExternalId: ext,
+      stagePosition: 1,
+      category: 'unit',
+      status: 'PASSED',
+      total: 1,
+      passed: 1,
+      startedAt: iso(plus(-26 * MIN)),
+    });
+    expect((await put(`/api/ingest/agent-runs/${runExt}`, runBody(a.ext))).statusCode).toBe(200);
+    expect((await put(`/api/ingest/artifacts/${artExt}`, artBody(a.ext))).statusCode).toBe(200);
+    expect((await put(`/api/ingest/test-runs/${trExt}`, trBody(a.ext))).statusCode).toBe(200);
+
+    for (const [url, body] of [
+      [`/api/ingest/agent-runs/${runExt}`, runBody(b.ext)],
+      [`/api/ingest/artifacts/${artExt}`, artBody(b.ext)],
+      [`/api/ingest/test-runs/${trExt}`, trBody(b.ext)],
+    ] as const) {
+      const r = await put(url, body);
+      expect(r.statusCode, r.body).toBe(409);
+      expect(r.json().detail).toMatch(/belongs to another workflow/);
+    }
+    const owners = await app.pool.query<{ workflow_id: string }>(
+      `SELECT workflow_id FROM agent_runs WHERE external_id = $1
+       UNION ALL SELECT workflow_id FROM artifacts WHERE external_id = $2
+       UNION ALL SELECT workflow_id FROM test_runs WHERE external_id = $3`,
+      [runExt, artExt, trExt],
+    );
+    expect(owners.rows.map((r) => r.workflow_id)).toEqual([a.id, a.id, a.id]);
+  });
+
   it('FR-002 agent runs, artifacts and test runs attach to an existing stage; unknown stage is a 404 Problem', async () => {
     const { ext, id } = await newWorkflow();
     await putStage(ext, 1, { name: 'Plan', state: 'RUNNING', observedAt: iso(plus(-29 * MIN)) });

@@ -232,6 +232,11 @@ describe.skipIf(skipDb)('POST /api/workflows/:id/actions (FR-006)', () => {
     expect(d.workflow.finishedAt).toBe(FIXED_NOW.toISOString());
     expect(d.stages.map((s) => s.state)).toEqual(['COMPLETED', 'CANCELLED', 'CANCELLED']);
     expect(d.actions).toEqual({ retry: false, escalate: false, cancel: false });
+    expect(d.workflow.stage).toEqual({
+      index: d.currentStage!.stage.position,
+      count: 3,
+      name: d.currentStage!.stage.name,
+    });
     expect((await act(engineer, id, 'cancel')).statusCode).toBe(409);
   });
 

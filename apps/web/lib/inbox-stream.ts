@@ -1,6 +1,7 @@
 /**
  * SSE subscription for `inbox.changed` (research R6). Notifications only — the caller refetches the snapshot.
- * EventSource handles `Last-Event-ID` itself; we add debounce and a capped reconnect back-off (1 s → 30 s).
+ * Reconnects use a fresh EventSource with a capped back-off (1 s → 30 s), which forfeits the browser's
+ * `Last-Event-ID` replay — so every reconnect fires `onChange` once and the caller's refetch catches up instead.
  */
 export interface InboxStreamOptions {
   url?: string | undefined;
@@ -40,6 +41,7 @@ export function subscribeInboxStream(opts: InboxStreamOptions): () => void {
   let retry: ReturnType<typeof setTimeout> | null = null;
   let backoff = 1000;
   let closed = false;
+  let reconnecting = false;
 
   const fire = () => {
     if (timer) clearTimeout(timer);
@@ -55,6 +57,10 @@ export function subscribeInboxStream(opts: InboxStreamOptions): () => void {
     es.addEventListener('open', () => {
       backoff = 1000;
       opts.onStatus?.(true);
+      if (reconnecting) {
+        reconnecting = false;
+        fire();
+      }
     });
     es.addEventListener('inbox.changed', (ev) => {
       if (opts.workflowId && frameWorkflowId((ev as MessageEvent).data) !== opts.workflowId) return;
@@ -65,6 +71,7 @@ export function subscribeInboxStream(opts: InboxStreamOptions): () => void {
       es?.close();
       es = null;
       if (closed) return;
+      reconnecting = true;
       retry = setTimeout(open, backoff);
       backoff = Math.min(backoff * 2, 30_000);
     });

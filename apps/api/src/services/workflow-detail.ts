@@ -119,6 +119,19 @@ export async function loadStages(client: pg.PoolClient, workflowId: string): Pro
   }));
 }
 
+/** Keeps the denormalised workflows.stage_index/stage_name (and optionally stage_count) in step with the current stage (data-model §5). */
+export async function syncWorkflowStagePointer(
+  client: pg.PoolClient,
+  workflowId: string,
+  count?: number,
+): Promise<void> {
+  const current = deriveCurrentStage(await loadStages(client, workflowId));
+  await client.query(
+    `UPDATE workflows SET stage_index = COALESCE($2, stage_index), stage_name = COALESCE($3, stage_name), stage_count = COALESCE($4, stage_count) WHERE id = $1`,
+    [workflowId, current?.position ?? null, current?.name ?? null, count ?? null],
+  );
+}
+
 export async function workflowDetail(
   client: pg.PoolClient,
   scope: DetailScope,

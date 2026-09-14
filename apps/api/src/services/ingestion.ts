@@ -1,6 +1,5 @@
 import {
   canTransition,
-  deriveCurrentStage,
   type AgentRunUpsert,
   type ApprovalUpsert,
   type ArtifactUpsert,
@@ -15,6 +14,7 @@ import {
 import type pg from 'pg';
 import { ProblemError, problems } from '../lib/problem';
 import type { IngestionPrincipal } from './auth';
+import { syncWorkflowStagePointer } from './workflow-detail';
 
 type Outcome = 'accepted' | 'stale' | 'rejected' | 'forbidden';
 
@@ -330,34 +330,22 @@ export class IngestionService {
     return r.rows[0].id;
   }
 
-  /** Keeps the denormalised workflows.stage_index/stage_name in step with the current stage (data-model §5). */
-  private async syncWorkflowStage(client: pg.PoolClient, workflowId: string, count?: number) {
-    const stages = (
-      await client.query<{
-        id: string;
-        position: number;
-        name: string;
-        state: WorkflowState;
-      }>(`SELECT id, position, name, state FROM workflow_stages WHERE workflow_id = $1`, [
-        workflowId,
-      ])
-    ).rows.map((s) => ({
-      ...s,
-      stateObservedAt: new Date(0),
-      stateReason: null,
-      agent: null,
-      startedAt: null,
-      finishedAt: null,
-      errorSummary: null,
-      requiresApproval: false,
-      approvalId: null,
-      clarificationId: null,
-    }));
-    const current = deriveCurrentStage(stages);
-    await client.query(
-      `UPDATE workflows SET stage_index = COALESCE($2, stage_index), stage_name = COALESCE($3, stage_name), stage_count = COALESCE($4, stage_count) WHERE id = $1`,
-      [workflowId, current?.position ?? null, current?.name ?? null, count ?? null],
+  /** An external id names one record inside one workflow; reusing it for another workflow is rejected. */
+  private async assertOwnedBy(
+    client: pg.PoolClient,
+    table: 'agent_runs' | 'artifacts' | 'test_runs',
+    externalId: string,
+    workflowId: string,
+  ) {
+    const r = await client.query<{ workflow_id: string }>(
+      `SELECT workflow_id FROM ${table} WHERE organization_id = $1 AND external_id = $2`,
+      [this.principal.organizationId, externalId],
     );
+    const owner = r.rows[0]?.workflow_id;
+    if (owner && owner !== workflowId)
+      throw problems.invalidTransition(
+        `${table.replace('_', ' ').slice(0, -1)} ${externalId} belongs to another workflow.`,
+      );
   }
 
   async upsertStage(
@@ -424,20 +412,18 @@ export class IngestionService {
         );
       } else {
         stageId = existing.id;
-        if (body.state !== existing.state) {
-          if (observedAt.getTime() <= existing.state_observed_at.getTime()) {
-            await this.log(
-              client,
-              'stale',
-              `observedAt ${body.observedAt} is not newer than ${existing.state_observed_at.toISOString()}`,
-            );
-            return { outcome: 'stale', id: existing.id, state: w.state };
-          }
-          if (!canTransition(existing.state, body.state))
-            throw problems.invalidTransition(
-              `Cannot move stage ${position} from ${existing.state} to ${body.state}.`,
-            );
+        if (observedAt.getTime() <= existing.state_observed_at.getTime()) {
+          await this.log(
+            client,
+            'stale',
+            `observedAt ${body.observedAt} is not newer than ${existing.state_observed_at.toISOString()}`,
+          );
+          return { outcome: 'stale', id: existing.id, state: w.state };
         }
+        if (body.state !== existing.state && !canTransition(existing.state, body.state))
+          throw problems.invalidTransition(
+            `Cannot move stage ${position} from ${existing.state} to ${body.state}.`,
+          );
         const enters = (s: WorkflowState) => body.state === s && existing.state !== s;
         const startedAt = existing.started_at ?? (body.state === 'RUNNING' ? observedAt : null);
         const finishedAt =
@@ -460,7 +446,7 @@ export class IngestionService {
             stageId,
             body.name,
             body.state,
-            body.state !== existing.state ? observedAt : existing.state_observed_at,
+            observedAt,
             body.reason ?? null,
             body.agent ?? null,
             startedAt,
@@ -486,7 +472,7 @@ export class IngestionService {
             ],
           );
       }
-      await this.syncWorkflowStage(client, w.id, body.count);
+      await syncWorkflowStagePointer(client, w.id, body.count);
       await this.log(client, 'accepted');
       return { outcome: 'accepted', id: stageId, state: w.state };
     });
@@ -498,6 +484,7 @@ export class IngestionService {
       if (!w) throw problems.notFound(`Unknown workflow ${body.workflowExternalId}.`);
       this.assertScope(w.project_id);
       const stage = await this.requireStage(client, w.id, body.stagePosition);
+      await this.assertOwnedBy(client, 'agent_runs', externalId, w.id);
       const timeline = body.timeline.slice(-50);
       const r = await client.query<{ id: string }>(
         `INSERT INTO agent_runs (organization_id, project_id, workflow_id, stage_id, external_id, agent, model, state, started_at, finished_at, summary, timeline)
@@ -531,6 +518,7 @@ export class IngestionService {
       if (!w) throw problems.notFound(`Unknown workflow ${body.workflowExternalId}.`);
       this.assertScope(w.project_id);
       const stage = await this.requireStage(client, w.id, body.stagePosition);
+      await this.assertOwnedBy(client, 'artifacts', externalId, w.id);
       const existing = await client.query<{ id: string; stage_state: WorkflowState }>(
         `SELECT a.id, s.state AS stage_state FROM artifacts a JOIN workflow_stages s ON s.id = a.stage_id
           WHERE a.organization_id = $1 AND a.external_id = $2 FOR UPDATE OF a`,
@@ -567,6 +555,7 @@ export class IngestionService {
       if (!w) throw problems.notFound(`Unknown workflow ${body.workflowExternalId}.`);
       this.assertScope(w.project_id);
       const stage = await this.requireStage(client, w.id, body.stagePosition);
+      await this.assertOwnedBy(client, 'test_runs', externalId, w.id);
       const r = await client.query<{ id: string }>(
         `INSERT INTO test_runs (organization_id, project_id, workflow_id, stage_id, external_id, category, status, total, passed, failed, skipped, href, started_at, finished_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)

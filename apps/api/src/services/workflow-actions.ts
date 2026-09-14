@@ -12,7 +12,12 @@ import {
 import type pg from 'pg';
 import { problems } from '../lib/problem';
 import type { SessionUser } from './auth';
-import { loadStages, loadWorkflowHead, type DetailScope } from './workflow-detail';
+import {
+  loadStages,
+  loadWorkflowHead,
+  syncWorkflowStagePointer,
+  type DetailScope,
+} from './workflow-detail';
 
 export async function applyWorkflowAction(
   client: pg.PoolClient,
@@ -82,5 +87,6 @@ export async function applyWorkflowAction(
     `UPDATE workflows SET state = 'CANCELLED', state_observed_at = $2, state_reason = $3, finished_at = $2 WHERE id = $1`,
     [w.id, now, reason],
   );
+  await syncWorkflowStagePointer(client, w.id);
   await record(null, w.state, 'CANCELLED', reason);
 }

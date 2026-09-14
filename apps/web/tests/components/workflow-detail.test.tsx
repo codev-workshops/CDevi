@@ -259,6 +259,34 @@ describe('Workflow Detail (specs/001 US1)', () => {
     );
   });
 
+  it('FR-034 a stream reconnect refetches once so changes missed while offline are caught up', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const d = detail();
+      const next = detail();
+      next.workflow.title = 'Add rate limiting to /api/auth (caught up)';
+      fetchMock.mockResolvedValue(jsonResponse(next));
+      renderApp(<WorkflowDetailScreen initial={d} userRole="engineer" />);
+      const first = sources[0]!;
+      first.emit('open', '');
+      await vi.advanceTimersByTimeAsync(400);
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      first.emit('error', '');
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(sources).toHaveLength(2);
+      const second = sources[1]!;
+      second.emit('open', '');
+      await vi.advanceTimersByTimeAsync(400);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await waitFor(() =>
+        expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(next.workflow.title),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('FR-034 a failed refetch shows a retryable notice and keeps the last good detail', async () => {
     const user = userEvent.setup();
     const d = detail();
