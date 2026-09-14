@@ -37,6 +37,7 @@ export const WorkflowActionRequest = z.object({
 export type WorkflowActionRequest = z.infer<typeof WorkflowActionRequest>;
 
 export const WorkflowIdParams = z.object({ id: Uuid });
+export type WorkflowIdParams = z.infer<typeof WorkflowIdParams>;
 
 // ---- read model (data-model.md §7)
 

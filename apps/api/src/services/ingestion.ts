@@ -1,8 +1,13 @@
 import {
   canTransition,
+  deriveCurrentStage,
+  type AgentRunUpsert,
   type ApprovalUpsert,
+  type ArtifactUpsert,
   type ClarificationUpsert,
   type IngestResult,
+  type StageUpsert,
+  type TestRunUpsert,
   type Transition,
   type WorkflowState,
   type WorkflowUpsert,
@@ -20,6 +25,17 @@ interface WorkflowRow {
   state_observed_at: Date;
   started_at: Date | null;
   finished_at: Date | null;
+}
+
+interface StageDbRow {
+  id: string;
+  position: number;
+  name: string;
+  state: WorkflowState;
+  state_observed_at: Date;
+  started_at: Date | null;
+  finished_at: Date | null;
+  error_summary: string | null;
 }
 
 export class IngestionService {
@@ -270,6 +286,309 @@ export class IngestionService {
           body.decision?.outcome ?? null,
           body.decision ? new Date(body.decision.decidedAt) : null,
           body.decision?.decidedBy ?? null,
+        ],
+      );
+      await this.log(client, 'accepted');
+      return { outcome: 'accepted', id: r.rows[0]!.id, state: w.state };
+    });
+  }
+
+  // ---- specs/001 US1 extensions (data-model.md §5, §8)
+
+  private async lockStage(
+    client: pg.PoolClient,
+    workflowId: string,
+    position: number,
+  ): Promise<StageDbRow | undefined> {
+    const r = await client.query<StageDbRow>(
+      `SELECT id, position, name, state, state_observed_at, started_at, finished_at, error_summary
+         FROM workflow_stages WHERE workflow_id = $1 AND position = $2 FOR UPDATE`,
+      [workflowId, position],
+    );
+    return r.rows[0];
+  }
+
+  private async requireStage(client: pg.PoolClient, workflowId: string, position: number) {
+    const s = await this.lockStage(client, workflowId, position);
+    if (!s) throw problems.unknownStage(`This workflow has no stage at position ${position}.`);
+    return s;
+  }
+
+  private async linkedRequest(
+    client: pg.PoolClient,
+    table: 'approvals' | 'clarifications',
+    workflowId: string,
+    externalId: string | null | undefined,
+  ): Promise<string | null> {
+    if (!externalId) return null;
+    const r = await client.query<{ id: string }>(
+      `SELECT id FROM ${table} WHERE organization_id = $1 AND workflow_id = $2 AND external_id = $3`,
+      [this.principal.organizationId, workflowId, externalId],
+    );
+    if (!r.rows[0])
+      throw problems.notFound(`Unknown ${table.slice(0, -1)} ${externalId} on this workflow.`);
+    return r.rows[0].id;
+  }
+
+  /** Keeps the denormalised workflows.stage_index/stage_name in step with the current stage (data-model §5). */
+  private async syncWorkflowStage(client: pg.PoolClient, workflowId: string, count?: number) {
+    const stages = (
+      await client.query<{
+        id: string;
+        position: number;
+        name: string;
+        state: WorkflowState;
+      }>(`SELECT id, position, name, state FROM workflow_stages WHERE workflow_id = $1`, [
+        workflowId,
+      ])
+    ).rows.map((s) => ({
+      ...s,
+      stateObservedAt: new Date(0),
+      stateReason: null,
+      agent: null,
+      startedAt: null,
+      finishedAt: null,
+      errorSummary: null,
+      requiresApproval: false,
+      approvalId: null,
+      clarificationId: null,
+    }));
+    const current = deriveCurrentStage(stages);
+    await client.query(
+      `UPDATE workflows SET stage_index = COALESCE($2, stage_index), stage_name = COALESCE($3, stage_name), stage_count = COALESCE($4, stage_count) WHERE id = $1`,
+      [workflowId, current?.position ?? null, current?.name ?? null, count ?? null],
+    );
+  }
+
+  async upsertStage(
+    workflowExternalId: string,
+    position: number,
+    body: StageUpsert,
+  ): Promise<IngestResult> {
+    return this.run(async (client) => {
+      const w = await this.lockWorkflow(client, workflowExternalId);
+      if (!w) throw problems.notFound(`Unknown workflow ${workflowExternalId}.`);
+      this.assertScope(w.project_id);
+      const observedAt = new Date(body.observedAt);
+      const approvalId = await this.linkedRequest(
+        client,
+        'approvals',
+        w.id,
+        body.approvalExternalId,
+      );
+      const clarificationId = await this.linkedRequest(
+        client,
+        'clarifications',
+        w.id,
+        body.clarificationExternalId,
+      );
+      const existing = await this.lockStage(client, w.id, position);
+      let stageId: string;
+      if (!existing) {
+        if (!canTransition(null, body.state))
+          throw problems.invalidTransition(`A new stage cannot start in ${body.state}.`);
+        const r = await client.query<{ id: string }>(
+          `INSERT INTO workflow_stages (organization_id, project_id, workflow_id, position, name, state, state_observed_at, state_reason, agent,
+             started_at, finished_at, error_summary, requires_approval, approval_id, clarification_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
+          [
+            this.principal.organizationId,
+            w.project_id,
+            w.id,
+            position,
+            body.name,
+            body.state,
+            observedAt,
+            body.reason ?? null,
+            body.agent ?? null,
+            body.state === 'RUNNING' ? observedAt : null,
+            null,
+            body.state === 'FAILED' ? (body.errorSummary ?? body.reason ?? null) : null,
+            body.requiresApproval,
+            approvalId,
+            clarificationId,
+          ],
+        );
+        stageId = r.rows[0]!.id;
+        await client.query(
+          `INSERT INTO workflow_transitions (organization_id, workflow_id, stage_id, from_state, to_state, observed_at, reason, principal_id) VALUES ($1,$2,$3,NULL,$4,$5,$6,$7)`,
+          [
+            this.principal.organizationId,
+            w.id,
+            stageId,
+            body.state,
+            observedAt,
+            body.reason ?? null,
+            this.principal.id,
+          ],
+        );
+      } else {
+        stageId = existing.id;
+        if (body.state !== existing.state) {
+          if (observedAt.getTime() <= existing.state_observed_at.getTime()) {
+            await this.log(
+              client,
+              'stale',
+              `observedAt ${body.observedAt} is not newer than ${existing.state_observed_at.toISOString()}`,
+            );
+            return { outcome: 'stale', id: existing.id, state: w.state };
+          }
+          if (!canTransition(existing.state, body.state))
+            throw problems.invalidTransition(
+              `Cannot move stage ${position} from ${existing.state} to ${body.state}.`,
+            );
+        }
+        const enters = (s: WorkflowState) => body.state === s && existing.state !== s;
+        const startedAt = existing.started_at ?? (body.state === 'RUNNING' ? observedAt : null);
+        const finishedAt =
+          body.state === 'COMPLETED' || body.state === 'CANCELLED' || body.state === 'FAILED'
+            ? (existing.finished_at ?? observedAt)
+            : body.state === 'RETRYING'
+              ? null
+              : existing.finished_at;
+        const errorSummary = enters('FAILED')
+          ? (body.errorSummary ?? body.reason ?? null)
+          : body.state === 'RETRYING'
+            ? null
+            : (body.errorSummary ?? existing.error_summary);
+        await client.query(
+          `UPDATE workflow_stages SET name = $2, state = $3, state_observed_at = $4, state_reason = $5, agent = COALESCE($6, agent),
+             started_at = $7, finished_at = $8, error_summary = $9, requires_approval = $10,
+             approval_id = COALESCE($11, approval_id), clarification_id = COALESCE($12, clarification_id)
+           WHERE id = $1`,
+          [
+            stageId,
+            body.name,
+            body.state,
+            body.state !== existing.state ? observedAt : existing.state_observed_at,
+            body.reason ?? null,
+            body.agent ?? null,
+            startedAt,
+            finishedAt,
+            errorSummary,
+            body.requiresApproval,
+            approvalId,
+            clarificationId,
+          ],
+        );
+        if (body.state !== existing.state)
+          await client.query(
+            `INSERT INTO workflow_transitions (organization_id, workflow_id, stage_id, from_state, to_state, observed_at, reason, principal_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+            [
+              this.principal.organizationId,
+              w.id,
+              stageId,
+              existing.state,
+              body.state,
+              observedAt,
+              body.reason ?? null,
+              this.principal.id,
+            ],
+          );
+      }
+      await this.syncWorkflowStage(client, w.id, body.count);
+      await this.log(client, 'accepted');
+      return { outcome: 'accepted', id: stageId, state: w.state };
+    });
+  }
+
+  async upsertAgentRun(externalId: string, body: AgentRunUpsert): Promise<IngestResult> {
+    return this.run(async (client) => {
+      const w = await this.lockWorkflow(client, body.workflowExternalId);
+      if (!w) throw problems.notFound(`Unknown workflow ${body.workflowExternalId}.`);
+      this.assertScope(w.project_id);
+      const stage = await this.requireStage(client, w.id, body.stagePosition);
+      const timeline = body.timeline.slice(-50);
+      const r = await client.query<{ id: string }>(
+        `INSERT INTO agent_runs (organization_id, project_id, workflow_id, stage_id, external_id, agent, model, state, started_at, finished_at, summary, timeline)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
+         ON CONFLICT (organization_id, external_id) DO UPDATE SET stage_id = EXCLUDED.stage_id, agent = EXCLUDED.agent, model = COALESCE(EXCLUDED.model, agent_runs.model),
+           state = EXCLUDED.state, started_at = EXCLUDED.started_at, finished_at = EXCLUDED.finished_at, summary = COALESCE(EXCLUDED.summary, agent_runs.summary), timeline = EXCLUDED.timeline
+         RETURNING id`,
+        [
+          this.principal.organizationId,
+          w.project_id,
+          w.id,
+          stage.id,
+          externalId,
+          body.agent,
+          body.model ?? null,
+          body.state,
+          new Date(body.startedAt),
+          body.finishedAt ? new Date(body.finishedAt) : null,
+          body.summary ?? null,
+          JSON.stringify(timeline),
+        ],
+      );
+      await this.log(client, 'accepted');
+      return { outcome: 'accepted', id: r.rows[0]!.id, state: w.state };
+    });
+  }
+
+  async upsertArtifact(externalId: string, body: ArtifactUpsert): Promise<IngestResult> {
+    return this.run(async (client) => {
+      const w = await this.lockWorkflow(client, body.workflowExternalId);
+      if (!w) throw problems.notFound(`Unknown workflow ${body.workflowExternalId}.`);
+      this.assertScope(w.project_id);
+      const stage = await this.requireStage(client, w.id, body.stagePosition);
+      const existing = await client.query<{ id: string; stage_state: WorkflowState }>(
+        `SELECT a.id, s.state AS stage_state FROM artifacts a JOIN workflow_stages s ON s.id = a.stage_id
+          WHERE a.organization_id = $1 AND a.external_id = $2 FOR UPDATE OF a`,
+        [this.principal.organizationId, externalId],
+      );
+      if (existing.rows[0]?.stage_state === 'COMPLETED') throw problems.artifactImmutable();
+      const r = await client.query<{ id: string }>(
+        `INSERT INTO artifacts (organization_id, project_id, workflow_id, stage_id, external_id, type, title, href, summary, produced_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         ON CONFLICT (organization_id, external_id) DO UPDATE SET stage_id = EXCLUDED.stage_id, type = EXCLUDED.type, title = EXCLUDED.title,
+           href = EXCLUDED.href, summary = EXCLUDED.summary, produced_at = EXCLUDED.produced_at
+         RETURNING id`,
+        [
+          this.principal.organizationId,
+          w.project_id,
+          w.id,
+          stage.id,
+          externalId,
+          body.type,
+          body.title,
+          body.href ?? null,
+          body.summary ?? null,
+          new Date(body.producedAt),
+        ],
+      );
+      await this.log(client, 'accepted');
+      return { outcome: 'accepted', id: r.rows[0]!.id, state: w.state };
+    });
+  }
+
+  async upsertTestRun(externalId: string, body: TestRunUpsert): Promise<IngestResult> {
+    return this.run(async (client) => {
+      const w = await this.lockWorkflow(client, body.workflowExternalId);
+      if (!w) throw problems.notFound(`Unknown workflow ${body.workflowExternalId}.`);
+      this.assertScope(w.project_id);
+      const stage = await this.requireStage(client, w.id, body.stagePosition);
+      const r = await client.query<{ id: string }>(
+        `INSERT INTO test_runs (organization_id, project_id, workflow_id, stage_id, external_id, category, status, total, passed, failed, skipped, href, started_at, finished_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+         ON CONFLICT (organization_id, external_id) DO UPDATE SET stage_id = EXCLUDED.stage_id, category = EXCLUDED.category, status = EXCLUDED.status,
+           total = EXCLUDED.total, passed = EXCLUDED.passed, failed = EXCLUDED.failed, skipped = EXCLUDED.skipped, href = COALESCE(EXCLUDED.href, test_runs.href),
+           started_at = EXCLUDED.started_at, finished_at = EXCLUDED.finished_at
+         RETURNING id`,
+        [
+          this.principal.organizationId,
+          w.project_id,
+          w.id,
+          stage.id,
+          externalId,
+          body.category,
+          body.status,
+          body.total,
+          body.passed,
+          body.failed,
+          body.skipped,
+          body.href ?? null,
+          new Date(body.startedAt),
+          body.finishedAt ? new Date(body.finishedAt) : null,
         ],
       );
       await this.log(client, 'accepted');

@@ -1,8 +1,13 @@
 import {
+  AgentRunUpsert,
   ApprovalUpsert,
+  ArtifactUpsert,
   ClarificationUpsert,
   ExternalIdParams,
   IngestResult,
+  StagePositionParams,
+  StageUpsert,
+  TestRunUpsert,
   Transition,
   WorkflowUpsert,
 } from '@cdevi/contracts';
@@ -88,5 +93,80 @@ export default async function ingestRoutes(app: FastifyInstance) {
         'PUT /ingest/clarifications/{externalId}',
         request.params.externalId,
       ).upsertClarification(request.params.externalId, request.body),
+  );
+
+  // ---- specs/001 US1 extensions
+
+  r.put(
+    '/ingest/workflows/:externalId/stages/:position',
+    {
+      schema: {
+        tags: ['ingest'],
+        params: StagePositionParams,
+        body: StageUpsert,
+        response: { 200: IngestResult },
+      },
+      preHandler: app.requirePrincipal,
+    },
+    async (request) =>
+      svc(
+        request,
+        'PUT /ingest/workflows/{externalId}/stages/{position}',
+        request.params.externalId,
+      ).upsertStage(request.params.externalId, request.params.position, request.body),
+  );
+
+  r.put(
+    '/ingest/agent-runs/:externalId',
+    {
+      schema: {
+        tags: ['ingest'],
+        params: ExternalIdParams,
+        body: AgentRunUpsert,
+        response: { 200: IngestResult },
+      },
+      preHandler: app.requirePrincipal,
+    },
+    async (request) =>
+      svc(request, 'PUT /ingest/agent-runs/{externalId}', request.params.externalId).upsertAgentRun(
+        request.params.externalId,
+        request.body,
+      ),
+  );
+
+  r.put(
+    '/ingest/artifacts/:externalId',
+    {
+      schema: {
+        tags: ['ingest'],
+        params: ExternalIdParams,
+        body: ArtifactUpsert,
+        response: { 200: IngestResult },
+      },
+      preHandler: app.requirePrincipal,
+    },
+    async (request) =>
+      svc(request, 'PUT /ingest/artifacts/{externalId}', request.params.externalId).upsertArtifact(
+        request.params.externalId,
+        request.body,
+      ),
+  );
+
+  r.put(
+    '/ingest/test-runs/:externalId',
+    {
+      schema: {
+        tags: ['ingest'],
+        params: ExternalIdParams,
+        body: TestRunUpsert,
+        response: { 200: IngestResult },
+      },
+      preHandler: app.requirePrincipal,
+    },
+    async (request) =>
+      svc(request, 'PUT /ingest/test-runs/{externalId}', request.params.externalId).upsertTestRun(
+        request.params.externalId,
+        request.body,
+      ),
   );
 }
