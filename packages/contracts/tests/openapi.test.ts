@@ -49,7 +49,33 @@ describe('specs/001 US1 contracts/openapi.yaml snapshot', () => {
       '/ingest/agent-runs/{externalId}',
       '/ingest/artifacts/{externalId}',
       '/ingest/test-runs/{externalId}',
+      '/approvals',
+      '/approvals/{id}',
+      '/approvals/{id}/approve',
+      '/approvals/{id}/reject',
+      '/clarifications/{id}/answer',
     ]);
+  });
+
+  it('FR-011 FR-015 registers the Approval Center and decision schemas', () => {
+    const doc = buildWorkflowDetailOpenApi() as {
+      components: { schemas: Record<string, unknown> };
+    };
+    for (const name of [
+      'ApprovalCenterSnapshot',
+      'ApprovalCenterDetail',
+      'ApproveRequest',
+      'RejectRequest',
+      'AnswerRequest',
+      'DecisionResult',
+      'AlreadyResolvedProblem',
+    ]) {
+      expect(doc.components.schemas).toHaveProperty(name);
+    }
+    const approve = (
+      doc as unknown as { paths: Record<string, Record<string, { responses: object }>> }
+    ).paths['/approvals/{id}/approve']!['post']!;
+    expect(Object.keys(approve.responses)).toEqual(['200', '400', '401', '403', '404', '409']);
   });
 
   it('FR-001 the merged document keeps every 003 route and adds the US1 ones', () => {

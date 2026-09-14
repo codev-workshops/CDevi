@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AlreadyResolvedProblem,
+  AnswerRequest,
+  ApprovalCenterQuery,
   ApprovalUpsert,
+  ApproveRequest,
   ClarificationUpsert,
+  RejectRequest,
   ExternalId,
   InboxQuery,
   SignInRequest,
@@ -94,5 +99,122 @@ describe('auth and query schemas', () => {
     );
     expect(InboxQuery.safeParse({ cursor: 'x'.repeat(201) }).success).toBe(false);
     expect('limit' in InboxQuery.parse({ limit: 500 } as never)).toBe(false);
+  });
+});
+
+describe('US2 decision schemas (specs/001 data-model.md §13–§14)', () => {
+  const opt = (value: string, recommended = false) => ({
+    value,
+    label: value.toUpperCase(),
+    recommended,
+  });
+
+  it('FR-013 ApproveRequest defaults confirmed to false', () => {
+    expect(ApproveRequest.parse({})).toEqual({ confirmed: false });
+    expect(ApproveRequest.parse({ confirmed: true })).toEqual({ confirmed: true });
+  });
+
+  it('FR-013 RejectRequest rejects empty/whitespace reason, reason > 500 and target outside BLOCKED/CANCELLED', () => {
+    expect(RejectRequest.parse({ reason: ' too risky ', target: 'BLOCKED' })).toEqual({
+      reason: 'too risky',
+      target: 'BLOCKED',
+    });
+    expect(RejectRequest.safeParse({ reason: '   ', target: 'BLOCKED' }).success).toBe(false);
+    expect(RejectRequest.safeParse({ reason: 'x'.repeat(501), target: 'CANCELLED' }).success).toBe(
+      false,
+    );
+    expect(RejectRequest.safeParse({ reason: 'no', target: 'FAILED' }).success).toBe(false);
+    expect(RejectRequest.safeParse({ reason: 'no' }).success).toBe(false);
+  });
+
+  it('FR-014 AnswerRequest rejects both option and text, neither, text > 2000', () => {
+    expect(AnswerRequest.parse({ option: 'oidc' })).toEqual({ option: 'oidc' });
+    expect(AnswerRequest.parse({ text: ' free text ' })).toEqual({ text: 'free text' });
+    expect(AnswerRequest.safeParse({ option: 'oidc', text: 'x' }).success).toBe(false);
+    expect(AnswerRequest.safeParse({}).success).toBe(false);
+    expect(AnswerRequest.safeParse({ text: 'x'.repeat(2001) }).success).toBe(false);
+  });
+
+  it('FR-025 ApprovalCenterQuery accepts all|uuid and defaults to all', () => {
+    expect(ApprovalCenterQuery.parse({})).toEqual({ project: 'all' });
+    const u = '00000000-0000-7000-8000-000000000001';
+    expect(ApprovalCenterQuery.parse({ project: u })).toEqual({ project: u });
+    expect(ApprovalCenterQuery.safeParse({ project: 'mine' }).success).toBe(false);
+  });
+
+  it('FR-014 ClarificationUpsert accepts whyItMatters ≤ 1000, ≤ 8 options with one recommended, 4 link keys; rejects 9 options, two recommended, unknown link key', () => {
+    const base = { workflowExternalId: 'wf-1', question: 'Which provider?', requestedAt: T };
+    const ok = ClarificationUpsert.parse({
+      ...base,
+      whyItMatters: 'Determines the SDK.',
+      options: [opt('oidc', true), opt('saml')],
+      links: {
+        requirement: '/requirements/1',
+        pullRequest: 'https://github.com/acme/api/pull/1',
+        externalTicket: 'https://jira.example/PLAT-42',
+        workflow: '/workflows/1',
+      },
+    });
+    expect(ok.hasRecommendedAnswer).toBe(true);
+    expect(ok.options).toHaveLength(2);
+    expect(ClarificationUpsert.parse(base)).toMatchObject({ options: [], links: {} });
+    expect(
+      ClarificationUpsert.safeParse({
+        ...base,
+        options: Array.from({ length: 9 }, (_, i) => opt(`o${i}`)),
+      }).success,
+    ).toBe(false);
+    expect(
+      ClarificationUpsert.safeParse({ ...base, options: [opt('a', true), opt('b', true)] }).success,
+    ).toBe(false);
+    expect(ClarificationUpsert.safeParse({ ...base, options: [opt('a'), opt('a')] }).success).toBe(
+      false,
+    );
+    expect(ClarificationUpsert.safeParse({ ...base, links: { wiki: 'https://x' } }).success).toBe(
+      false,
+    );
+    expect(
+      ClarificationUpsert.safeParse({ ...base, links: { requirement: 'ftp://x' } }).success,
+    ).toBe(false);
+    expect(ClarificationUpsert.safeParse({ ...base, whyItMatters: 'x'.repeat(1001) }).success).toBe(
+      false,
+    );
+  });
+
+  it('FR-012 ApprovalUpsert accepts context ≤ 2000 and links', () => {
+    const base = {
+      workflowExternalId: 'wf-1',
+      ask: 'Merge PR #212',
+      riskLevel: 'MEDIUM',
+      requestedAt: T,
+    };
+    expect(
+      ApprovalUpsert.parse({
+        ...base,
+        context: 'Touches auth.',
+        links: { pullRequest: 'https://g/h/pull/212' },
+      }),
+    ).toMatchObject({ context: 'Touches auth.', links: { pullRequest: 'https://g/h/pull/212' } });
+    expect(ApprovalUpsert.parse(base)).toMatchObject({ links: {} });
+    expect(ApprovalUpsert.safeParse({ ...base, context: 'x'.repeat(2001) }).success).toBe(false);
+  });
+
+  it('FR-015 AlreadyResolvedProblem parses a 409 body with resolution', () => {
+    const body = AlreadyResolvedProblem.parse({
+      type: 'urn:cdevi:problem:already-resolved',
+      title: 'Already resolved',
+      status: 409,
+      detail: 'approved by Ada Approver',
+      resolution: {
+        outcome: 'approved',
+        by: { id: '00000000-0000-7000-8000-000000000001', name: 'Ada Approver' },
+        at: T,
+        answer: null,
+        reason: null,
+        target: null,
+        workflowState: 'RUNNING',
+      },
+    });
+    expect(body.resolution.outcome).toBe('approved');
   });
 });

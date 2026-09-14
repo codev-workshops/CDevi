@@ -260,7 +260,7 @@ Indexes: `(organization_id, occurred_at DESC)`, `(organization_id, target_type, 
 | `requiresConfirmation(riskLevel)` | `riskLevel ∈ {HIGH, CRITICAL}` |
 | `resultingState(decision)` | approve → `RUNNING`; answer → `RUNNING`; reject → the request's `target` (`BLOCKED` \| `CANCELLED`) |
 | `decisionAllowed(workflowState, itemPending)` | `workflowState = WAITING_FOR_HUMAN ∧ itemPending`; every target is `canTransition(WAITING_FOR_HUMAN, target)` |
-| `orderApprovalCenter(items)` | `riskRank(riskLevel ?? none) DESC, requestedAt ASC, id ASC`, where clarifications rank below LOW |
+| `orderApprovalCenter(a, b)` | comparator: `riskRank(riskLevel) ASC` (CRITICAL=0 … LOW=3, null=4 so clarifications sort last), then `requestedAt ASC`, then `id ASC` |
 | `answerIsValid(body, options)` | exactly one of `option`/`text`; `option` must be one of `options[].value`; `text` trimmed 1–2 000 |
 
 ## 14. Read models (`packages/contracts/src/approval-center.ts`)
@@ -272,8 +272,9 @@ ApprovalCenterItem {
   requestedAt, expiresAt: IsoDateTime | null, hasRecommendedAnswer, href: `/approvals/${id}`
 }
 ApprovalCenterSnapshot { generatedAt, project: 'all' | uuid, items: ApprovalCenterItem[] (≤ 200), counts { approvals, clarifications } }
-Resolution { outcome: 'approved' | 'rejected' | 'answered', by { id: uuid | null, displayName }, at,
-             reason: string | null, target: 'BLOCKED' | 'CANCELLED' | null, answerOption, answerText, workflowState }
+Resolution { outcome: 'approved' | 'rejected' | 'answered', by { id: uuid | null, name }, at,
+             reason: string | null, target: 'BLOCKED' | 'CANCELLED' | null,
+             answer: { option: string | null, text } | null, workflowState }
 ApprovalCenterDetail {
   item, workflowState, canDecide: boolean,
   approval: { context, links, requiresConfirmation } | null,

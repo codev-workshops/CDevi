@@ -6,3 +6,6 @@ export * from './inbox';
 export * from './read-model';
 export * from './workflow-detail';
 export * from './workflow-detail-model';
+export * from './decision-rules';
+export * from './decisions';
+export * from './approval-center';

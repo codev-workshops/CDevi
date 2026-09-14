@@ -14,6 +14,8 @@ import {
   WorkflowUpsert,
 } from './ingest';
 import { WorkflowActionRequest, WorkflowDetail } from './workflow-detail';
+import { AlreadyResolvedProblem, AnswerRequest, ApproveRequest, RejectRequest } from './decisions';
+import { ApprovalCenterDetail, ApprovalCenterSnapshot, DecisionResult } from './approval-center';
 
 type Json = Record<string, unknown>;
 
@@ -55,6 +57,27 @@ const workflowId = {
   schema: { type: 'string', format: 'uuid' },
 };
 
+const alreadyResolved = {
+  description:
+    'Already resolved by someone else (urn:cdevi:problem:already-resolved, body carries the recorded resolution) or the workflow is no longer WAITING_FOR_HUMAN (urn:cdevi:problem:invalid-transition)',
+  content: {
+    'application/problem+json': {
+      schema: {
+        oneOf: [
+          { $ref: '#/components/schemas/AlreadyResolvedProblem' },
+          { $ref: '#/components/schemas/Problem' },
+        ],
+      },
+    },
+  },
+};
+const decisionErrors = {
+  '401': problem('Not signed in'),
+  '403': problem('Only approvers and administrators may decide (FR-032)'),
+  '404': problem('Not found or not visible'),
+  '409': alreadyResolved,
+};
+
 /**
  * specs/001 US1 fragment: Workflow Detail read + actions and the stage/run/artifact/test-run ingestion routes.
  * `specs/001-sdlc-control-plane-mvp/contracts/openapi.yaml` is a snapshot of this.
@@ -63,13 +86,13 @@ export function buildWorkflowDetailOpenApi(): Json {
   return {
     openapi: '3.1.0',
     info: {
-      title: 'CDevi API — Workflow Detail (specs/001 US1)',
-      version: '0.1.0',
+      title: 'CDevi API — Workflow Detail and Approval Center (specs/001 US1–US2)',
+      version: '0.2.0',
       description:
-        'Generated from Zod schemas in packages/contracts (`pnpm -F @cdevi/contracts openapi`) and snapshot-tested; edit the schemas, not the yaml. Extends the specs/003 document: same session cookie, Bearer ingestion tokens, Problem errors. Live updates reuse GET /inbox/stream — the client filters inbox.changed frames by workflowId.',
+        'Generated from Zod schemas in packages/contracts (`pnpm -F @cdevi/contracts openapi`) and snapshot-tested; edit the schemas, not the yaml. Extends the specs/003 document: same session cookie, Bearer ingestion tokens, Problem errors. Live updates reuse GET /inbox/stream — the client filters inbox.changed frames by workflowId. Human decisions (approve, reject, answer) are a separate path from agent ingestion: session user, approver/administrator only, exactly once.',
     },
     servers: [{ url: '/api' }],
-    tags: [{ name: 'workflows' }, { name: 'ingest' }],
+    tags: [{ name: 'workflows' }, { name: 'ingest' }, { name: 'approvals' }],
     paths: {
       '/workflows/{id}': {
         get: {
@@ -169,6 +192,99 @@ export function buildWorkflowDetailOpenApi(): Json {
           responses: { '200': json('IngestResult'), ...ingestErrors },
         },
       },
+      '/approvals': {
+        get: {
+          tags: ['approvals'],
+          summary: 'Approval Center list: pending approvals and clarifications (FR-011, FR-025)',
+          description:
+            'Items whose workflow is WAITING_FOR_HUMAN and that are not yet decided/answered, across the visible projects (administrators: all; others: memberships) or one project. Ordered highest risk first, then oldest; clarifications after every approval. Bounded to 200.',
+          security: [{ sessionCookie: [] }],
+          parameters: [
+            {
+              name: 'project',
+              in: 'query',
+              required: false,
+              schema: {
+                oneOf: [{ const: 'all' }, { type: 'string', format: 'uuid' }],
+                default: 'all',
+              },
+            },
+          ],
+          responses: {
+            '200': {
+              ...json('ApprovalCenterSnapshot'),
+              headers: {
+                'Server-Timing': { schema: { type: 'string' }, description: 'approvals;dur=…' },
+              },
+            },
+            '400': problem('Invalid query'),
+            '401': problem('Not signed in'),
+          },
+        },
+      },
+      '/approvals/{id}': {
+        get: {
+          tags: ['approvals'],
+          summary:
+            'Approval or clarification detail with context, links, resolution and audit (FR-012, FR-014, FR-029)',
+          description:
+            'id is an approval id or a clarification id. canDecide reflects the caller role; resolution is null while pending. Not visible and unknown both return 404.',
+          security: [{ sessionCookie: [] }],
+          parameters: [workflowId],
+          responses: {
+            '200': json('ApprovalCenterDetail'),
+            '400': problem('Invalid id'),
+            '401': problem('Not signed in'),
+            '404': problem('Not found or not visible'),
+          },
+        },
+      },
+      '/approvals/{id}/approve': {
+        post: {
+          tags: ['approvals'],
+          summary: 'Approve an approval; workflow resumes to RUNNING (FR-012, FR-013, FR-015)',
+          description:
+            'HIGH and CRITICAL require confirmed=true (400 validation with path confirmed otherwise). Locks the row (SELECT … FOR UPDATE): the first writer wins and a later caller receives 409 with the recorded resolution. Writes decision, workflow transition, audit event and the inbox change notification in one transaction.',
+          security: [{ sessionCookie: [] }],
+          parameters: [workflowId],
+          requestBody: { required: true, ...json('ApproveRequest') },
+          responses: {
+            '200': json('DecisionResult'),
+            '400': problem('Invalid body or missing confirmation'),
+            ...decisionErrors,
+          },
+        },
+      },
+      '/approvals/{id}/reject': {
+        post: {
+          tags: ['approvals'],
+          summary:
+            'Reject an approval with a reason; workflow moves to BLOCKED or CANCELLED (FR-013, FR-015)',
+          security: [{ sessionCookie: [] }],
+          parameters: [workflowId],
+          requestBody: { required: true, ...json('RejectRequest') },
+          responses: {
+            '200': json('DecisionResult'),
+            '400': problem('Invalid body (reason required, target BLOCKED|CANCELLED)'),
+            ...decisionErrors,
+          },
+        },
+      },
+      '/clarifications/{id}/answer': {
+        post: {
+          tags: ['approvals'],
+          summary:
+            'Answer a clarification with a suggested option or free text; workflow resumes (FR-014, FR-015)',
+          security: [{ sessionCookie: [] }],
+          parameters: [workflowId],
+          requestBody: { required: true, ...json('AnswerRequest') },
+          responses: {
+            '200': json('DecisionResult'),
+            '400': problem('Invalid body (exactly one of option/text; option must be offered)'),
+            ...decisionErrors,
+          },
+        },
+      },
     },
     components: {
       securitySchemes: {
@@ -184,6 +300,13 @@ export function buildWorkflowDetailOpenApi(): Json {
         ArtifactUpsert: schema(ArtifactUpsert),
         TestRunUpsert: schema(TestRunUpsert),
         IngestResult: schema(IngestResult),
+        ApprovalCenterSnapshot: schema(ApprovalCenterSnapshot),
+        ApprovalCenterDetail: schema(ApprovalCenterDetail),
+        ApproveRequest: schema(ApproveRequest),
+        RejectRequest: schema(RejectRequest),
+        AnswerRequest: schema(AnswerRequest),
+        DecisionResult: schema(DecisionResult),
+        AlreadyResolvedProblem: schema(AlreadyResolvedProblem),
       },
     },
   };
@@ -198,7 +321,7 @@ export function buildFullOpenApi(): Json {
   return {
     ...base,
     info: { ...(base['info'] as Json), title: 'CDevi API' },
-    tags: [...(base['tags'] as Json[]), { name: 'workflows' }],
+    tags: [...(base['tags'] as Json[]), { name: 'workflows' }, { name: 'approvals' }],
     paths: { ...(base['paths'] as Json), ...(frag['paths'] as Json) },
     components: {
       securitySchemes: components.securitySchemes,

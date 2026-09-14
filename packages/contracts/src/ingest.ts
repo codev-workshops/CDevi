@@ -23,11 +23,44 @@ export const Transition = z.object({
 });
 export type Transition = z.infer<typeof Transition>;
 
+/** http(s) URL or app-relative path, ≤ 500 chars (data-model.md §13). */
+export const DecisionLink = z
+  .string()
+  .trim()
+  .max(500)
+  .refine((s) => /^https?:\/\//.test(s) || s.startsWith('/'), {
+    message: 'must be an http(s) URL or an app-relative path',
+  });
+export const DECISION_LINK_KEYS = [
+  'requirement',
+  'pullRequest',
+  'externalTicket',
+  'workflow',
+] as const;
+export const DecisionLinks = z
+  .object({
+    requirement: DecisionLink.optional(),
+    pullRequest: DecisionLink.optional(),
+    externalTicket: DecisionLink.optional(),
+    workflow: DecisionLink.optional(),
+  })
+  .strict();
+export type DecisionLinks = z.infer<typeof DecisionLinks>;
+
+export const ClarificationOption = z.object({
+  value: line(80),
+  label: line(120),
+  recommended: z.boolean().default(false),
+});
+export type ClarificationOption = z.infer<typeof ClarificationOption>;
+
 export const ApprovalUpsert = z
   .object({
     workflowExternalId: ExternalId,
     ask: line(240),
     riskLevel: RiskLevel,
+    context: z.string().trim().min(1).max(2000).nullable().optional(),
+    links: DecisionLinks.default({}),
     requestedByAgent: line(80).nullable().optional(),
     requestedAt: IsoDateTime,
     expiresAt: IsoDateTime.nullable().optional(),
@@ -46,17 +79,34 @@ export const ApprovalUpsert = z
   });
 export type ApprovalUpsert = z.infer<typeof ApprovalUpsert>;
 
-export const ClarificationUpsert = z.object({
-  workflowExternalId: ExternalId,
-  question: line(240),
-  requestedByAgent: line(80).nullable().optional(),
-  requestedAt: IsoDateTime,
-  hasRecommendedAnswer: z.boolean().default(false),
-  answer: z
-    .object({ answeredAt: IsoDateTime, answeredBy: line(120).nullable().optional() })
-    .nullable()
-    .optional(),
-});
+export const ClarificationUpsert = z
+  .object({
+    workflowExternalId: ExternalId,
+    question: line(240),
+    requestedByAgent: line(80).nullable().optional(),
+    requestedAt: IsoDateTime,
+    hasRecommendedAnswer: z.boolean().default(false),
+    whyItMatters: z.string().trim().min(1).max(1000).nullable().optional(),
+    options: z
+      .array(ClarificationOption)
+      .max(8)
+      .default([])
+      .refine((o) => o.filter((x) => x.recommended).length <= 1, {
+        message: 'at most one option may be recommended',
+      })
+      .refine((o) => new Set(o.map((x) => x.value)).size === o.length, {
+        message: 'option values must be unique',
+      }),
+    links: DecisionLinks.default({}),
+    answer: z
+      .object({ answeredAt: IsoDateTime, answeredBy: line(120).nullable().optional() })
+      .nullable()
+      .optional(),
+  })
+  .transform((c) => ({
+    ...c,
+    hasRecommendedAnswer: c.hasRecommendedAnswer || c.options.some((o) => o.recommended),
+  }));
 export type ClarificationUpsert = z.infer<typeof ClarificationUpsert>;
 
 export const IngestResult = z.object({
