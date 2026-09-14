@@ -22,7 +22,7 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm build:tokens
+      - run: pnpm build
         working-directory: packages/design-system
       - run: pnpm lint
       - run: pnpm lint:css
@@ -59,6 +59,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: psql postgres://postgres:postgres@localhost:5432/cdevi -f packages/db/docker/init-roles.sql
       - run: pnpm db:migrate
+      - run: pnpm build
+        working-directory: packages/design-system
       - run: pnpm test
       - run: pnpm check:size
 
