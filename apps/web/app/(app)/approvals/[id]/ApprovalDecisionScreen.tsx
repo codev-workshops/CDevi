@@ -514,6 +514,12 @@ export function ApprovalDecisionScreen({ initial }: ApprovalDecisionScreenProps)
       <p>
         <Button variant="ghost" href="/approvals">
           Back to Approval Center
+        </Button>{' '}
+        <Button variant="ghost" href="/inbox?focus=tabs">
+          Back to Inbox
+        </Button>{' '}
+        <Button variant="ghost" href={`/workflows/${encodeURIComponent(item.workflowId)}`}>
+          Open workflow
         </Button>
       </p>
       <PageMeta>
