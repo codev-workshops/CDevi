@@ -395,7 +395,8 @@ export function deriveFailure(
   const ordered = orderStages(stages);
   const failing = ordered.find((s) => s.state === 'FAILED');
   if (!failing && workflow.state !== 'FAILED') return null;
-  const anchor = failing ?? ordered[ordered.length - 1];
+  const anchor =
+    failing ?? ordered.find((s) => s.errorSummary !== null) ?? deriveCurrentStage(ordered);
   if (!anchor) return null;
   const lastSuccess = [...ordered]
     .reverse()

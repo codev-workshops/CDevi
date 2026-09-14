@@ -333,6 +333,13 @@ describe('workflow-detail read model (data-model.md §6)', () => {
     expect(deriveFailure(wf, first)?.lastSuccessfulStage).toBeNull();
     expect(deriveFailure(wf, first)?.reason).toBe('other');
     expect(deriveFailure({ ...wf, state: 'RUNNING' }, pipeline(['RUNNING']))).toBeNull();
+
+    // Workflow still FAILED while the failing stage was already moved to RETRYING: anchor on the active stage, not the last one.
+    const retrying = pipeline(['COMPLETED', 'COMPLETED', 'RETRYING', 'QUEUED', 'QUEUED']);
+    const f = deriveFailure(wf, retrying);
+    expect(f?.failingStage.position).toBe(3);
+    expect(f?.lastSuccessfulStage?.position).toBe(2);
+    expect(f?.reason).toBe('other');
   });
 
   it('FR-006 allowedActions gates retry/cancel to engineer+administrator and escalate to engineer+approver+administrator by state', () => {

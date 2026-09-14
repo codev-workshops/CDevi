@@ -530,7 +530,7 @@ export function buildShowcase(base: Date, wait: SeedWorkflow, fail: SeedWorkflow
       test(`${w}-t1`, 5, 'unit', 'FAILED', [128, 126, 2, 0], wm + 82, wm + 70),
       test(`${w}-t2`, 5, 'unit', 'PASSED', [128, 128, 0, 0], wm + 50, wm + 40),
       test(`${w}-t3`, 5, 'integration', 'PASSED', [22, 22, 0, 0], wm + 40, wm + 30),
-      test(`${w}-t4`, 5, 'e2e', 'PASSED', [10, 6, 0, 4], wm + 30, wm + 21),
+      test(`${w}-t4`, 5, 'e2e', 'PASSED', [6, 6, 0, 0], wm + 30, wm + 21),
     ],
   };
 
