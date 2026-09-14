@@ -89,7 +89,8 @@ export interface AuditEvent {
   target: ReactNode;
   workflow?: ReactNode;
   policy?: ReactNode;
-  risk: RiskLevel;
+  /** Omitted (or null) when the target carries no risk level, e.g. a clarification. */
+  risk?: RiskLevel | null;
   result: ReactNode;
 }
 
@@ -112,7 +113,7 @@ const auditColumns: TableColumn<AuditEvent>[] = [
   },
   { key: 'workflow', header: 'Workflow', cell: (e) => e.workflow ?? '—' },
   { key: 'policy', header: 'Policy', cell: (e) => e.policy ?? '—' },
-  { key: 'risk', header: 'Risk', cell: (e) => <RiskBadge level={e.risk} /> },
+  { key: 'risk', header: 'Risk', cell: (e) => (e.risk ? <RiskBadge level={e.risk} /> : '—') },
   { key: 'result', header: 'Result', cell: (e) => e.result },
 ];
 

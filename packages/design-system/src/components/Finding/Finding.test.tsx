@@ -161,6 +161,19 @@ describe('FindingRow and AuditTable', () => {
     expect(within(table).getByText('medium risk')).toHaveClass('cd-risk-medium');
   });
 
+  it('AuditTable renders an em dash instead of a badge when the event has no risk level', () => {
+    renderThemed(
+      <AuditTable
+        events={[
+          { id: 'e2', time: 't', actor: 'Approver 1', action: 'clarification.answered', target: 'c', result: 'RUNNING' },
+        ]}
+      />,
+    );
+    const cells = within(screen.getByRole('table')).getAllByRole('cell');
+    expect(cells[6]).toHaveTextContent('—');
+    expect(screen.queryByText(/risk$/)).toBeNull();
+  });
+
   it('AuditRow can be composed inside a custom table', () => {
     renderThemed(
       <table>

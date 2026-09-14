@@ -1,11 +1,11 @@
 import 'server-only';
-import type { InboxSnapshot, Me, Tab } from '@cdevi/contracts';
+import type { ApprovalCenterSnapshot, InboxSnapshot, Me, Tab } from '@cdevi/contracts';
 import { cookies, headers } from 'next/headers';
 import { cache } from 'react';
 import { ApiError, apiFetch } from './api';
 import { PROJECT_COOKIE } from './navigation';
 
-async function cookieHeader(): Promise<string> {
+export async function cookieHeader(): Promise<string> {
   return (await headers()).get('cookie') ?? '';
 }
 
@@ -30,3 +30,13 @@ export const getInboxSnapshot = cache(async (tab: Tab, project: string): Promise
   const qs = new URLSearchParams({ tab, project });
   return apiFetch<InboxSnapshot>(`/api/inbox?${qs}`, { cookie: await cookieHeader() });
 });
+
+/** Approval Center snapshot per project per request; layout (nav count) and page share it (specs/001 US2 scenario 6). */
+export const getApprovalCenterSnapshot = cache(
+  async (project: string): Promise<ApprovalCenterSnapshot> => {
+    const qs = new URLSearchParams({ project });
+    return apiFetch<ApprovalCenterSnapshot>(`/api/approvals?${qs}`, {
+      cookie: await cookieHeader(),
+    });
+  },
+);

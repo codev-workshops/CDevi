@@ -19,11 +19,14 @@ import { ThemeSwitch } from './ThemeSwitch';
 interface InboxCountStore {
   count: number | undefined;
   setCount: (n: number) => void;
+  /** Pending approvals + clarifications shown beside "Approvals" (specs/001 US2 scenario 6). */
+  setApprovalsCount: (n: number) => void;
   setPanel: (panel: ReactNode) => void;
 }
 const InboxCountContext = createContext<InboxCountStore>({
   count: undefined,
   setCount: () => {},
+  setApprovalsCount: () => {},
   setPanel: () => {},
 });
 /** Lets the Inbox page publish the Needs-you count and the panel from its own snapshot so nav, tab and Today agree (SC-004). */
@@ -32,16 +35,20 @@ export const useInboxCount = () => useContext(InboxCountContext);
 export interface AppFrameProps {
   me: Me;
   needsYouCount: number | undefined;
+  approvalsCount?: number | undefined;
   panel?: ReactNode;
   children: ReactNode;
 }
 
 /** The signed-in shell (ui-inbox-screen.md §1): full-viewport AppShell, no sticky headers (DR-05). */
-export function AppFrame({ me, needsYouCount, panel, children }: AppFrameProps) {
+export function AppFrame({ me, needsYouCount, approvalsCount, panel, children }: AppFrameProps) {
   const pathname = usePathname() ?? '/';
   const [count, setCount] = useState<number | undefined>(needsYouCount);
+  const [pendingDecisions, setApprovalsCount] = useState<number | undefined>(approvalsCount);
   const [livePanel, setPanel] = useState<ReactNode>(undefined);
-  const store = useMemo(() => ({ count, setCount, setPanel }), [count]);
+  const store = useMemo(() => ({ count, setCount, setApprovalsCount, setPanel }), [count]);
+  const navCount = (href: string) =>
+    href === '/inbox' ? count : href === '/approvals' ? pendingDecisions : undefined;
   const shownPanel = livePanel ?? panel;
   const isActive = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
 
@@ -70,22 +77,19 @@ export function AppFrame({ me, needsYouCount, panel, children }: AppFrameProps) 
             }
           >
             <>
-              {ungrouped.map((n) =>
-                n.href === '/inbox' ? (
+              {ungrouped.map((n) => {
+                const c = navCount(n.href);
+                return (
                   <NavItem
                     key={n.href}
                     href={n.href}
                     active={isActive(n.href)}
-                    {...(count !== undefined ? { count } : {})}
+                    {...(c !== undefined ? { count: c } : {})}
                   >
                     {n.label}
                   </NavItem>
-                ) : (
-                  <NavItem key={n.href} href={n.href} active={isActive(n.href)}>
-                    {n.label}
-                  </NavItem>
-                ),
-              )}
+                );
+              })}
               <NavGroup>Administration</NavGroup>
               {admin.map((n) => (
                 <NavItem key={n.href} href={n.href} active={isActive(n.href)}>

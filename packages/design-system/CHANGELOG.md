@@ -3,6 +3,15 @@
 Tokens, CSS variable names, `cd-` class names, component names and props are the public API. Additive
 changes bump the minor version; renames or removals bump the major version and carry a migration note.
 
+## 1.3.0 — 2026-09-14
+
+### Added
+
+- `OptionGroup` (`legend`, `error` slots): a real `<fieldset>`/`<legend>` around `OptionRow`s so a set of radios has
+  one accessible group name (rejection target, suggested clarification answers — specs/001 US2). CSS: `.cd-optgroup`.
+- `AuditEvent.risk` is optional (`RiskLevel | null`): the Risk column renders an em dash when the audited target has
+  no risk level (a clarification answer, specs/001 US2 scenario 3). Events with a level render `RiskBadge` as before.
+
 ## 1.2.0 — 2026-09-14
 
 ### Added
