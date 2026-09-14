@@ -551,9 +551,8 @@ describe.skipIf(skipDb)('Approval Center API (specs/001 US2, FR-011..FR-015, FR-
       holder.release();
     }
     expect(await workflowState(a.ext)).toBe('CANCELLED');
-    const row = (
-      await app.pool.query(`SELECT decision FROM approvals WHERE id = $1`, [a.id])
-    ).rows[0];
+    const row = (await app.pool.query(`SELECT decision FROM approvals WHERE id = $1`, [a.id]))
+      .rows[0];
     expect(row.decision).toBeNull();
   });
 
@@ -573,7 +572,10 @@ describe.skipIf(skipDb)('Approval Center API (specs/001 US2, FR-011..FR-015, FR-
           },
         }),
       );
-    for (const [position, link] of [[1, { approvalExternalId: `${a.ext}-a` }], [2, {}]] as const) {
+    for (const [position, link] of [
+      [1, { approvalExternalId: `${a.ext}-a` }],
+      [2, {}],
+    ] as const) {
       expect((await stage(position, link)).statusCode).toBe(200);
       const waiting = await stage(position, {
         state: 'WAITING_FOR_HUMAN',
