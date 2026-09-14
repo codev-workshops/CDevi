@@ -4,6 +4,8 @@ import { hashPassword } from '../password';
 import { generateToken, hashToken } from '../token';
 import { buildS500, PROJECTS } from './s500';
 
+export { SHOWCASE_FAILED, SHOWCASE_WAITING } from './s500';
+
 export class SeedRefusedError extends Error {}
 
 export interface SeedOptions {
@@ -19,7 +21,16 @@ export interface SeedResult {
   organizationId: string;
   password: string;
   ingestToken: string;
-  counts: { users: number; workflows: number; approvals: number; clarifications: number };
+  counts: {
+    users: number;
+    workflows: number;
+    approvals: number;
+    clarifications: number;
+    stages: number;
+    runs: number;
+    artifacts: number;
+    testRuns: number;
+  };
 }
 
 /** Truncates every table and loads S-500. Refuses to run in production (FR-022). */
@@ -37,7 +48,7 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
     opts.password ?? env['CDEVI_SEED_PASSWORD'] ?? generateToken('cdevi-demo-').slice(0, 24);
   const ingestToken = opts.ingestToken ?? env['CDEVI_SEED_INGEST_TOKEN'] ?? generateToken('cdvi_');
 
-  const { users, workflows } = buildS500(base);
+  const { users, workflows, showcase } = buildS500(base);
   const passwordHash = await hashPassword(password);
 
   const client = new pg.Client({ connectionString });
@@ -45,7 +56,7 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
   try {
     await client.query('BEGIN');
     await client.query(
-      `TRUNCATE inbox_change_log, ingestion_log, workflow_transitions, approvals, clarifications, workflows, sessions, project_memberships, ingestion_principals, users, projects, organizations RESTART IDENTITY CASCADE`,
+      `TRUNCATE inbox_change_log, ingestion_log, test_runs, artifacts, agent_runs, workflow_stages, workflow_transitions, approvals, clarifications, workflows, sessions, project_memberships, ingestion_principals, users, projects, organizations RESTART IDENTITY CASCADE`,
     );
     const org = (
       await client.query<{ id: string }>(
@@ -84,6 +95,10 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
 
     let approvals = 0;
     let clarifications = 0;
+    const workflowIds = new Map<
+      string,
+      { id: string; projectId: string; approvalId: string | null }
+    >();
     for (const w of workflows) {
       const projectId = projectIds.get(w.project)!;
       const r = await client.query<{ id: string }>(
@@ -106,6 +121,8 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
         ],
       );
       const id = r.rows[0]!.id;
+      const ref = { id, projectId, approvalId: null as string | null };
+      workflowIds.set(w.externalId, ref);
       const created = w.startedAt ?? w.stateObservedAt;
       await client.query(
         `INSERT INTO workflow_transitions (organization_id, workflow_id, from_state, to_state, observed_at, principal_id) VALUES ($1,$2,NULL,'QUEUED',$3,$4)`,
@@ -119,8 +136,8 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
       }
       if (w.approval) {
         approvals++;
-        await client.query(
-          `INSERT INTO approvals (organization_id, project_id, workflow_id, external_id, ask, risk_level, requested_by_agent, requested_at, expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        const ar = await client.query<{ id: string }>(
+          `INSERT INTO approvals (organization_id, project_id, workflow_id, external_id, ask, risk_level, requested_by_agent, requested_at, expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
           [
             org,
             projectId,
@@ -133,6 +150,7 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
             w.approval.expiresAt,
           ],
         );
+        ref.approvalId = ar.rows[0]!.id;
       }
       if (w.decidedApproval) {
         const d = w.decidedApproval;
@@ -169,6 +187,106 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
         );
       }
     }
+    // specs/001 US1 showcase journeys (research R8): stages, stage transitions, runs, artifacts, test runs.
+    const counts = { stages: 0, runs: 0, artifacts: 0, testRuns: 0 };
+    for (const sc of showcase) {
+      const ref = workflowIds.get(sc.externalId)!;
+      const stageIds = new Map<number, string>();
+      for (const s of sc.stages) {
+        counts.stages++;
+        const sr = await client.query<{ id: string }>(
+          `INSERT INTO workflow_stages (organization_id, project_id, workflow_id, position, name, state, state_observed_at, state_reason, agent, started_at, finished_at, error_summary, requires_approval, approval_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
+          [
+            org,
+            ref.projectId,
+            ref.id,
+            s.position,
+            s.name,
+            s.state,
+            s.stateObservedAt,
+            s.stateReason,
+            s.agent,
+            s.startedAt,
+            s.finishedAt,
+            s.errorSummary,
+            s.requiresApproval,
+            s.linkApproval ? ref.approvalId : null,
+          ],
+        );
+        const stageId = sr.rows[0]!.id;
+        stageIds.set(s.position, stageId);
+        for (const h of s.history) {
+          await client.query(
+            `INSERT INTO workflow_transitions (organization_id, workflow_id, stage_id, from_state, to_state, observed_at, reason, principal_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+            [org, ref.id, stageId, h.fromState, h.toState, h.observedAt, h.reason, principal],
+          );
+        }
+      }
+      for (const run of sc.runs) {
+        counts.runs++;
+        await client.query(
+          `INSERT INTO agent_runs (organization_id, project_id, workflow_id, stage_id, external_id, agent, model, state, started_at, finished_at, summary, timeline)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)`,
+          [
+            org,
+            ref.projectId,
+            ref.id,
+            stageIds.get(run.stagePosition),
+            run.externalId,
+            run.agent,
+            run.model,
+            run.state,
+            run.startedAt,
+            run.finishedAt,
+            run.summary,
+            JSON.stringify(run.timeline),
+          ],
+        );
+      }
+      for (const a of sc.artifacts) {
+        counts.artifacts++;
+        await client.query(
+          `INSERT INTO artifacts (organization_id, project_id, workflow_id, stage_id, external_id, type, title, href, summary, produced_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+          [
+            org,
+            ref.projectId,
+            ref.id,
+            stageIds.get(a.stagePosition),
+            a.externalId,
+            a.type,
+            a.title,
+            a.href,
+            a.summary,
+            a.producedAt,
+          ],
+        );
+      }
+      for (const tr of sc.testRuns) {
+        counts.testRuns++;
+        await client.query(
+          `INSERT INTO test_runs (organization_id, project_id, workflow_id, stage_id, external_id, category, status, total, passed, failed, skipped, href, started_at, finished_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+          [
+            org,
+            ref.projectId,
+            ref.id,
+            stageIds.get(tr.stagePosition),
+            tr.externalId,
+            tr.category,
+            tr.status,
+            tr.total,
+            tr.passed,
+            tr.failed,
+            tr.skipped,
+            tr.href,
+            tr.startedAt,
+            tr.finishedAt,
+          ],
+        );
+      }
+    }
     // The seed's own inserts should not count as "changes" for SSE replay.
     await client.query(`TRUNCATE inbox_change_log RESTART IDENTITY`);
     await client.query('COMMIT');
@@ -176,6 +294,9 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
     log(`Seeded S-500 into organization ${org} (base ${base.toISOString()})`);
     log(
       `  users: ${users.length}  workflows: ${workflows.length}  approvals: ${approvals}  clarifications: ${clarifications}`,
+    );
+    log(
+      `  showcase (${showcase.map((s) => s.externalId).join(', ')}): stages ${counts.stages}  runs ${counts.runs}  artifacts ${counts.artifacts}  test runs ${counts.testRuns}`,
     );
     log(
       '  Demo credentials (shown once): admin@cdevi.demo, approver1@cdevi.demo, engineer1@cdevi.demo, viewer1@cdevi.demo',
@@ -186,7 +307,13 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
       organizationId: org,
       password,
       ingestToken,
-      counts: { users: users.length, workflows: workflows.length, approvals, clarifications },
+      counts: {
+        users: users.length,
+        workflows: workflows.length,
+        approvals,
+        clarifications,
+        ...counts,
+      },
     };
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});

@@ -1,7 +1,7 @@
 import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
 import swagger from '@fastify/swagger';
-import { buildOpenApi } from '@cdevi/contracts/openapi';
+import { buildFullOpenApi } from '@cdevi/contracts/openapi';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { serializerCompiler, validatorCompiler } from 'fastify-type-provider-zod';
 import type pg from 'pg';
@@ -13,6 +13,7 @@ import authRoutes from './routes/auth';
 import healthRoutes from './routes/health';
 import inboxRoutes from './routes/inbox';
 import ingestRoutes from './routes/ingest';
+import workflowRoutes from './routes/workflows';
 
 export interface BuildOptions {
   /** Injected clock (Constitution II: time is controlled in tests). */
@@ -52,7 +53,7 @@ export async function buildApp(opts: BuildOptions): Promise<FastifyInstance> {
   await app.register(rateLimit, { global: false, hook: 'preHandler' });
   await app.register(swagger, {
     mode: 'static',
-    specification: { document: buildOpenApi() as never },
+    specification: { document: buildFullOpenApi() as never },
   });
   await app.register(dbPlugin, { pool: opts.pool });
   await app.register(notifyPlugin, { enabled: opts.notify ?? true });
@@ -74,6 +75,7 @@ export async function buildApp(opts: BuildOptions): Promise<FastifyInstance> {
       await api.register(authRoutes, { signInMax: opts.rateLimit?.signInMax ?? 5 });
       await api.register(inboxRoutes, { heartbeatMs: opts.heartbeatMs });
       await api.register(ingestRoutes);
+      await api.register(workflowRoutes);
     },
     { prefix: '/api' },
   );

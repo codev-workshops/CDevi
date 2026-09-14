@@ -32,6 +32,10 @@ export const problems = {
       'A request is already pending',
       detail,
     ),
+  unknownStage: (detail: string) =>
+    new ProblemError(404, PROBLEM_TYPES.unknownStage, 'Unknown stage', detail),
+  artifactImmutable: (detail = 'This artifact is immutable: its producing stage has completed.') =>
+    new ProblemError(409, PROBLEM_TYPES.artifactImmutable, 'Artifact is immutable', detail),
   invalidCursor: () =>
     new ProblemError(
       400,

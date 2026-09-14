@@ -1,11 +1,14 @@
 /**
- * Drizzle schema mirroring migrations/0001_init.sql (data-model.md §2). The SQL file is the source of truth
+ * Drizzle schema mirroring migrations/0001_init.sql and 0002_workflow_detail.sql. The SQL files are the source of truth
  * for triggers, partial indexes, RLS and grants, which Drizzle does not model; this file gives queries types.
  */
+import type { AgentRunEvent } from '@cdevi/contracts';
 import {
   bigserial,
   boolean,
   customType,
+  integer,
+  jsonb,
   pgEnum,
   pgTable,
   primaryKey,
@@ -40,6 +43,15 @@ export const ingestionOutcome = pgEnum('ingestion_outcome', [
   'rejected',
   'forbidden',
 ]);
+export const artifactType = pgEnum('artifact_type', [
+  'requirement_spec',
+  'impact_analysis',
+  'implementation_plan',
+  'test_results',
+  'code_diff',
+  'pull_request',
+]);
+export const testRunStatus = pgEnum('test_run_status', ['RUNNING', 'PASSED', 'FAILED']);
 
 export const organizations = pgTable('organizations', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -129,6 +141,82 @@ export const workflowTransitions = pgTable('workflow_transitions', {
   recordedAt: ts('recorded_at').notNull().defaultNow(),
   reason: text('reason'),
   principalId: uuid('principal_id'),
+  stageId: uuid('stage_id'),
+  userId: uuid('user_id'),
+});
+
+export const workflowStages = pgTable('workflow_stages', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  organizationId: uuid('organization_id').notNull(),
+  projectId: uuid('project_id').notNull(),
+  workflowId: uuid('workflow_id').notNull(),
+  position: smallint('position').notNull(),
+  name: text('name').notNull(),
+  state: workflowState('state').notNull(),
+  stateObservedAt: ts('state_observed_at').notNull(),
+  stateReason: text('state_reason'),
+  agent: text('agent'),
+  startedAt: ts('started_at'),
+  finishedAt: ts('finished_at'),
+  errorSummary: text('error_summary'),
+  requiresApproval: boolean('requires_approval').notNull().default(false),
+  approvalId: uuid('approval_id'),
+  clarificationId: uuid('clarification_id'),
+  createdAt: ts('created_at').notNull().defaultNow(),
+  updatedAt: ts('updated_at').notNull().defaultNow(),
+});
+
+export const agentRuns = pgTable('agent_runs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  organizationId: uuid('organization_id').notNull(),
+  projectId: uuid('project_id').notNull(),
+  workflowId: uuid('workflow_id').notNull(),
+  stageId: uuid('stage_id').notNull(),
+  externalId: text('external_id').notNull(),
+  agent: text('agent').notNull(),
+  model: text('model'),
+  state: workflowState('state').notNull(),
+  startedAt: ts('started_at').notNull(),
+  finishedAt: ts('finished_at'),
+  summary: text('summary'),
+  timeline: jsonb('timeline').$type<AgentRunEvent[]>().notNull().default([]),
+  createdAt: ts('created_at').notNull().defaultNow(),
+  updatedAt: ts('updated_at').notNull().defaultNow(),
+});
+
+export const artifacts = pgTable('artifacts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  organizationId: uuid('organization_id').notNull(),
+  projectId: uuid('project_id').notNull(),
+  workflowId: uuid('workflow_id').notNull(),
+  stageId: uuid('stage_id').notNull(),
+  externalId: text('external_id').notNull(),
+  type: artifactType('type').notNull(),
+  title: text('title').notNull(),
+  href: text('href'),
+  summary: text('summary'),
+  producedAt: ts('produced_at').notNull(),
+  createdAt: ts('created_at').notNull().defaultNow(),
+});
+
+export const testRuns = pgTable('test_runs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  organizationId: uuid('organization_id').notNull(),
+  projectId: uuid('project_id').notNull(),
+  workflowId: uuid('workflow_id').notNull(),
+  stageId: uuid('stage_id').notNull(),
+  externalId: text('external_id').notNull(),
+  category: text('category').notNull(),
+  status: testRunStatus('status').notNull(),
+  total: integer('total').notNull().default(0),
+  passed: integer('passed').notNull().default(0),
+  failed: integer('failed').notNull().default(0),
+  skipped: integer('skipped').notNull().default(0),
+  href: text('href'),
+  startedAt: ts('started_at').notNull(),
+  finishedAt: ts('finished_at'),
+  createdAt: ts('created_at').notNull().defaultNow(),
+  updatedAt: ts('updated_at').notNull().defaultNow(),
 });
 
 export const approvals = pgTable('approvals', {
