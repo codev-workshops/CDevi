@@ -47,5 +47,7 @@ export const PROBLEM_TYPES = {
   invalidTransition: 'urn:cdevi:problem:invalid-transition',
   pendingRequestExists: 'urn:cdevi:problem:pending-request-exists',
   invalidCursor: 'urn:cdevi:problem:invalid-cursor',
+  unknownStage: 'urn:cdevi:problem:unknown-stage',
+  artifactImmutable: 'urn:cdevi:problem:artifact-immutable',
   internal: 'urn:cdevi:problem:internal',
 } as const;
