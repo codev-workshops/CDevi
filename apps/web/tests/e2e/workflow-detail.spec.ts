@@ -112,7 +112,7 @@ async function ingestJourney(
       type,
       title: t,
       href: `https://example.test/${ext}/${type}`,
-      producedAt: at(180 - pos * 20),
+      producedAt: at(180 - pos * 20 - i),
     });
   }
   await put(request, `/api/ingest/test-runs/${ext}-t1`, {
