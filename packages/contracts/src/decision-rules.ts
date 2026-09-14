@@ -54,7 +54,7 @@ export function orderApprovalCenter(
 export const ANSWER_TEXT_MAX = 2000;
 
 export type AnswerOption = { value: string; label: string; recommended: boolean };
-export type AnswerInput = { option?: string | null; text?: string | null };
+export type AnswerInput = { option?: string | null | undefined; text?: string | null | undefined };
 export type AnswerValidation =
   | { ok: true; option: string | null; text: string }
   | { ok: false; path: 'answer' | 'option' | 'text'; message: string };

@@ -10,6 +10,8 @@ export class ProblemError extends Error {
     public readonly title: string,
     public readonly detail?: string,
     public readonly errors?: Problem['errors'],
+    /** Extension members merged into the Problem body (RFC 9457 §3.2), e.g. `resolution`. */
+    public readonly extensions?: Record<string, unknown>,
   ) {
     super(detail ?? title);
     this.name = 'ProblemError';
@@ -54,7 +56,12 @@ export const problems = {
 };
 
 export function sendProblem(reply: FastifyReply, p: ProblemError): FastifyReply {
-  const body: Problem = { type: p.type, title: p.title, status: p.status };
+  const body: Problem & Record<string, unknown> = {
+    ...(p.extensions ?? {}),
+    type: p.type,
+    title: p.title,
+    status: p.status,
+  };
   if (p.detail) body.detail = p.detail;
   if (p.errors) body.errors = p.errors;
   return reply.code(p.status).type('application/problem+json').send(body);

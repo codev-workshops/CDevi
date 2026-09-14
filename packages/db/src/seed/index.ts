@@ -4,7 +4,7 @@ import { hashPassword } from '../password';
 import { generateToken, hashToken } from '../token';
 import { buildS500, PROJECTS } from './s500';
 
-export { SHOWCASE_FAILED, SHOWCASE_WAITING } from './s500';
+export { DECISION_SHOWCASE, SHOWCASE_FAILED, SHOWCASE_WAITING } from './s500';
 
 export class SeedRefusedError extends Error {}
 
