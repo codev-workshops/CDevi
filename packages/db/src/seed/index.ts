@@ -56,7 +56,7 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
   try {
     await client.query('BEGIN');
     await client.query(
-      `TRUNCATE inbox_change_log, ingestion_log, test_runs, artifacts, agent_runs, workflow_stages, workflow_transitions, approvals, clarifications, workflows, sessions, project_memberships, ingestion_principals, users, projects, organizations RESTART IDENTITY CASCADE`,
+      `TRUNCATE audit_events, inbox_change_log, ingestion_log, test_runs, artifacts, agent_runs, workflow_stages, workflow_transitions, approvals, clarifications, workflows, sessions, project_memberships, ingestion_principals, users, projects, organizations RESTART IDENTITY CASCADE`,
     );
     const org = (
       await client.query<{ id: string }>(
@@ -137,7 +137,7 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
       if (w.approval) {
         approvals++;
         const ar = await client.query<{ id: string }>(
-          `INSERT INTO approvals (organization_id, project_id, workflow_id, external_id, ask, risk_level, requested_by_agent, requested_at, expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+          `INSERT INTO approvals (organization_id, project_id, workflow_id, external_id, ask, risk_level, requested_by_agent, requested_at, expires_at, context, links) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
           [
             org,
             projectId,
@@ -148,6 +148,8 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
             w.agent,
             w.approval.requestedAt,
             w.approval.expiresAt,
+            w.approval.context,
+            JSON.stringify(w.approval.links),
           ],
         );
         ref.approvalId = ar.rows[0]!.id;
@@ -173,7 +175,7 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
       if (w.clarification) {
         clarifications++;
         await client.query(
-          `INSERT INTO clarifications (organization_id, project_id, workflow_id, external_id, question, requested_by_agent, requested_at, has_recommended_answer) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          `INSERT INTO clarifications (organization_id, project_id, workflow_id, external_id, question, requested_by_agent, requested_at, has_recommended_answer, why_it_matters, options, links) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
           [
             org,
             projectId,
@@ -183,6 +185,9 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
             w.agent,
             w.clarification.requestedAt,
             w.clarification.hasRecommendedAnswer,
+            w.clarification.whyItMatters,
+            JSON.stringify(w.clarification.options),
+            JSON.stringify(w.clarification.links),
           ],
         );
       }

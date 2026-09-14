@@ -5,6 +5,8 @@
 import type {
   AgentRunEvent,
   ArtifactType,
+  ClarificationOption,
+  DecisionLinks,
   RiskLevel,
   Role,
   TestRunStatus,
@@ -66,13 +68,25 @@ export interface SeedApproval {
   riskLevel: RiskLevel;
   requestedAt: Date;
   expiresAt: Date | null;
+  context: string | null;
+  links: DecisionLinks;
 }
 export interface SeedClarification {
   externalId: string;
   question: string;
   requestedAt: Date;
   hasRecommendedAnswer: boolean;
+  whyItMatters: string | null;
+  options: ClarificationOption[];
+  links: DecisionLinks;
 }
+
+/** specs/001 US2 decision showcase (research R19): the three items the Independent Test resolves. */
+export const DECISION_SHOWCASE = {
+  requirement: 's500-apr-req',
+  pullRequest: 's500-apr-pr',
+  clarification: 's500-clr-01',
+} as const;
 export interface SeedWorkflow {
   externalId: string;
   project: ProjectKey;
@@ -752,7 +766,41 @@ export function buildS500(base: Date): {
         riskLevel: risk,
         requestedAt,
         expiresAt,
+        context: null,
+        links: {},
       };
+      if (risk === 'LOW' && k === 0) {
+        w.approval = {
+          ...w.approval,
+          externalId: DECISION_SHOWCASE.requirement,
+          ask: `Approve: requirement spec for ${w.title}`,
+          context:
+            'The requirement agent drafted the specification from the ticket and the linked design notes. Approving lets the analysis stage start.',
+          links: {
+            requirement: `/requirements/${w.externalId}`,
+            workflow: `/workflows/${w.externalId}`,
+          },
+        };
+        w.stageIndex = 1;
+        w.stageName = STAGES[0]!;
+      }
+      if (risk === 'MEDIUM' && k === 0) {
+        const pr = int(400, 499);
+        w.approval = {
+          ...w.approval,
+          externalId: DECISION_SHOWCASE.pullRequest,
+          ask: `Approve: merge PR #${pr} into \`main\``,
+          context:
+            'All required checks passed and the review agent found no blocking findings. Merging closes the workflow once CI on main is green.',
+          links: {
+            pullRequest: `https://github.com/acme/${w.project}/pull/${pr}`,
+            workflow: `/workflows/${w.externalId}`,
+          },
+        };
+        w.pullRequestRef = `#${pr}`;
+        w.stageIndex = 7;
+        w.stageName = STAGES[6]!;
+      }
       workflows.push(w);
     }
   }
@@ -769,7 +817,34 @@ export function buildS500(base: Date): {
       question: QUESTIONS[k % QUESTIONS.length]!,
       requestedAt,
       hasRecommendedAnswer: k % 2 === 0,
+      whyItMatters: null,
+      options: [],
+      links: {},
     };
+    if (k === 0) {
+      w.clarification = {
+        ...w.clarification,
+        externalId: DECISION_SHOWCASE.clarification,
+        question: 'Which sign-in method should the migrated `/session/v1` clients use?',
+        whyItMatters:
+          'The analysis agent cannot finish the impact analysis until the authentication approach is fixed; it changes which services are touched and the rollout plan.',
+        options: [
+          { value: 'oidc', label: 'OpenID Connect with the corporate IdP', recommended: true },
+          { value: 'saml', label: 'SAML 2.0 via the existing gateway', recommended: false },
+          {
+            value: 'magic-link',
+            label: 'Email magic links (no IdP dependency)',
+            recommended: false,
+          },
+        ],
+        links: {
+          requirement: `/requirements/${w.externalId}`,
+          pullRequest: `https://github.com/acme/${w.project}/pull/388`,
+          externalTicket: 'https://jira.acme.example/browse/PAY-1207',
+          workflow: `/workflows/${w.externalId}`,
+        },
+      };
+    }
     workflows.push(w);
   }
   // --- needsYou · blocked 8, failed 6
