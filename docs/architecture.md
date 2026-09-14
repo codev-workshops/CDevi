@@ -57,7 +57,7 @@ Every specification has exactly one owning service; other services render or cal
 
 ### Streaming to the browser
 
-Stream events are written to a `run_events` table as they happen (durable, replayable) and announced with Postgres `NOTIFY`. The API's SSE endpoint sends events after the client's `Last-Event-ID`, so a dropped connection resumes without loss or duplication (specs/001 FR-034). No Redis or pub/sub service. **Landed in specs/003** for the Inbox: `inbox_change_log` (24 h retention) + `NOTIFY inbox_changed`, `GET /api/inbox/stream` with replay, and `Cache-Control: no-transform` so the Next rewrite does not gzip-buffer the stream.
+Stream events are written to a `run_events` table as they happen (durable, replayable) and announced with Postgres `NOTIFY`. The API's SSE endpoint sends events after the client's `Last-Event-ID`, so a dropped connection resumes without loss or duplication (specs/001 FR-034). No Redis or pub/sub service. **Landed in specs/003** for the Inbox: `inbox_change_log` (24 h retention) + `NOTIFY inbox_changed`, `GET /api/inbox/stream` with replay, and `Cache-Control: no-transform` so the Next rewrite does not gzip-buffer the stream. **specs/001 US1** reuses the same plumbing: `workflow_stages`, `agent_runs`, `artifacts` and `test_runs` write to `inbox_change_log` through their triggers, and Workflow Detail subscribes to `GET /api/inbox/stream` filtering frames by `workflowId` before refetching `GET /api/workflows/{id}` — no second stream protocol.
 
 ## 5. Event bus
 
@@ -88,7 +88,7 @@ The **agent runtime** (OpenHands per the UI specification §44, or any equivalen
 cdevi/
 ├── apps/
 │   ├── web/                # Next.js: Inbox (specs/003, landed) + screens from specs/001, built only from @cdevi/design-system
-│   ├── api/                # Fastify: auth, Inbox read model, ingestion API, SSE (specs/003, landed); state machines, policy engine, audit, outbox relay (specs/001)
+│   ├── api/                # Fastify: auth, Inbox read model, ingestion API, SSE (specs/003, landed); Workflow Detail read model + retry/escalate/cancel actions + stage/run/artifact/test-run ingestion (specs/001 US1, landed); policy engine, audit, outbox relay (specs/001)
 │   ├── agent-orchestrator/ # durable functions: stage execution, runtime adapter calls, run events
 │   └── integration-worker/ # durable functions: webhooks, sync, health probes, cron
 ├── packages/
