@@ -49,7 +49,11 @@ import { Ask } from '../ApprovalCenterScreen';
 
 export interface ApprovalDecisionScreenProps {
   initial: ApprovalCenterDetail;
+  /** Server render time (ms); a payload older than STALE_MS on mount came from the router cache (back navigation) and is refetched. */
+  loadedAt?: number | undefined;
 }
+
+const STALE_MS = 5_000;
 
 type Step = 'idle' | 'confirm' | 'reject';
 type Submitting = 'approve' | 'confirm' | 'reject' | 'answer' | null;
@@ -92,7 +96,7 @@ const hasResolution = (p: Problem | null): p is Problem & { resolution: Resoluti
   p !== null && 'resolution' in p && typeof p.resolution === 'object' && p.resolution !== null;
 
 /** Approval / clarification decision screen (specs/001 US2 scenarios 2–5; ui-approval-center.md §3). */
-export function ApprovalDecisionScreen({ initial }: ApprovalDecisionScreenProps) {
+export function ApprovalDecisionScreen({ initial, loadedAt }: ApprovalDecisionScreenProps) {
   const [detail, setDetail] = useState<ApprovalCenterDetail>(initial);
   const [fetchedAt, setFetchedAt] = useState<Date>(() => new Date());
   const [refreshing, setRefreshing] = useState(false);
@@ -107,7 +111,7 @@ export function ApprovalDecisionScreen({ initial }: ApprovalDecisionScreenProps)
   const [answerError, setAnswerError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState<Submitting>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const { setPanel } = useInboxCount();
+  const { setPanel, setApprovalsCount } = useInboxCount();
 
   const approveRef = useRef<HTMLButtonElement | HTMLAnchorElement | null>(null);
   const rejectOpenRef = useRef<HTMLButtonElement | HTMLAnchorElement | null>(null);
@@ -150,6 +154,19 @@ export function ApprovalDecisionScreen({ initial }: ApprovalDecisionScreenProps)
       }),
     [item.workflowId, refetch],
   );
+
+  useEffect(() => {
+    if (loadedAt === undefined || Date.now() - loadedAt <= STALE_MS) return;
+    const t = setTimeout(() => void refetch(), 0);
+    return () => clearTimeout(t);
+  }, [loadedAt, refetch]);
+
+  const wasPending = useRef(pending);
+  useEffect(() => {
+    if (wasPending.current && !pending)
+      setApprovalsCount((n) => (n === undefined ? n : Math.max(0, n - 1)));
+    wasPending.current = pending;
+  }, [pending, setApprovalsCount]);
 
   useEffect(() => {
     const events: AuditEvent[] = audit.map((e) => ({

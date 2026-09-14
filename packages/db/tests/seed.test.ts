@@ -271,5 +271,23 @@ describe('S-500 decision showcase (specs/001 US2, data-model.md §13)', () => {
       expect(clr.has_recommended_answer).toBe(true);
       expect(Object.keys(clr.links)).toHaveLength(4);
     });
+
+    it('SC-006 seeded links.workflow points at the workflow row id the web route resolves', async () => {
+      await seed({
+        base: BASE,
+        password: 'cdevi-demo-test-pass',
+        ingestToken: 'cdvi_test_token',
+        log: () => {},
+      });
+      const rows = (
+        await pool.query<{ link: string; workflow_id: string }>(
+          `select links->>'workflow' link, workflow_id from approvals where links ? 'workflow'
+           union all
+           select links->>'workflow', workflow_id from clarifications where links ? 'workflow'`,
+        )
+      ).rows;
+      expect(rows.length).toBeGreaterThan(0);
+      for (const r of rows) expect(r.link).toBe(`/workflows/${r.workflow_id}`);
+    });
   });
 });

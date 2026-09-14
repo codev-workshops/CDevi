@@ -12,7 +12,15 @@ import {
   Side,
 } from '@cdevi/design-system';
 import { usePathname } from 'next/navigation';
-import { createContext, useContext, useMemo, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useMemo,
+  useState,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+} from 'react';
 import { NAV_ITEMS } from '../../lib/navigation';
 import { ThemeSwitch } from './ThemeSwitch';
 
@@ -20,7 +28,7 @@ interface InboxCountStore {
   count: number | undefined;
   setCount: (n: number) => void;
   /** Pending approvals + clarifications shown beside "Approvals" (specs/001 US2 scenario 6). */
-  setApprovalsCount: (n: number) => void;
+  setApprovalsCount: Dispatch<SetStateAction<number | undefined>>;
   setPanel: (panel: ReactNode) => void;
 }
 const InboxCountContext = createContext<InboxCountStore>({

@@ -1,8 +1,11 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Me } from '@cdevi/contracts';
+import { AppFrame } from '../../app/(app)/AppFrame';
 import { ApprovalDecisionScreen } from '../../app/(app)/approvals/[id]/ApprovalDecisionScreen';
 import { expectNoViolations, renderApp } from '../a11y';
+import { __nav } from '../mocks/next-navigation';
 import {
   approvalDetail,
   auditEvent,
@@ -27,6 +30,15 @@ class FakeSource {
   }
   close() {}
 }
+
+const me: Me = {
+  user: { id: '00000000-0000-7000-8000-000000000001', displayName: 'Approver 1', role: 'approver' },
+  organization: { id: '00000000-0000-7000-8000-000000000002', name: 'Acme', isDemo: true },
+  projects: [
+    { id: '00000000-0000-7000-8000-000000000003', key: 'payments-api', name: 'Payments API' },
+  ],
+  canCreateRequirement: true,
+};
 
 const fetchMock = vi.fn();
 const jsonResponse = (body: unknown, status = 200) =>
@@ -314,6 +326,44 @@ describe('Approval decision screen (specs/001 US2)', () => {
     sources[0]!.emit('inbox.changed', JSON.stringify({ workflowId: d.item.workflowId }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(await screen.findByText(/Approved by/)).toBeInTheDocument();
+  });
+
+  it('FR-014 scenario 6: resolving from the detail view decrements the Approvals nav count without a list visit', async () => {
+    const user = userEvent.setup();
+    const d = lowRiskDetail();
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        detail: lowRiskDetail({ workflowState: 'RUNNING', resolution: resolution() }),
+      }),
+    );
+    __nav.pathname = `/approvals/${d.item.id}`;
+    renderApp(
+      <AppFrame me={me} needsYouCount={0} approvalsCount={3}>
+        <ApprovalDecisionScreen initial={d} />
+      </AppFrame>,
+    );
+    const nav = screen.getByRole('navigation');
+    expect(within(nav).getByLabelText(/3 pending/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Approve' }));
+    await screen.findByRole('status');
+    expect(within(nav).getByLabelText(/2 pending/)).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('FR-015 a detail payload restored from the router cache (back navigation) is refetched on mount', async () => {
+    const d = lowRiskDetail();
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(lowRiskDetail({ workflowState: 'RUNNING', resolution: resolution() })),
+    );
+    renderApp(<ApprovalDecisionScreen initial={d} loadedAt={Date.now() - 60_000} />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText(/Approved by/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
+
+    fetchMock.mockClear();
+    renderApp(<ApprovalDecisionScreen initial={d} loadedAt={Date.now()} />);
+    await waitFor(() => expect(sources.length).toBeGreaterThan(1));
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('WCAG 2.2 AA: pending, confirm, reject, clarification, disabled and resolved states have no axe violations', async () => {

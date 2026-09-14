@@ -8,6 +8,17 @@ export { DECISION_SHOWCASE, SHOWCASE_FAILED, SHOWCASE_WAITING } from './s500';
 
 export class SeedRefusedError extends Error {}
 
+/** S-500 authors `links.workflow` by external id; the web route is keyed by the workflow row id assigned at insert. */
+function workflowLinks<T extends { workflow?: string | undefined }>(
+  links: T,
+  externalId: string,
+  workflowId: string,
+): T {
+  return links.workflow === `/workflows/${externalId}`
+    ? { ...links, workflow: `/workflows/${workflowId}` }
+    : links;
+}
+
 export interface SeedOptions {
   connectionString?: string | undefined;
   base?: Date | undefined;
@@ -149,7 +160,7 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
             w.approval.requestedAt,
             w.approval.expiresAt,
             w.approval.context,
-            JSON.stringify(w.approval.links),
+            JSON.stringify(workflowLinks(w.approval.links, w.externalId, id)),
           ],
         );
         ref.approvalId = ar.rows[0]!.id;
@@ -187,7 +198,7 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
             w.clarification.hasRecommendedAnswer,
             w.clarification.whyItMatters,
             JSON.stringify(w.clarification.options),
-            JSON.stringify(w.clarification.links),
+            JSON.stringify(workflowLinks(w.clarification.links, w.externalId, id)),
           ],
         );
       }
