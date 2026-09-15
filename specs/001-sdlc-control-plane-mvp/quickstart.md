@@ -238,6 +238,16 @@ If reviewers prefer `pnpm db:seed` to stay identical, the fallback is an opt-in 
 
 Same as §3.1/§4.1: `.env` (now also `JIRA_WEBHOOK_SECRET=<any local value>` — the placeholder in `.env.example` is `change-me`; never commit a real one), `docker compose up -d`, `pnpm db:migrate` (applies `0005_requirements.sql` — the first migration with tables), `pnpm db:seed`, `pnpm dev`. The seed prints the demo credentials and the ingestion token (`principal e2e-tests`) once — export it as `INGEST_TOKEN`. The US4 Independent Test uses **engineer1** (`engineer1@cdevi.demo`, may create/submit — FR-032) and **approver1** (`approver1@cdevi.demo`, may approve/reject); both are members of `payments-api`.
 
+**Spec Kit feature pointer.** `/speckit-analyze` and `/speckit-implement` resolve the feature through `.specify/scripts/bash/check-prerequisites.sh`, which reads `.specify/feature.json` — a per-checkout file that Spec Kit deliberately git-ignores (`.specify/.gitignore`), so a fresh clone has none. Before running either skill on this feature, point the checkout at it once; the script persists the value to `.specify/feature.json` for later runs:
+
+```bash
+SPECIFY_FEATURE_DIRECTORY=specs/001-sdlc-control-plane-mvp \
+  .specify/scripts/bash/check-prerequisites.sh --json --require-spec --require-tasks --include-tasks
+# → {"FEATURE_DIR":".../specs/001-sdlc-control-plane-mvp","AVAILABLE_DOCS":["research.md","data-model.md","contracts/","quickstart.md","tasks.md"]}
+```
+
+Do not commit `.specify/feature.json`.
+
 ### 5.2 Red → green order (Principle II)
 
 tasks.md Phase 9: 9a contracts tests → 9a implementation → (9b database tests → 9b migration/seed) **in parallel with** (9d design-system + web component tests → 9d implementation on typed fixtures) → 9c API tests → 9c services/routes → 9e Playwright → Phase 10 polish. Every test name starts with the FR/SC id it proves.
@@ -289,7 +299,7 @@ curl -s -X POST localhost:3001/api/integrations/jira/webhook -H "content-type: a
 - The Requirements list shows **PAY-240** in `draft`, assignee Approver 1, with the Jira link `https://jira.example.invalid/browse/PAY-240` (`rel="noopener noreferrer"`, new tab).
 - Send the same body with `"webhookEvent":"jira:issue_updated"`, a newer `updated` and `"summary":"Chargeback evidence export (PDF)"` → `202 {"outcome":"updated"}`; the title changes. The same `updated` again → `{"outcome":"stale"}`.
 - Wrong signature (`-H "x-hub-signature: sha256=00"`) → `401` problem+json `urn:cdevi:problem:unauthenticated` with no body echo; unmapped project (`"key":"XYZ"`, `"project":{"key":"XYZ"}`) → `202 {"outcome":"ignored","requirementId":null}`.
-- **Edge case**: for the requirement you approved in §5.3 step 5 there is no Jira link; instead create `PAY-241` via the webhook, submit → analyse (no questions) → approve it as above so it owns a `QUEUED` workflow, then send `"webhookEvent":"jira:issue_deleted"` for `PAY-241` → `202 {"outcome":"flagged"}`. The requirement shows the warning notice "The linked Jira issue PAY-241 was deleted…", its list row a **Jira deleted** pill, and the workflow at `/workflows/{id}` is **blocked** with reason "Jira PAY-241 deleted — human decision required"; the Inbox needs-you tab and the Dashboard "blocked workflows" figure include it within 5 s. A `jira:issue_updated` whose `statusCategory.key` is `done` flags **closed** the same way.
+- **Edge case**: for the requirement you approved in §5.3 step 5 there is no Jira link; instead create `PAY-241` via the webhook, submit → analyse (no questions) → approve it as above so it owns a `QUEUED` workflow, then send `"webhookEvent":"jira:issue_deleted"` for `PAY-241` → `202 {"outcome":"flagged"}`. The requirement shows the error-tone notice (role `alert`) "The linked Jira issue PAY-241 was deleted…", its list row a **Jira deleted** pill, and the workflow at `/workflows/{id}` is **blocked** with reason "Jira PAY-241 deleted — human decision required"; the Inbox needs-you tab and the Dashboard "blocked workflows" figure include it within 5 s. A `jira:issue_updated` whose `statusCategory.key` is `done` flags **closed** the same way.
 
 ### 5.5 Seed requirements the e2e relies on — and what the seed does not touch (research R44, data-model §30)
 
