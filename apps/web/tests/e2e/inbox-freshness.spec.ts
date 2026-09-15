@@ -20,6 +20,7 @@ test.describe('Freshness over SSE (FR-019, SC-007)', () => {
       await expect.poll(count).toBe(before + 1);
       const navCount = await page
         .getByRole('navigation', { name: 'Primary' })
+        .getByRole('link', { name: /^Inbox/ })
         .locator('.cd-count')
         .textContent();
       expect(Number(navCount)).toBe(before + 1);

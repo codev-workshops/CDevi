@@ -49,5 +49,6 @@ export const PROBLEM_TYPES = {
   invalidCursor: 'urn:cdevi:problem:invalid-cursor',
   unknownStage: 'urn:cdevi:problem:unknown-stage',
   artifactImmutable: 'urn:cdevi:problem:artifact-immutable',
+  alreadyResolved: 'urn:cdevi:problem:already-resolved',
   internal: 'urn:cdevi:problem:internal',
 } as const;

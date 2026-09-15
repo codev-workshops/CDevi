@@ -88,3 +88,67 @@ Within 5 s and without reloading: the Testing step's pill reads **retrying**, th
 - `pnpm check`, `pnpm test:api`, `pnpm test:e2e` green; every US1 test named by FR/SC id.
 - §2.3 answered from seed alone; §2.4 observed.
 - `docs/architecture.md` §4/§8 and `AGENTS.md` mention the new routes; no design-system change was needed (plan: Design System Compliance).
+
+## 3. User Story 2 — Approval Center
+
+**Plan**: [plan.md Part B](plan.md) | Contracts: [openapi.yaml](contracts/openapi.yaml) (approvals / clarifications routes), [decision-rules.md](contracts/decision-rules.md), [ui-approval-center.md](contracts/ui-approval-center.md) | Branch `feature/US2` → PR into `develop`.
+
+### 3.1 Red → green order (Principle II)
+
+1. **Contracts** — `packages/contracts/tests/decision-rules.test.ts` (pure rules, decision-rules.md §1–§7) and the `ApproveRequest` / `RejectRequest` / `AnswerRequest` / ingestion-extension examples in `schemas.test.ts` fail → implement `decision-rules.ts`, `decisions.ts`, `approval-center.ts`, `ingest.ts` extensions → `openapi.test.ts` fails until `pnpm -F @cdevi/contracts openapi` regenerates `contracts/openapi.yaml`.
+2. **DB** — `packages/db/tests/schema.test.ts › migration 0003` asserts the new columns, CHECKs, `audit_events`, its append-only trigger, RLS and grants; `seed.test.ts › decision showcase` asserts the three Independent-Test items → write `0003_approval_center.sql`, `schema.ts`, seed.
+3. **API** — `apps/api/tests/approval-center.test.ts` (list order, project scope, detail, 404s, `Server-Timing`) and `decisions.test.ts` (approve / confirm / reject / answer, roles, persistence, transition + audit rows, `inbox_change_log`, two concurrent callers) fail → `services/decisions.ts`, `services/approval-center.ts`, `routes/approvals.ts`, `routes/clarifications.ts`, `lib/problem.ts`, ingestion context fields.
+4. **Web** — `apps/web/tests/components/approval-center.test.tsx` and `approval-decision.test.tsx` (+ axe per state) fail → `ApprovalCenterScreen.tsx`, `ApprovalDecisionScreen.tsx`, the two `page.tsx`, removal of the approvals record stub.
+5. **E2E** — `apps/web/tests/e2e/approval-center.spec.ts` (Independent Test, ≤ 5 s header count, keyboard confirmation, viewer, page axe) fails → wire-up until green.
+
+### 3.2 Automated evidence
+
+```bash
+pnpm check        # includes contracts (decision rules, schemas, OpenAPI snapshot) and web (component + axe)
+pnpm test:api     # db (0003 shape, seed) + api (approval-center, decisions incl. concurrency and roles)
+pnpm test:e2e     # Playwright: approval-center.spec.ts + the US1 and 003 specs
+```
+
+| Scenario | Proven by |
+|----------|-----------|
+| 1 — one list: identifier, ask, requester, time, risk; highest risk then oldest (FR-011) | `contracts › FR-011 orderApprovalCenter …`, `api approval-center.test.ts › FR-011 …`, `web approval-center.test.tsx › FR-011 …`, `e2e › FR-011 …` |
+| 2 — question, why it matters, links, option or free text (FR-014) | `contracts › FR-014 answerIsValid …`, `api approval-center.test.ts › FR-014 detail …`, `web approval-decision.test.tsx › FR-014 …`, `e2e › FR-014 …` |
+| 3 — answer recorded with author + time, workflow leaves WAITING_FOR_HUMAN, appears in record and audit (FR-014, FR-029) | `api decisions.test.ts › FR-014 …`, `› FR-029 …`, `web › FR-014 resolved …`, `e2e › FR-014 FR-029 …` |
+| 4 — HIGH/CRITICAL approve requires explicit confirmation restating action + risk (FR-013) | `contracts › FR-013 requiresConfirmation`, `api decisions.test.ts › FR-013 …`, `web › FR-013 …`, `e2e › FR-013 …` |
+| 5 — reject requires reason; BLOCKED or CANCELLED; agent run records it (FR-012, FR-013) | `contracts › FR-013 RejectRequest …`, `api decisions.test.ts › FR-013 reject …`, `web › FR-013 reject …`, `e2e › FR-013 …` |
+| 6 — header shows pending count linking to the Approval Center (FR-011, FR-034) | `api decisions.test.ts › FR-034 …`, `web app-shell tests (existing) + approval-center.test.tsx › FR-011 …`, `e2e › FR-034 SC-003 …` |
+| Edge — two users, first writer wins, second sees the outcome (FR-015) | `api decisions.test.ts › FR-015 …`, `web approval-decision.test.tsx › FR-015 already resolved …` |
+| Roles — engineer/viewer refused (FR-032) | `contracts › FR-032 canDecide`, `api decisions.test.ts › FR-032 …`, `web › FR-032 permission-disabled …`, `e2e › FR-032 viewer …` |
+
+### 3.3 Independent Test (spec US2)
+
+Automated as `apps/web/tests/e2e/approval-center.spec.ts`; by hand against `pnpm dev`:
+
+1. Sign in as the **approver** printed by `pnpm db:seed`. The header "Approvals" item shows the pending count.
+2. Ingest three items on three `WAITING_FOR_HUMAN` workflows (token printed by the seed) — or use the seeded ones: `s500-apr-req` (requirement approval, LOW), `s500-apr-pr` (PR merge, MEDIUM), `s500-clr-01` (clarification):
+
+```bash
+curl -s -X PUT localhost:3001/api/ingest/approvals/it-req -H "authorization: Bearer $INGEST_TOKEN" -H 'content-type: application/json' \
+  -d '{"workflowExternalId":"s500-003","ask":"Approve requirement spec","riskLevel":"LOW","requestedByAgent":"spec-agent","requestedAt":"'"$(date -u +%FT%TZ)"'"}'
+curl -s -X PUT localhost:3001/api/ingest/approvals/it-pr -H "authorization: Bearer $INGEST_TOKEN" -H 'content-type: application/json' \
+  -d '{"workflowExternalId":"s500-005","ask":"Approve PR merge #212","riskLevel":"MEDIUM","requestedByAgent":"pr-agent","requestedAt":"'"$(date -u +%FT%TZ)"'","links":{"pullRequest":"https://github.com/acme/api/pull/212"}}'
+curl -s -X PUT localhost:3001/api/ingest/clarifications/it-clr -H "authorization: Bearer $INGEST_TOKEN" -H 'content-type: application/json' \
+  -d '{"workflowExternalId":"s500-007","question":"Which auth provider?","requestedByAgent":"spec-agent","requestedAt":"'"$(date -u +%FT%TZ)"'","whyItMatters":"Determines the SDK and the session model.","options":[{"value":"oidc","label":"OIDC","recommended":true},{"value":"saml","label":"SAML","recommended":false}],"links":{"externalTicket":"https://jira.example/PLAT-42"}}'
+```
+
+3. Open **Approvals**. The list shows the MEDIUM PR merge before the LOW requirement approval, and the clarification last (§3 of decision-rules.md).
+4. Open the requirement approval → **Approve** (one click, LOW). The resolved notice appears; Workflow Detail for `s500-003` shows `running`.
+5. Open the PR-merge approval → **Approve** (one click, MEDIUM) — same outcome for `s500-005`. (Open a HIGH item to see the **Confirm approval** step restating the ask and risk.)
+6. Open the clarification → pick **OIDC** (recommended) → **Submit answer**. The notice reads "Answered by <you> just now", the Audit panel gains `clarification.answered`, and `s500-007` shows `running`.
+7. The header count dropped by three without a reload. Each of the three workflows is no longer `WAITING_FOR_HUMAN`.
+
+Concurrency check: open the same pending approval in two browsers (approver and administrator) and approve in both — the second shows "Already resolved — approved by … just now" and no controls.
+
+### 3.4 Performance budgets (plan Part B)
+
+| Budget | Method |
+|--------|--------|
+| Initial content ≤ 2 s p95 | Playwright trace, 10 runs (`approval-center.spec.ts`) |
+| `GET /api/approvals` ≤ 200 ms p95, `GET /api/approvals/{id}` ≤ 150 ms p95, decision POST ≤ 250 ms p95 | `Server-Timing` / duration asserted in the api tests over 20 calls |
+| Decision → header count ≤ 5 s p95 | e2e measures after each of the three decisions |
+| Route JS ≤ 200 KB gzip | `pnpm check:size` |

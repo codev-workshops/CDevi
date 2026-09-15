@@ -32,6 +32,7 @@ import {
   NavGroup,
   NavItem,
   Notice,
+  OptionGroup,
   OptionRow,
   PageMeta,
   Panel,
@@ -169,7 +170,7 @@ function FormDemo() {
           ))}
         </Chips>
       </Field>
-      <Field label="Clarification">
+      <OptionGroup legend="Clarification: how should rate limiting apply?">
         <OptionRow name="limiter" value="a" checked={opt === 'a'} onChange={setOpt}>
           Per IP only
         </OptionRow>
@@ -179,7 +180,7 @@ function FormDemo() {
         <OptionRow name="limiter" value="c" checked={opt === 'c'} onChange={setOpt} disabled>
           Per account only (unavailable)
         </OptionRow>
-      </Field>
+      </OptionGroup>
       <ActionBar help="Saving validates the key with one models-list call.">
         <Button variant="ghost">Save draft</Button>
         <Button variant="saffron">Delegate</Button>
@@ -509,8 +510,8 @@ export const entries: GalleryEntry[] = [
     title: 'Form fields',
     description:
       'Field rows with label, hint, help and error; inputs, select, textarea; segmented control; toggle chips; option rows; action bar.',
-    usage: `<Field label="Budget" help="Per run" error="Too high"><Input /></Field>\n<Field label="Repository"><Select>…</Select></Field>\n<Field label="Brief"><TextArea /></Field>\n<Help>Cloud: fresh sandbox.</Help>\n<Segmented label="Runtime" value={v} onChange={setV} options={[…]} />\n<Chips label="Gates"><Chip selected onToggle={…}>tests passed</Chip></Chips>\n<OptionRow name="q" value="b" checked onChange={…} recommended>…</OptionRow>`,
-    a11y: 'Label is associated via htmlFor; help/error are aria-describedby; error sets aria-invalid and role=alert. Segmented is a radiogroup of role=radio buttons with arrow keys. Chips are aria-pressed buttons. OptionRow wraps a real radio input.',
+    usage: `<Field label="Budget" help="Per run" error="Too high"><Input /></Field>\n<Field label="Repository"><Select>…</Select></Field>\n<Field label="Brief"><TextArea /></Field>\n<Help>Cloud: fresh sandbox.</Help>\n<Segmented label="Runtime" value={v} onChange={setV} options={[…]} />\n<Chips label="Gates"><Chip selected onToggle={…}>tests passed</Chip></Chips>\n<OptionGroup legend="Clarification"><OptionRow name="q" value="b" checked onChange={…} recommended>…</OptionRow></OptionGroup>`,
+    a11y: 'Label is associated via htmlFor; help/error are aria-describedby; error sets aria-invalid and role=alert. Segmented is a radiogroup of role=radio buttons with arrow keys. Chips are aria-pressed buttons. OptionRow wraps a real radio input; OptionGroup is a fieldset whose legend names the radiogroup.',
     render: () => <FormDemo />,
   },
   {

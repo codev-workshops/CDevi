@@ -1,8 +1,8 @@
 /**
- * Drizzle schema mirroring migrations/0001_init.sql and 0002_workflow_detail.sql. The SQL files are the source of truth
+ * Drizzle schema mirroring migrations/0001_init.sql, 0002_workflow_detail.sql and 0003_approval_center.sql. The SQL files are the source of truth
  * for triggers, partial indexes, RLS and grants, which Drizzle does not model; this file gives queries types.
  */
-import type { AgentRunEvent } from '@cdevi/contracts';
+import type { AgentRunEvent, ClarificationOption, DecisionLinks } from '@cdevi/contracts';
 import {
   bigserial,
   boolean,
@@ -233,6 +233,11 @@ export const approvals = pgTable('approvals', {
   decision: approvalDecision('decision'),
   decidedAt: ts('decided_at'),
   decidedBy: text('decided_by'),
+  context: text('context'),
+  links: jsonb('links').$type<DecisionLinks>().notNull().default({}),
+  rejectionReason: text('rejection_reason'),
+  rejectionTarget: workflowState('rejection_target'),
+  decidedByUserId: uuid('decided_by_user_id'),
   createdAt: ts('created_at').notNull().defaultNow(),
   updatedAt: ts('updated_at').notNull().defaultNow(),
 });
@@ -249,6 +254,12 @@ export const clarifications = pgTable('clarifications', {
   hasRecommendedAnswer: boolean('has_recommended_answer').notNull().default(false),
   answeredAt: ts('answered_at'),
   answeredBy: text('answered_by'),
+  whyItMatters: text('why_it_matters'),
+  options: jsonb('options').$type<ClarificationOption[]>().notNull().default([]),
+  links: jsonb('links').$type<DecisionLinks>().notNull().default({}),
+  answerOption: text('answer_option'),
+  answerText: text('answer_text'),
+  answeredByUserId: uuid('answered_by_user_id'),
   createdAt: ts('created_at').notNull().defaultNow(),
   updatedAt: ts('updated_at').notNull().defaultNow(),
 });
@@ -271,3 +282,23 @@ export const inboxChangeLog = pgTable('inbox_change_log', {
   workflowId: uuid('workflow_id').notNull(),
   occurredAt: ts('occurred_at').notNull().defaultNow(),
 });
+
+/** Append-only audit trail of human decisions (0003_approval_center.sql; FR-029). */
+export const auditEvents = pgTable('audit_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  organizationId: uuid('organization_id').notNull(),
+  projectId: uuid('project_id'),
+  workflowId: uuid('workflow_id'),
+  actorType: text('actor_type').$type<'user' | 'agent' | 'system'>().notNull(),
+  actorId: text('actor_id'),
+  actorName: text('actor_name').notNull(),
+  action: text('action').notNull(),
+  targetType: text('target_type').notNull(),
+  targetId: uuid('target_id').notNull(),
+  riskLevel: riskLevel('risk_level'),
+  policy: text('policy'),
+  result: text('result').notNull(),
+  details: jsonb('details').$type<Record<string, unknown>>().notNull().default({}),
+  occurredAt: ts('occurred_at').notNull().defaultNow(),
+});
+export type AuditEvent = typeof auditEvents.$inferSelect;

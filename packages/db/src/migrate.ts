@@ -20,6 +20,7 @@ const RLS_TABLES = [
   'agent_runs',
   'artifacts',
   'test_runs',
+  'audit_events',
 ];
 
 export interface MigrateOptions {

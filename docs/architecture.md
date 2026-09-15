@@ -50,7 +50,7 @@ Every specification has exactly one owning service; other services render or cal
 | Approve requirement → start workflow | sync + async | web → api creates workflow + first stage `QUEUED` + outbox → engine → agent-orchestrator |
 | Stage execution | async | orchestrator starts agent run → runtime events → run_events (`RUNNING`) → api SSE → web |
 | Agent tool effect | sync inside async | orchestrator → api `checkPermission(run, tool, input)` → allowed / `approval_required` (run → `WAITING_FOR_HUMAN`, approval record created) / denied (audit event, run continues or `BLOCKED`) |
-| Approve / reject / answer clarification | sync + resume | web → api records decision + audit event → engine resumes waiting run |
+| Approve / reject / answer clarification | sync + resume | web → api records decision + audit event → engine resumes waiting run. **Landed in specs/001 US2**: `POST /api/approvals/{id}/approve`, `POST /api/approvals/{id}/reject` (reason + BLOCKED/CANCELLED), `POST /api/clarifications/{id}/answer` — session user, approver/administrator only, one `REPEATABLE READ` transaction with `SELECT … FOR UPDATE` on the item (exactly once: a later caller gets 409 with the recorded outcome), the workflow transition out of `WAITING_FOR_HUMAN` via the 0001 state machine, an `audit_events` row, and the existing `inbox_changed` NOTIFY. Distinct from the agent ingestion path |
 | PR creation, CI results, review findings | async | orchestrator/integration-worker → api → Postgres → stream |
 | Retry, cancel, escalate | sync + async | web → api state transition → outbox → engine |
 | Cost / usage record | async | orchestrator → api ingest (batched) → Postgres |
@@ -64,7 +64,7 @@ Stream events are written to a `run_events` table as they happen (durable, repla
 1. **Durable domain events** use the transactional outbox pattern: a service writes its business change and an `outbox` row in the same transaction; the API's relay publishes unsent rows to the workflow engine, which invokes consumers with retries and idempotency keys.
 2. **Ephemeral notifications** use Postgres `LISTEN`/`NOTIFY` for UI liveness only.
 
-Event names follow `<entity>.<past_tense_verb>` (`workflow.stage_started`, `approval.decided`, `finding.dismissed`). Every event carries `organization_id`, `actor_id` (user or agent), `occurred_at` and, where one exists, `workflow_id` and `run_id`. Every event that represents an autonomous action or a human decision also produces an **audit event** (specs/001 FR-029).
+Event names follow `<entity>.<past_tense_verb>` (`workflow.stage_started`, `approval.decided`, `finding.dismissed`). Every event carries `organization_id`, `actor_id` (user or agent), `occurred_at` and, where one exists, `workflow_id` and `run_id`. Every event that represents an autonomous action or a human decision also produces an **audit event** (specs/001 FR-029). **Landed in specs/001 US2**: the `audit_events` table (`packages/db/migrations/0003_approval_center.sql`) — actor, action, target, workflow, risk, result, `policy` (reserved for the policy engine), `details` — append-only by trigger (`UPDATE`/`DELETE` raise) with `app_user` holding only `SELECT, INSERT`; human decisions write it in the same transaction as the decision.
 
 ## 6. Tenancy
 
@@ -87,13 +87,13 @@ The **agent runtime** (OpenHands per the UI specification §44, or any equivalen
 ```text
 cdevi/
 ├── apps/
-│   ├── web/                # Next.js: Inbox (specs/003, landed) + screens from specs/001, built only from @cdevi/design-system
-│   ├── api/                # Fastify: auth, Inbox read model, ingestion API, SSE (specs/003, landed); Workflow Detail read model + retry/escalate/cancel actions + stage/run/artifact/test-run ingestion (specs/001 US1, landed); policy engine, audit, outbox relay (specs/001)
+│   ├── web/                # Next.js: Inbox (specs/003, landed), Workflow Detail (specs/001 US1, landed), Approval Center list + decision screens app/(app)/approvals/ (specs/001 US2, landed) + remaining specs/001 screens, built only from @cdevi/design-system
+│   ├── api/                # Fastify: auth, Inbox read model, ingestion API, SSE (specs/003, landed); Workflow Detail read model + retry/escalate/cancel actions + stage/run/artifact/test-run ingestion (specs/001 US1, landed); Approval Center read model + human decision path services/decisions.ts, routes/approvals.ts, routes/clarifications.ts, audit_events (specs/001 US2, landed); policy engine, outbox relay (specs/001)
 │   ├── agent-orchestrator/ # durable functions: stage execution, runtime adapter calls, run events
 │   └── integration-worker/ # durable functions: webhooks, sync, health probes, cron
 ├── packages/
 │   ├── design-system/      # @cdevi/design-system — tokens, CSS, React components, gallery, DESIGN.md (spec 002)
-│   ├── db/                 # schema (Drizzle), hand-reviewed SQL migrations, RLS policies, seed, admin CLIs (specs/003, landed); outbox (specs/001)
+│   ├── db/                 # schema (Drizzle), hand-reviewed SQL migrations 0001–0003 (incl. append-only audit_events), RLS policies, seed, admin CLIs (specs/003 + specs/001 US1–US2, landed); outbox (specs/001)
 │   ├── contracts/          # Zod schemas → OpenAPI (specs/003/contracts/openapi.yaml is generated from here) + pure Inbox read-model rules (landed)
 │   ├── policy/             # checkPermission, risk classification, policy versioning
 │   ├── agent-runtime/      # runtime adapter interface + OpenHands implementation

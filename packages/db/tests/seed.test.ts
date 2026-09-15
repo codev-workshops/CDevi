@@ -3,6 +3,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { ARTIFACT_TYPES } from '@cdevi/contracts';
 import {
   buildS500,
+  DECISION_SHOWCASE,
   EXPECTED_BUCKETS,
   EXPECTED_SHOWCASE,
   SHOWCASE_FAILED,
@@ -202,3 +203,91 @@ describe.skipIf(Boolean(process.env['CDEVI_SKIP_DB_TESTS']))(
     });
   },
 );
+
+describe('S-500 decision showcase (specs/001 US2, data-model.md §13)', () => {
+  it('SC-006 decision showcase is deterministic: s500-apr-req (LOW), s500-apr-pr (MEDIUM, links.pullRequest), s500-clr-01 (why_it_matters, 3 options, 4 links) on three distinct WAITING_FOR_HUMAN workflows', () => {
+    const a = buildS500(BASE);
+    const req = a.workflows.find((w) => w.approval?.externalId === DECISION_SHOWCASE.requirement)!;
+    const pr = a.workflows.find((w) => w.approval?.externalId === DECISION_SHOWCASE.pullRequest)!;
+    const clr = a.workflows.find(
+      (w) => w.clarification?.externalId === DECISION_SHOWCASE.clarification,
+    )!;
+    expect(new Set([req.externalId, pr.externalId, clr.externalId]).size).toBe(3);
+    for (const w of [req, pr, clr]) expect(w.state).toBe('WAITING_FOR_HUMAN');
+    expect(req.approval!.riskLevel).toBe('LOW');
+    expect(req.approval!.ask).toMatch(/requirement/i);
+    expect(req.approval!.context).toBeTruthy();
+    expect(req.approval!.links.requirement).toMatch(/^\//);
+    expect(pr.approval!.riskLevel).toBe('MEDIUM');
+    expect(pr.approval!.ask).toMatch(/merge/i);
+    expect(pr.approval!.links.pullRequest).toMatch(/^https:\/\//);
+    expect(clr.clarification!.whyItMatters).toBeTruthy();
+    expect(clr.clarification!.options).toHaveLength(3);
+    expect(clr.clarification!.options.filter((o) => o.recommended)).toHaveLength(1);
+    expect(clr.clarification!.hasRecommendedAnswer).toBe(true);
+    expect(Object.keys(clr.clarification!.links).sort()).toEqual([
+      'externalTicket',
+      'pullRequest',
+      'requirement',
+      'workflow',
+    ]);
+    expect(a.workflows.filter((w) => w.approval)).toHaveLength(EXPECTED_BUCKETS.approvals);
+    expect(a.workflows.filter((w) => w.clarification)).toHaveLength(
+      EXPECTED_BUCKETS.clarifications,
+    );
+  });
+
+  describe.skipIf(Boolean(process.env['CDEVI_SKIP_DB_TESTS']))('written to the database', () => {
+    const pool = new pg.Pool({ connectionString: process.env['DATABASE_MIGRATOR_URL'] });
+    afterAll(() => pool.end());
+
+    it('SC-006 seeding writes context/links/options and leaves audit_events empty', async () => {
+      await seed({
+        base: BASE,
+        password: 'cdevi-demo-test-pass',
+        ingestToken: 'cdvi_test_token',
+        log: () => {},
+      });
+      const n = async (sql: string) => Number((await pool.query(sql)).rows[0].c);
+      expect(await n('select count(*) c from audit_events')).toBe(0);
+      expect(await n(`select count(*) c from approvals where decision is null`)).toBe(24);
+      const pr = (
+        await pool.query(
+          `select a.risk_level, a.context, a.links, w.state from approvals a join workflows w on w.id = a.workflow_id where a.external_id = $1`,
+          [DECISION_SHOWCASE.pullRequest],
+        )
+      ).rows[0];
+      expect(pr.risk_level).toBe('MEDIUM');
+      expect(pr.state).toBe('WAITING_FOR_HUMAN');
+      expect(pr.links.pullRequest).toMatch(/^https:\/\//);
+      const clr = (
+        await pool.query(
+          `select why_it_matters, options, links, has_recommended_answer from clarifications where external_id = $1`,
+          [DECISION_SHOWCASE.clarification],
+        )
+      ).rows[0];
+      expect(clr.why_it_matters).toBeTruthy();
+      expect(clr.options).toHaveLength(3);
+      expect(clr.has_recommended_answer).toBe(true);
+      expect(Object.keys(clr.links)).toHaveLength(4);
+    });
+
+    it('SC-006 seeded links.workflow points at the workflow row id the web route resolves', async () => {
+      await seed({
+        base: BASE,
+        password: 'cdevi-demo-test-pass',
+        ingestToken: 'cdvi_test_token',
+        log: () => {},
+      });
+      const rows = (
+        await pool.query<{ link: string; workflow_id: string }>(
+          `select links->>'workflow' link, workflow_id from approvals where links ? 'workflow'
+           union all
+           select links->>'workflow', workflow_id from clarifications where links ? 'workflow'`,
+        )
+      ).rows;
+      expect(rows.length).toBeGreaterThan(0);
+      for (const r of rows) expect(r.link).toBe(`/workflows/${r.workflow_id}`);
+    });
+  });
+});

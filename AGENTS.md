@@ -27,7 +27,7 @@ pnpm dev                    # api on :3001 and web on :3000 (web rewrites /api/*
 pnpm test:api               # Vitest projects `db` + `api`: real Postgres, re-seeds the database at a fixed clock
 pnpm test:e2e               # Playwright in apps/web: migrates + seeds, builds and starts api (:3101) + web (:3100)
 pnpm perf:api               # autocannon budgets (GET /api/inbox p95 ≤ 300 ms, ingest p95 ≤ 200 ms)
-pnpm -F @cdevi/contracts openapi        # regenerate specs/003-inbox-home/contracts/openapi.yaml from the Zod schemas
+pnpm -F @cdevi/contracts openapi        # regenerate specs/003-inbox-home and specs/001-sdlc-control-plane-mvp contracts/openapi.yaml from the Zod schemas
 pnpm -F @cdevi/design-system exec playwright test --update-snapshots all   # refresh visual baselines intentionally
 ```
 
@@ -53,9 +53,9 @@ All user interfaces are built from `@cdevi/design-system` (`packages/design-syst
 
 ## Backend and web app work
 
-- `packages/contracts` (Zod) is the single source for request/response types, the OpenAPI document and the pure Inbox read-model rules; the API validates every input with it and the web imports types from it. Browser code imports only the zod-free subpaths (`@cdevi/contracts/read-model`, `/vocabulary`) to stay inside the 200 KB route JS budget.
+- `packages/contracts` (Zod) is the single source for request/response types, the OpenAPI document and the pure Inbox read-model rules; the API validates every input with it and the web imports types from it. Browser code imports only the zod-free subpaths (`@cdevi/contracts/read-model`, `/vocabulary`, `/decision-rules`) to stay inside the 200 KB route JS budget.
 - `packages/db/migrations/*.sql` are hand-reviewed and are the source of truth (triggers, partial indexes, RLS, grants); `src/schema.ts` mirrors them for typed queries. Password hashing lives only in `packages/db/src/password.ts`.
-- API routes are Fastify plugins under `apps/api/src/routes`; errors are `application/problem+json` and never carry SQL, stack traces or request bodies. Every list is bounded (50, keyset cursor). Remote calls have timeouts. Workflow Detail is `GET /api/workflows/{id}` + `POST /api/workflows/{id}/actions` (retry/escalate/cancel, role-gated); stages, agent runs, artifacts and test runs arrive through `PUT /api/ingest/workflows/{externalId}/stages/{position}`, `/api/ingest/agent-runs/{externalId}`, `/api/ingest/artifacts/{externalId}`, `/api/ingest/test-runs/{externalId}` and fan out on the existing inbox stream.
+- API routes are Fastify plugins under `apps/api/src/routes`; errors are `application/problem+json` and never carry SQL, stack traces or request bodies. Every list is bounded (50, keyset cursor). Remote calls have timeouts. Workflow Detail is `GET /api/workflows/{id}` + `POST /api/workflows/{id}/actions` (retry/escalate/cancel, role-gated); stages, agent runs, artifacts and test runs arrive through `PUT /api/ingest/workflows/{externalId}/stages/{position}`, `/api/ingest/agent-runs/{externalId}`, `/api/ingest/artifacts/{externalId}`, `/api/ingest/test-runs/{externalId}` and fan out on the existing inbox stream. Human decisions are a separate path from agent ingestion (`apps/api/src/services/decisions.ts`): `GET /api/approvals` + `GET /api/approvals/{id}` (Approval Center read model) and `POST /api/approvals/{id}/approve|reject`, `POST /api/clarifications/{id}/answer` — approver/administrator only, one transaction with `SELECT … FOR UPDATE` (exactly once; a later caller gets 409 with the recorded outcome), workflow transition out of `WAITING_FOR_HUMAN`, an append-only `audit_events` row and the same `inbox_changed` NOTIFY.
 - Web: Server Components fetch through `apps/web/lib/api.ts`/`session.ts` and import design-system components via `apps/web/lib/ds.ts` (client boundary). Client components own tabs, the project selector and the SSE subscription. No `style=`, no `cd-` classes.
 - Test names start with the spec id they prove (`FR-010 …`, `SC-004 …`).
 

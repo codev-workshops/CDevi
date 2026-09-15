@@ -1057,6 +1057,31 @@ components:
             - MEDIUM
             - HIGH
             - CRITICAL
+        context:
+          nullable: true
+          type: string
+          minLength: 1
+          maxLength: 2000
+        links:
+          default: {}
+          type: object
+          properties:
+            requirement:
+              type: string
+              maxLength: 500
+            pullRequest:
+              type: string
+              maxLength: 500
+            externalTicket:
+              type: string
+              maxLength: 500
+            workflow:
+              type: string
+              maxLength: 500
+            agentRun:
+              type: string
+              maxLength: 500
+          additionalProperties: false
         requestedByAgent:
           nullable: true
           type: string
@@ -1119,6 +1144,52 @@ components:
         hasRecommendedAnswer:
           default: false
           type: boolean
+        whyItMatters:
+          nullable: true
+          type: string
+          minLength: 1
+          maxLength: 1000
+        options:
+          default: []
+          maxItems: 8
+          type: array
+          items:
+            type: object
+            properties:
+              value:
+                type: string
+                minLength: 1
+                maxLength: 80
+              label:
+                type: string
+                minLength: 1
+                maxLength: 120
+              recommended:
+                default: false
+                type: boolean
+            required:
+              - value
+              - label
+        links:
+          default: {}
+          type: object
+          properties:
+            requirement:
+              type: string
+              maxLength: 500
+            pullRequest:
+              type: string
+              maxLength: 500
+            externalTicket:
+              type: string
+              maxLength: 500
+            workflow:
+              type: string
+              maxLength: 500
+            agentRun:
+              type: string
+              maxLength: 500
+          additionalProperties: false
         answer:
           nullable: true
           type: object

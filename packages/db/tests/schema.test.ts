@@ -406,3 +406,249 @@ describe.skipIf(skip)('migration 0002_workflow_detail (specs/001 data-model.md �
     }
   });
 });
+
+describe.skipIf(skip)('migration 0003_approval_center (specs/001 data-model.md §11–§12)', () => {
+  const admin3 = new pg.Pool({ connectionString: process.env['DATABASE_MIGRATOR_URL'] });
+  const app3 = new pg.Pool({ connectionString: process.env['DATABASE_URL'] });
+  beforeAll(async () => {
+    const { migrate } = await import('../src/migrate');
+    await migrate({ log: () => {} });
+  });
+  afterAll(async () => {
+    await admin3.end();
+    await app3.end();
+  });
+
+  const columns = async (table: string) =>
+    (
+      await admin3.query(`select column_name from information_schema.columns where table_name=$1`, [
+        table,
+      ])
+    ).rows.map((r) => r.column_name as string);
+  const constraintNames = async (table: string) =>
+    (
+      await admin3.query(`select conname from pg_constraint where conrelid = $1::regclass`, [table])
+    ).rows.map((r) => r.conname as string);
+  const indexNames = async (table: string) =>
+    (await admin3.query(`select indexname from pg_indexes where tablename=$1`, [table])).rows.map(
+      (r) => r.indexname as string,
+    );
+
+  async function fixture(client: pg.PoolClient) {
+    const org = (
+      await client.query(`insert into organizations(name) values ('t-org') returning id`)
+    ).rows[0].id as string;
+    const project = (
+      await client.query(
+        `insert into projects(organization_id, key, name) values ($1,'t','T') returning id`,
+        [org],
+      )
+    ).rows[0].id as string;
+    const user = (
+      await client.query(
+        `insert into users(organization_id, email, display_name, role, password_hash) values ($1,'t@t.io','Tess','approver','x') returning id`,
+        [org],
+      )
+    ).rows[0].id as string;
+    const workflow = (
+      await client.query(
+        `insert into workflows(organization_id, project_id, external_id, title, state, state_observed_at) values ($1,$2,'w1','W','WAITING_FOR_HUMAN',now()) returning id`,
+        [org, project],
+      )
+    ).rows[0].id as string;
+    const approval = (
+      await client.query(
+        `insert into approvals(organization_id, project_id, workflow_id, external_id, ask, risk_level, requested_at) values ($1,$2,$3,'a1','Ask','HIGH',now()) returning id`,
+        [org, project, workflow],
+      )
+    ).rows[0].id as string;
+    return { org, project, user, workflow, approval };
+  }
+
+  it('FR-012 approvals has context, links, rejection_reason, rejection_target, decided_by_user_id with the rejection CHECKs', async () => {
+    const cols = await columns('approvals');
+    for (const c of [
+      'context',
+      'links',
+      'rejection_reason',
+      'rejection_target',
+      'decided_by_user_id',
+    ])
+      expect(cols).toContain(c);
+    const cons = await constraintNames('approvals');
+    expect(cons).toContain('approvals_rejection_target_check');
+    expect(cons).toContain('approvals_rejection_reason_check');
+    const client = await app3.connect();
+    try {
+      await client.query('begin');
+      const f = await fixture(client);
+      await expect(
+        client.query(`update approvals set rejection_target='FAILED' where id=$1`, [f.approval]),
+      ).rejects.toThrow();
+      await client.query('rollback');
+      await client.query('begin');
+      const g = await fixture(client);
+      await expect(
+        client.query(
+          `update approvals set decision='rejected', decided_at=now(), decided_by='Tess', decided_by_user_id=$2 where id=$1`,
+          [g.approval, g.user],
+        ),
+      ).rejects.toThrow();
+      await client.query('rollback');
+      await client.query('begin');
+      const h = await fixture(client);
+      await client.query(
+        `update approvals set decision='rejected', decided_at=now(), decided_by='Tess', decided_by_user_id=$2, rejection_reason='no', rejection_target='BLOCKED' where id=$1`,
+        [h.approval, h.user],
+      );
+      await client.query('rollback');
+    } finally {
+      client.release();
+    }
+  });
+
+  it('FR-014 clarifications has why_it_matters, options, links, answer_option, answer_text, answered_by_user_id and the one-answer CHECK', async () => {
+    const cols = await columns('clarifications');
+    for (const c of [
+      'why_it_matters',
+      'options',
+      'links',
+      'answer_option',
+      'answer_text',
+      'answered_by_user_id',
+    ])
+      expect(cols).toContain(c);
+    expect(await constraintNames('clarifications')).toContain('clarifications_answer_check');
+    const client = await app3.connect();
+    try {
+      await client.query('begin');
+      const f = await fixture(client);
+      const clar = (
+        await client.query(
+          `insert into clarifications(organization_id, project_id, workflow_id, external_id, question, requested_at) values ($1,$2,$3,'c1','Q?',now()) returning id, options, links`,
+          [f.org, f.project, f.workflow],
+        )
+      ).rows[0];
+      expect(clar.options).toEqual([]);
+      expect(clar.links).toEqual({});
+      await expect(
+        client.query(
+          `update clarifications set answered_at=now(), answered_by='Tess', answered_by_user_id=$2 where id=$1`,
+          [clar.id, f.user],
+        ),
+      ).rejects.toThrow();
+      await client.query('rollback');
+    } finally {
+      client.release();
+    }
+  });
+
+  it('FR-029 audit_events exists with the listed columns, actor_type CHECK and indexes', async () => {
+    const cols = await columns('audit_events');
+    for (const c of [
+      'id',
+      'organization_id',
+      'project_id',
+      'workflow_id',
+      'actor_type',
+      'actor_id',
+      'actor_name',
+      'action',
+      'target_type',
+      'target_id',
+      'risk_level',
+      'policy',
+      'result',
+      'details',
+      'occurred_at',
+    ])
+      expect(cols).toContain(c);
+    expect(await constraintNames('audit_events')).toContain('audit_events_actor_type_check');
+    const idx = await indexNames('audit_events');
+    for (const i of [
+      'audit_events_org_time_idx',
+      'audit_events_target_idx',
+      'audit_events_workflow_idx',
+    ])
+      expect(idx).toContain(i);
+  });
+
+  it('FR-029 UPDATE and DELETE on audit_events raise "audit_events is append-only"', async () => {
+    const client = await admin3.connect();
+    try {
+      await client.query('begin');
+      const f = await fixture(client);
+      const ev = (
+        await client.query(
+          `insert into audit_events(organization_id, project_id, workflow_id, actor_type, actor_id, actor_name, action, target_type, target_id, risk_level, result, details)
+           values ($1,$2,$3,'user',$4,'Tess','approval.approved','approval',$5,'HIGH','RUNNING','{}') returning id`,
+          [f.org, f.project, f.workflow, f.user, f.approval],
+        )
+      ).rows[0].id as string;
+      await expect(
+        client.query(`update audit_events set result='x' where id=$1`, [ev]),
+      ).rejects.toThrow(/append-only/);
+      await client.query('rollback');
+      await client.query('begin');
+      const g = await fixture(client);
+      const ev2 = (
+        await client.query(
+          `insert into audit_events(organization_id, project_id, workflow_id, actor_type, actor_id, actor_name, action, target_type, target_id, risk_level, result, details)
+           values ($1,$2,$3,'user',$4,'Tess','approval.approved','approval',$5,'HIGH','RUNNING','{}') returning id`,
+          [g.org, g.project, g.workflow, g.user, g.approval],
+        )
+      ).rows[0].id as string;
+      await expect(client.query(`delete from audit_events where id=$1`, [ev2])).rejects.toThrow(
+        /append-only/,
+      );
+      await client.query('rollback');
+    } finally {
+      client.release();
+    }
+  });
+
+  it('FR-033 audit_events has an org-isolation RLS policy and app_user has SELECT, INSERT but not UPDATE/DELETE', async () => {
+    const pol = await admin3.query(
+      `select policyname from pg_policies where tablename='audit_events'`,
+    );
+    expect(pol.rows.map((r) => r.policyname)).toContain('audit_events_org_isolation');
+    const privs = (
+      await admin3.query(
+        `select privilege_type from information_schema.role_table_grants where grantee='app_user' and table_name='audit_events'`,
+      )
+    ).rows.map((r) => r.privilege_type);
+    expect(privs).toEqual(expect.arrayContaining(['SELECT', 'INSERT']));
+    expect(privs).not.toContain('UPDATE');
+    expect(privs).not.toContain('DELETE');
+  });
+
+  it('FR-034 updating approvals.decision still writes inbox_change_log', async () => {
+    const client = await app3.connect();
+    try {
+      await client.query('begin');
+      const f = await fixture(client);
+      const before = Number(
+        (
+          await client.query(`select count(*) c from inbox_change_log where workflow_id=$1`, [
+            f.workflow,
+          ])
+        ).rows[0].c,
+      );
+      await client.query(
+        `update approvals set decision='approved', decided_at=now(), decided_by='Tess', decided_by_user_id=$2 where id=$1`,
+        [f.approval, f.user],
+      );
+      const after = Number(
+        (
+          await client.query(`select count(*) c from inbox_change_log where workflow_id=$1`, [
+            f.workflow,
+          ])
+        ).rows[0].c,
+      );
+      expect(after).toBe(before + 1);
+      await client.query('rollback');
+    } finally {
+      client.release();
+    }
+  });
+});

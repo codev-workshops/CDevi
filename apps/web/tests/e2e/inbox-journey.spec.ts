@@ -78,16 +78,17 @@ test.describe('Inbox journey (US1–US3)', () => {
       .poll(async () => Number((await needsYou.textContent())!.replace(/\D/g, '')))
       .toBe(tabCount);
 
-    // Open the first row with the keyboard, land on the record stub with the same facts, come back
+    // Open the first row with the keyboard, land on the Approval Center decision view for the same
+    // workflow (specs/001 US2), come back
     const firstLink = rows.first().getByRole('link');
     const title = (await firstLink.textContent())!;
     await firstLink.focus();
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/\/approvals\//);
-    await expect(page.getByRole('heading', { level: 1 })).toHaveText(title);
-    await expect(page.getByRole('status')).toContainText('Approval Center');
-    await expect(page.getByText('critical risk')).toBeVisible();
-    await expect(page.locator('.cd-btn.cd-saffron')).toHaveCount(0);
+    await expect(page.getByRole('heading', { level: 1 })).toContainText('Approve');
+    await expect(page.getByRole('link', { name: title })).toBeVisible();
+    await expect(page.getByText('critical risk').first()).toBeVisible();
+    await expect(page.locator('.cd-btn.cd-saffron')).toHaveCount(1);
     await page.getByRole('link', { name: 'Back to Inbox' }).click();
     await expect(page).toHaveURL(/\/inbox/);
     await expect(page.getByRole('tab', { name: /Needs you/ })).toBeFocused();

@@ -14,6 +14,8 @@ import healthRoutes from './routes/health';
 import inboxRoutes from './routes/inbox';
 import ingestRoutes from './routes/ingest';
 import workflowRoutes from './routes/workflows';
+import approvalRoutes from './routes/approvals';
+import clarificationRoutes from './routes/clarifications';
 
 export interface BuildOptions {
   /** Injected clock (Constitution II: time is controlled in tests). */
@@ -76,6 +78,8 @@ export async function buildApp(opts: BuildOptions): Promise<FastifyInstance> {
       await api.register(inboxRoutes, { heartbeatMs: opts.heartbeatMs });
       await api.register(ingestRoutes);
       await api.register(workflowRoutes);
+      await api.register(approvalRoutes);
+      await api.register(clarificationRoutes);
     },
     { prefix: '/api' },
   );

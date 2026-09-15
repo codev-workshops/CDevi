@@ -1,10 +1,21 @@
-import { screen } from '@testing-library/react';
+import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { expectAccessible } from '../../test/a11y';
 import { renderThemed } from '../../test/render';
-import { Chip, Chips, Field, Help, Input, OptionRow, Segmented, Select, TextArea } from './Form';
+import {
+  Chip,
+  Chips,
+  Field,
+  Help,
+  Input,
+  OptionGroup,
+  OptionRow,
+  Segmented,
+  Select,
+  TextArea,
+} from './Form';
 
 function SegDemo() {
   const [v, setV] = useState<'cloud' | 'laptop' | 'ask'>('cloud');
@@ -91,6 +102,25 @@ describe('Form components', () => {
     expect(screen.getByText('Recommended')).toBeInTheDocument();
   });
 
+  it('OptionGroup names the radiogroup with its legend and announces its error', () => {
+    renderThemed(
+      <OptionGroup legend="Then move the workflow to" error="Pick a target.">
+        <OptionRow name="t" value="BLOCKED" checked={false} onChange={() => {}}>
+          BLOCKED
+        </OptionRow>
+        <OptionRow name="t" value="CANCELLED" checked={false} onChange={() => {}}>
+          CANCELLED
+        </OptionRow>
+      </OptionGroup>,
+    );
+    const group = screen.getByRole('group', { name: 'Then move the workflow to' });
+    expect(group.tagName).toBe('FIELDSET');
+    expect(within(group).getAllByRole('radio')).toHaveLength(2);
+    const alert = within(group).getByRole('alert');
+    expect(alert).toHaveTextContent('Pick a target.');
+    expect(group).toHaveAttribute('aria-describedby', alert.id);
+  });
+
   it('is accessible', async () => {
     await expectAccessible(
       <>
@@ -108,9 +138,11 @@ describe('Form components', () => {
             CI
           </Chip>
         </Chips>
-        <OptionRow name="r" value="x" checked onChange={() => {}}>
-          Option
-        </OptionRow>
+        <OptionGroup legend="Answer" error="Choose one.">
+          <OptionRow name="r" value="x" checked onChange={() => {}}>
+            Option
+          </OptionRow>
+        </OptionGroup>
         <Help>Help text</Help>
       </>,
     );

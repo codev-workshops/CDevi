@@ -1,16 +1,49 @@
+import type { ApprovalCenterDetail } from '@cdevi/contracts';
 import type { Metadata } from 'next';
-import { renderRecord } from '../../record-page';
+import { ApiError, apiFetch } from '../../../../lib/api';
+import { Notice } from '../../../../lib/ds';
+import { cookieHeader } from '../../../../lib/session';
+import { ApprovalDecisionScreen } from './ApprovalDecisionScreen';
 
 export const metadata: Metadata = { title: 'Approval' };
 export const dynamic = 'force-dynamic';
 
-export default async function ApprovalRecord({
+export default async function ApprovalDecisionPage({
   params,
-  searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const { id } = await params;
-  return renderRecord('approvals', id, await searchParams);
+  const loaded = await loadDetail(id);
+
+  if (loaded === 'missing') {
+    return (
+      <Notice tone="error" action={<a href="/approvals">Back to Approval Center</a>}>
+        This item doesn&apos;t exist or you don&apos;t have access.
+      </Notice>
+    );
+  }
+  if (loaded === null) {
+    return (
+      <Notice tone="error" action={<a href={`/approvals/${encodeURIComponent(id)}`}>Retry</a>}>
+        Couldn&apos;t load this item. Retry.
+      </Notice>
+    );
+  }
+  return <ApprovalDecisionScreen initial={loaded.detail} loadedAt={loaded.loadedAt} />;
+}
+
+async function loadDetail(
+  id: string,
+): Promise<{ detail: ApprovalCenterDetail; loadedAt: number } | 'missing' | null> {
+  try {
+    const detail = await apiFetch<ApprovalCenterDetail>(
+      `/api/approvals/${encodeURIComponent(id)}`,
+      { cookie: await cookieHeader() },
+    );
+    return { detail, loadedAt: Date.now() };
+  } catch (e) {
+    if (e instanceof ApiError && (e.status === 404 || e.status === 403)) return 'missing';
+    return null;
+  }
 }

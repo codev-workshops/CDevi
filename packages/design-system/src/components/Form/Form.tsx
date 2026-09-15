@@ -4,6 +4,7 @@ import {
   useContext,
   useId,
   type ButtonHTMLAttributes,
+  type FieldsetHTMLAttributes,
   type HTMLAttributes,
   type InputHTMLAttributes,
   type KeyboardEvent,
@@ -272,6 +273,40 @@ export interface OptionRowProps extends Omit<LabelHTMLAttributes<HTMLLabelElemen
   recommended?: boolean;
   children: ReactNode;
 }
+
+/* ---------- OptionGroup ---------- */
+
+export interface OptionGroupProps extends FieldsetHTMLAttributes<HTMLFieldSetElement> {
+  /** Accessible name of the group (rendered as the `<legend>`). */
+  legend: ReactNode;
+  /** Error text under the options; announced with `role="alert"`. */
+  error?: ReactNode;
+  children: ReactNode;
+}
+
+/** A named group of `OptionRow`s: a real `<fieldset>` with a `<legend>`, so the radios form one radiogroup. */
+export const OptionGroup = forwardRef<HTMLFieldSetElement, OptionGroupProps>(function OptionGroup(
+  { legend, error, className, children, ...rest },
+  ref,
+) {
+  const errorId = useId();
+  return (
+    <fieldset
+      ref={ref}
+      {...rest}
+      className={cx('cd-optgroup', className)}
+      aria-describedby={error ? errorId : rest['aria-describedby']}
+    >
+      <legend>{legend}</legend>
+      {children}
+      {error ? (
+        <p className="cd-error" id={errorId} role="alert">
+          {error}
+        </p>
+      ) : null}
+    </fieldset>
+  );
+});
 
 /** Radio option rendered as a row; wraps a real `<input type="radio">`. */
 export const OptionRow = forwardRef<HTMLLabelElement, OptionRowProps>(function OptionRow(

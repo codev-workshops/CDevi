@@ -113,7 +113,10 @@ async function main() {
       failures.push(`PUT ingest p95≈p97.5 ${ingest.latency.p97_5} ms > ${BUDGETS.ingestP95} ms`);
     if (ingest.non2xx > 0) failures.push(`PUT ingest returned ${ingest.non2xx} non-2xx`);
 
+    // Drain requests still in flight when autocannon stopped before removing the rows they write.
+    await app.close();
     await admin.query(`delete from workflows where external_id like $1`, [`perf-${process.pid}-%`]);
+    await admin.query(`delete from workflow_transitions where principal_id=$1`, [principal.id]);
     await admin.query(`delete from ingestion_log where principal_id=$1`, [principal.id]);
     await admin.query(`delete from ingestion_principals where id=$1`, [principal.id]);
     await admin.query(`delete from users where email=$1`, [email]);

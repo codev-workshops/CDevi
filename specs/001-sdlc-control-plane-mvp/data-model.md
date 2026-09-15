@@ -187,3 +187,128 @@ All ingestion routes: unknown workflow → 404; workflow outside the principal's
 ## 9. Seed additions (research R8)
 
 `buildS500(base)` returns `{ users, workflows, showcase }` where `showcase: SeedShowcase[]` lists, per showcase workflow, `stages[]` (with `history[]` transitions), `runs[]`, `artifacts[]`, `testRuns[]`, all deterministic relative to `base`. `seed()` writes them after the workflows and truncates the change log at the end as before. `EXPECTED_BUCKETS` is unchanged; `EXPECTED_SHOWCASE = { workflows: 2, stages: 14, runs: 13, artifacts: 10, testRuns: 5 }`.
+
+---
+
+# Part B — User Story 2 (Approval Center)
+
+Migration `packages/db/migrations/0003_approval_center.sql`, mirrored in `packages/db/src/schema.ts`. Research R12–R16.
+
+## 10. Entity overview (US2)
+
+| Entity | Storage | Status |
+|--------|---------|--------|
+| Approval (spec Key Entities) | `approvals` | existing — extended with context, links, rejection metadata, decider FK |
+| Clarification | `clarifications` | existing — extended with why-it-matters, options, links, answer, answerer FK |
+| Human decision | `approvals.decision*`, `clarifications.answer*` + `workflow_transitions` row (`user_id` set) | new writes (R11–R13) |
+| Audit event (FR-029) | `audit_events` | **new**, append-only (R15) |
+
+## 11. Extended tables
+
+### approvals (new columns)
+
+| column | type | rules |
+|--------|------|-------|
+| context | text | ≤ 2 000 chars; agent-supplied "what and why" shown under the ask |
+| links | jsonb NOT NULL DEFAULT '{}' | keys ⊆ `requirement`, `workflow`, `agentRun`, `externalTicket`, `pullRequest`; each an http(s) or app-relative href ≤ 500 |
+| rejection_reason | text | ≤ 500 chars; required when `decision = 'rejected'` by a human (`CHECK (decision <> 'rejected' OR rejection_reason IS NOT NULL OR decided_by_user_id IS NULL)`) |
+| rejection_target | workflow_state | `BLOCKED` or `CANCELLED` (`CHECK`) ; NULL unless rejected |
+| decided_by_user_id | uuid → users | set by the human path; NULL for ingestion-observed decisions |
+
+`decided_by` (text) keeps the decider's display name so Inbox `RecordView.resolution.by` and the seed are unchanged.
+
+### clarifications (new columns)
+
+| column | type | rules |
+|--------|------|-------|
+| why_it_matters | text | ≤ 1 000 chars (FR-014 "why it matters") |
+| options | jsonb NOT NULL DEFAULT '[]' | ≤ 8 × `{ value ≤ 80, label ≤ 120, recommended boolean }`; at most one `recommended`; `has_recommended_answer` is kept in step by ingestion |
+| links | jsonb NOT NULL DEFAULT '{}' | keys ⊆ `requirement`, `workflow`, `agentRun`, `externalTicket` |
+| answer_option | text | the chosen option `value`; NULL for free text |
+| answer_text | text | ≤ 2 000 chars; free-text answer, or the option label when an option was chosen |
+| answered_by_user_id | uuid → users | set by the human path |
+
+Invariant: `answered_at IS NULL` ⇔ pending. A human answer sets `answered_at`, `answered_by` (display name), `answered_by_user_id`, and exactly one of `answer_option`/`answer_text` non-null (`CHECK`).
+
+## 12. New table `audit_events`
+
+| column | type | rules |
+|--------|------|-------|
+| id | uuid PK | `gen_random_uuid()` |
+| organization_id | uuid NOT NULL → organizations | |
+| project_id | uuid → projects | NULL for organization-level events |
+| workflow_id | uuid → workflows ON DELETE SET NULL | |
+| actor_type | text NOT NULL | `CHECK (actor_type IN ('user','agent','system'))` |
+| actor_id | uuid | `users.id` when `actor_type = 'user'` |
+| actor_name | text NOT NULL | display name at the time |
+| action | text NOT NULL | dotted `<entity>.<past_tense_verb>`: `approval.approved`, `approval.rejected`, `clarification.answered` |
+| target_type | text NOT NULL | `approval` \| `clarification` |
+| target_id | uuid NOT NULL | |
+| risk_level | risk_level | approval's risk; NULL for clarifications |
+| policy | text | reserved for the policy engine (NULL in US2) |
+| result | text NOT NULL | resulting workflow state (`RUNNING`, `BLOCKED`, `CANCELLED`) |
+| details | jsonb NOT NULL DEFAULT '{}' | `{ reason?, target?, answerOption?, answerText?, ask?, question? }` |
+| occurred_at | timestamptz NOT NULL | the request clock (`app.now()`), equals `decided_at` / `answered_at` |
+
+Indexes: `(organization_id, occurred_at DESC)`, `(organization_id, target_type, target_id, occurred_at DESC)`, `(workflow_id, occurred_at DESC)`. Trigger `audit_events_append_only` `BEFORE UPDATE OR DELETE` raises `audit_events is append-only`. RLS policy by `organization_id` as in 0001 (flag-enabled; added to `RLS_TABLES`). Grants: `GRANT SELECT, INSERT ON audit_events TO app_user` — no UPDATE/DELETE. Seed reset truncates it.
+
+## 13. Decision rules (pure, `packages/contracts/src/decision-rules.ts`; contract `contracts/decision-rules.md`)
+
+| Rule | Definition |
+|------|------------|
+| `canDecide(role)` | `role ∈ {approver, administrator}` |
+| `requiresConfirmation(riskLevel)` | `riskLevel ∈ {HIGH, CRITICAL}` |
+| `resultingState(decision)` | approve → `RUNNING`; answer → `RUNNING`; reject → the request's `target` (`BLOCKED` \| `CANCELLED`) |
+| `decisionAllowed(workflowState, itemPending)` | `workflowState = WAITING_FOR_HUMAN ∧ itemPending`; every target is `canTransition(WAITING_FOR_HUMAN, target)` |
+| `orderApprovalCenter(a, b)` | comparator: `riskRank(riskLevel) ASC` (CRITICAL=0 … LOW=3, null=4 so clarifications sort last), then `requestedAt ASC`, then `id ASC` |
+| `answerIsValid(body, options)` | exactly one of `option`/`text`; `option` must be one of `options[].value`; `text` trimmed 1–2 000 |
+
+## 14. Read models (`packages/contracts/src/approval-center.ts`)
+
+```
+ApprovalCenterItem {
+  id, kind: 'approval' | 'clarification', workflowId, workflowExternalId, workflowTitle,
+  project { id, key, name }, ask, riskLevel: RiskLevel | null, requestedBy: string | null,
+  requestedAt, expiresAt: IsoDateTime | null, hasRecommendedAnswer, href: `/approvals/${id}`
+}
+ApprovalCenterSnapshot { generatedAt, project: 'all' | uuid, items: ApprovalCenterItem[] (≤ 200), counts { approvals, clarifications } }
+Resolution { outcome: 'approved' | 'rejected' | 'answered', by { id: uuid | null, name }, at,
+             reason: string | null, target: 'BLOCKED' | 'CANCELLED' | null,
+             answer: { option: string | null, text } | null, workflowState }
+ApprovalCenterDetail {
+  item, workflowState, canDecide: boolean,
+  approval: { context, links, requiresConfirmation } | null,
+  clarification: { whyItMatters, options[], links } | null,
+  resolution: Resolution | null,
+  audit: AuditEventView[] (≤ 20, newest first)
+}
+DecisionResult { detail: ApprovalCenterDetail }          // 200 on success (detail reflects the new resolution)
+AlreadyResolvedProblem = Problem & { resolution: Resolution }   // 409 urn:cdevi:problem:already-resolved
+```
+
+## 15. Validation rules (Zod, `packages/contracts/src/decisions.ts`)
+
+| Schema | Route | Rules |
+|--------|-------|-------|
+| `DecisionParams` | all three | `id` uuid |
+| `ApproveRequest` | `POST /approvals/{id}/approve` | `confirmed` boolean (default false); server requires `true` when `requiresConfirmation(risk)` → 400 `validation` path `confirmed` |
+| `RejectRequest` | `POST /approvals/{id}/reject` | `reason` trimmed 1–500 (required); `target` ∈ `BLOCKED`, `CANCELLED` |
+| `AnswerRequest` | `POST /clarifications/{id}/answer` | exactly one of `option` (≤ 80) or `text` (trimmed 1–2 000); unknown option → 400 |
+| `ApprovalCenterQuery` | `GET /approvals` | `project` uuid \| `all` (default `all`) |
+| `ApprovalUpsert` (+) | ingestion | optional `context` ≤ 2 000, `links` (≤ 5 keys) |
+| `ClarificationUpsert` (+) | ingestion | optional `whyItMatters` ≤ 1 000, `options` ≤ 8, `links` (≤ 4 keys); `hasRecommendedAnswer` derived when `options` given |
+
+Errors: not signed in → 401; role not allowed → 403 `forbidden`; unknown or invisible item → 404; workflow not `WAITING_FOR_HUMAN` → 409 `invalid-transition`; already resolved → 409 `already-resolved` (+ `resolution`).
+
+## 16. Transaction (one `REPEATABLE READ` transaction per decision)
+
+1. `SELECT … FROM approvals|clarifications WHERE id AND organization_id FOR UPDATE` — 404 if none or project invisible; 409 already-resolved if decided/answered.
+2. `SELECT … FROM workflows WHERE id FOR UPDATE` — 409 invalid-transition unless `WAITING_FOR_HUMAN`.
+3. `UPDATE approvals SET decision, decided_at, decided_by, decided_by_user_id, rejection_reason, rejection_target` / `UPDATE clarifications SET answered_at, answered_by, answered_by_user_id, answer_option, answer_text`.
+4. `UPDATE workflows SET state, state_observed_at` (+ `finished_at` for CANCELLED) and `INSERT workflow_transitions (from_state, to_state, observed_at, reason, user_id)`.
+5. `INSERT audit_events (…)`.
+6. Commit → the existing `notify_inbox_changed()` triggers on approvals / clarifications / workflows produce `inbox_change_log` rows and `pg_notify('inbox_changed')` → header count and Inbox refresh (FR-034).
+
+## 17. Seed additions (research R19)
+
+`buildS500(base)` adds `decisionShowcase: { approvals: 2, clarifications: 1 }` on three `WAITING_FOR_HUMAN` workflows: a LOW requirement approval (`s500-apr-req`), a MEDIUM PR-merge approval with `links.pullRequest` (`s500-apr-pr`), and a clarification (`s500-clr-01`) with `why_it_matters`, three options (one recommended) and all four links. `EXPECTED_BUCKETS` unchanged; `seed()` truncates `audit_events`.
