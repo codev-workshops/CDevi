@@ -203,7 +203,7 @@ describe.skipIf(skipDb)(
       expect(log[1]!.detail).toMatch(/not newer/);
     });
 
-    it('FR-036 the decisions watermark is independent of the run upsert; a stale batch on a terminal run → 409', async () => {
+    it('FR-036 the decisions watermark is independent of the run upsert; a stale batch on a terminal run is still 200 stale (no 409)', async () => {
       const run = await newRun();
       expect((await putDecisions(run.ext, batch(1, iso(plus(-10 * MIN))))).statusCode).toBe(200);
       // A later run upsert (bumps the run itself) must not make the next decisions batch stale.
@@ -226,16 +226,17 @@ describe.skipIf(skipDb)(
       expect(newer.statusCode, newer.body).toBe(200);
       expect(newer.json()).toEqual({ result: 'accepted', count: 2 });
 
-      const conflict = await putDecisions(run.ext, batch(1, iso(plus(-9 * MIN))));
-      expect(conflict.statusCode, conflict.body).toBe(409);
-      expect(conflict.headers['content-type']).toMatch(/application\/problem\+json/);
-      expect((conflict.json() as Problem).type).toBe('urn:cdevi:problem:invalid-transition');
+      const olderOnTerminal = await putDecisions(run.ext, batch(1, iso(plus(-9 * MIN))));
+      expect(olderOnTerminal.statusCode, olderOnTerminal.body).toBe(200);
+      expect(olderOnTerminal.json()).toEqual({ result: 'stale', count: 2 });
       expect((await rows(run.id)).map((r) => r.position)).toEqual([1, 2]);
       expect((await logRows(run.ext)).map((l) => l.outcome)).toEqual([
         'accepted',
         'accepted',
-        'rejected',
+        'stale',
       ]);
+      const newerOnTerminal = await putDecisions(run.ext, batch(3, iso(plus(-7 * MIN))));
+      expect(newerOnTerminal.json()).toEqual({ result: 'accepted', count: 3 });
     });
 
     it('FR-018 unknown reasoning keys → 400', async () => {
@@ -355,6 +356,57 @@ describe.skipIf(skipDb)(
         payload: batch(1),
       });
       expect(anon.statusCode).toBe(401);
+    });
+
+    it('FR-017 a run upsert that moves the run to another stage moves its decisions with it', async () => {
+      const run = await newRun();
+      expect((await putDecisions(run.ext, batch(2, iso(plus(-10 * MIN))))).statusCode).toBe(200);
+      const wext = (
+        await pool.query<{ external_id: string }>(
+          `SELECT external_id FROM workflows WHERE id = $1`,
+          [run.workflowId],
+        )
+      ).rows[0]!.external_id;
+      const s5 = await app.inject(
+        asIngest({
+          method: 'PUT',
+          url: `/api/ingest/workflows/${wext}/stages/5`,
+          payload: { name: 'Verification', state: 'RUNNING', observedAt: iso(plus(-9 * MIN)) },
+        }),
+      );
+      expect(s5.statusCode, s5.body).toBe(200);
+      const moved = await putRun(run.ext, {
+        workflowExternalId: wext,
+        stagePosition: 5,
+        agent: 'Implementation Agent',
+        state: 'RUNNING',
+        startedAt: iso(plus(-38 * MIN)),
+      });
+      expect(moved.statusCode, moved.body).toBe(200);
+      const stages = await pool.query<{ run_stage: string; decision_stages: string[] }>(
+        `SELECT r.stage_id AS run_stage, array_agg(DISTINCT d.stage_id::text) AS decision_stages
+           FROM agent_runs r JOIN agent_decisions d ON d.agent_run_id = r.id WHERE r.id = $1 GROUP BY r.stage_id`,
+        [run.id],
+      );
+      expect(stages.rows[0]!.decision_stages).toEqual([stages.rows[0]!.run_stage]);
+      expect((await detail(run.id)).stage.position).toBe(5);
+      expect((await rows(run.id)).map((r) => r.position)).toEqual([1, 2]);
+    });
+
+    it('FR-016 GET /api/agent-runs/{id} returns the timeline in chronological order even when the runtime sent it unordered', async () => {
+      const at = (m: number) => iso(plus(m * MIN));
+      const run = await newRun('RUNNING', {
+        timeline: [
+          { at: at(-20), kind: 'note', message: 'third' },
+          { at: at(-30), kind: 'note', message: 'first' },
+          { at: at(-25), kind: 'note', message: 'second' },
+        ],
+      });
+      expect((await detail(run.id)).timeline.map((e) => e.message)).toEqual([
+        'first',
+        'second',
+        'third',
+      ]);
     });
 
     it('FR-016 GET /api/agent-runs/{id} exposes the runtime-provided steps (≤ 20, default [])', async () => {

@@ -83,7 +83,9 @@ CREATE TRIGGER inbox_changed_agent_runs_updated AFTER UPDATE ON agent_runs FOR E
   EXECUTE FUNCTION notify_inbox_changed();
 
 -- §35 RLS policy (same shape as 0001–0005; not enabled here) and grants: replace-whole ingestion needs
--- SELECT, INSERT and DELETE; decisions are never edited in place.
+-- SELECT, INSERT and DELETE; decision content is never edited in place. The only in-place write is the
+-- denormalised stage_id, which follows the run when a later run upsert moves it to another stage.
 CREATE POLICY agent_decisions_org_isolation ON agent_decisions
   USING (organization_id = current_setting('app.organization_id', true)::uuid);
 GRANT SELECT, INSERT, DELETE ON agent_decisions TO app_user;
+GRANT UPDATE (stage_id) ON agent_decisions TO app_user;

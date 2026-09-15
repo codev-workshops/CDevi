@@ -109,7 +109,9 @@ export async function getAgentRunDetail(
     },
     stage: { position: run.stage_position, name: run.stage_name },
     steps: run.steps.slice(0, 20),
-    timeline: run.timeline.slice(-50),
+    timeline: [...run.timeline]
+      .sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())
+      .slice(-50),
     decisions,
   };
 }

@@ -13,7 +13,6 @@ import {
   type WorkflowState,
   type WorkflowUpsert,
 } from '@cdevi/contracts';
-import { isTerminal } from '@cdevi/contracts/read-model';
 import type pg from 'pg';
 import { ProblemError, problems } from '../lib/problem';
 import type { IngestionPrincipal } from './auth';
@@ -518,6 +517,10 @@ export class IngestionService {
           JSON.stringify(body.steps),
         ],
       );
+      await client.query(
+        `UPDATE agent_decisions SET stage_id = $2 WHERE agent_run_id = $1 AND stage_id <> $2`,
+        [r.rows[0]!.id, stage.id],
+      );
       await this.log(client, 'accepted');
       return { outcome: 'accepted', id: r.rows[0]!.id, state: w.state };
     });
@@ -559,10 +562,6 @@ export class IngestionService {
         observedAt.getTime() <= run.decisions_observed_at.getTime()
       ) {
         const stored = run.decisions_observed_at.toISOString();
-        if (isTerminal(run.state) || run.state === 'FAILED')
-          throw problems.invalidTransition(
-            `Agent run ${externalId} is ${run.state}; decisions observed at ${body.observedAt} are not newer than ${stored}.`,
-          );
         await this.log(
           client,
           'stale',
