@@ -419,16 +419,16 @@ describe('specs/001 US1–US6 contracts/openapi.yaml snapshot', () => {
       content: { 'application/json': { schema: ref('ReviewListResponse') } },
     });
     const get = doc.paths['/reviews/{pullRequestId}']!['get']!;
-    expect(get.tags).toEqual(['reviews']);
-    expect(get.security).toEqual([{ sessionCookie: [] }]);
-    expect(get.parameters).toEqual([
-      expect.objectContaining({ name: 'pullRequestId', in: 'path', required: true }),
-    ]);
+    expect(get).toMatchObject({
+      tags: ['reviews'],
+      security: [{ sessionCookie: [] }],
+      parameters: [expect.objectContaining({ name: 'pullRequestId', in: 'path', required: true })],
+      responses: {
+        '200': { content: { 'application/json': { schema: ref('PullRequestReviewView') } } },
+      },
+    });
     expect(get.requestBody).toBeUndefined();
     expect(Object.keys(get.responses)).toEqual(['200', '401', '404']);
-    expect(get.responses['200']).toMatchObject({
-      content: { 'application/json': { schema: ref('PullRequestReviewView') } },
-    });
   });
 
   it('FR-021 FR-032 documents POST dismiss (DismissFindingBody) / fix (ApplyFixBody) / issue (CreateIssueBody) → 200 FindingActionResult and 400/401/403/404/409 problems', () => {
@@ -445,7 +445,14 @@ describe('specs/001 US1–US6 contracts/openapi.yaml snapshot', () => {
       expect(post.requestBody, action).toMatchObject({
         content: { 'application/json': { schema: ref(body) } },
       });
-      expect(Object.keys(post.responses), action).toEqual(['200', '400', '401', '403', '404', '409']);
+      expect(Object.keys(post.responses), action).toEqual([
+        '200',
+        '400',
+        '401',
+        '403',
+        '404',
+        '409',
+      ]);
       expect(post.responses['200'], action).toMatchObject({
         content: { 'application/json': { schema: ref('FindingActionResult') } },
       });
@@ -539,7 +546,12 @@ describe('specs/001 US1–US6 contracts/openapi.yaml snapshot', () => {
       'LaneResult',
     ])
       expect(strict(name), name).toBe(false);
-    for (const name of ['ReviewIngest', 'ReviewFindingIngest', 'ReviewCycleIngest', 'PullRequestIngest']) {
+    for (const name of [
+      'ReviewIngest',
+      'ReviewFindingIngest',
+      'ReviewCycleIngest',
+      'PullRequestIngest',
+    ]) {
       const props = Object.keys(
         (doc.components.schemas[name] as { properties: Record<string, unknown> }).properties,
       );

@@ -1256,6 +1256,7 @@ describe('US6 review seed (specs/001 US6; plan "Data model — 0007_reviews.sql"
   it('FR-036 the review is what the runtime would PUT: it round-trips through ReviewIngest (strict, 7 lanes, ≤ 50 findings, no reasoning field)', () => {
     const { review } = buildReviewSeed(BASE);
     const body = {
+      externalId: review.externalId,
       status: review.status,
       lanes: review.lanes,
       findings: review.findings.map((f) => ({
@@ -1269,7 +1270,7 @@ describe('US6 review seed (specs/001 US6; plan "Data model — 0007_reviews.sql"
         impact: f.impact,
         evidence: f.evidence,
         recommendedFix: f.recommendedFix,
-        state: f.state === 'FIXED' ? 'FIXED' : 'OPEN',
+        status: f.state === 'FIXED' ? 'fixed' : 'open',
       })),
       startedAt: review.startedAt.toISOString(),
       finishedAt: review.finishedAt!.toISOString(),
