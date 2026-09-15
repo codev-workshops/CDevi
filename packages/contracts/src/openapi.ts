@@ -262,7 +262,8 @@ export function buildWorkflowDetailOpenApi(): Json {
       '/ingest/agent-runs/{externalId}/decisions': {
         put: {
           tags: ['ingest'],
-          summary: 'Runtime replaces the decisions of an agent run as a whole (FR-017, FR-018, FR-036)',
+          summary:
+            'Runtime replaces the decisions of an agent run as a whole (FR-017, FR-018, FR-036)',
           description:
             'Bearer ingestion principal scoped to the run project. Replaces every decision of the run (≤ 50, positions 1..50 unique, ≤ 20 typed evidence refs each). The body is strict: `reason` is a ≤ 600-character summary and any other reasoning field (chainOfThought, reasoning, thoughts, …) is a 400. `stale` when observedAt is not newer than the stored watermark (nothing written). One ingestion_log row and one inbox_changed notification per call.',
           security: [{ ingestionToken: [] }],
@@ -274,7 +275,9 @@ export function buildWorkflowDetailOpenApi(): Json {
             '401': problem('Unknown or disabled principal'),
             '403': problem('Project outside the principal scope'),
             '404': problem('Unknown agent run externalId'),
-            '409': problem('Agent run is not accepting decisions (concurrent replacement in progress)'),
+            '409': problem(
+              'Agent run is not accepting decisions (concurrent replacement in progress)',
+            ),
           },
         },
       },
@@ -591,7 +594,8 @@ export function buildWorkflowDetailOpenApi(): Json {
       '/agent-runs/{id}': {
         get: {
           tags: ['agent-runs'],
-          summary: 'Agent run detail: metadata, steps, timeline and decisions (FR-016, FR-017, FR-018)',
+          summary:
+            'Agent run detail: metadata, steps, timeline and decisions (FR-016, FR-017, FR-018)',
           description: `Read-only for every role including viewer; the run must belong to a visible project. Steps (≤ 20) are the runtime's structured progress, the timeline (≤ 50) its events, decisions (≤ 50) carry action, bounded reason, confidence, policy outcome, optional risk level and typed evidence (≤ 20; accessible:false or no href renders as access-restricted). durationMs is finishedAt − startedAt, or now − startedAt while unfinished. A RUNNING|RETRYING run with no timeline activity for more than ${STALE_RUN_AFTER_MS / 60_000} minutes is shown as stale by the client (runFreshness), not re-stated. Live updates ride GET /inbox/stream filtered by workflowId. Not visible and unknown both return 404.`,
           security: [{ sessionCookie: [] }],
           parameters: [{ ...workflowId, description: 'Agent run id' }],

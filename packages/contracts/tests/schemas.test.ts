@@ -899,9 +899,7 @@ describe('US5 agent-run schemas (specs/001 US5, FR-016–FR-018)', () => {
     expect(EvidenceRef.safeParse(evidence({ label: 'x'.repeat(201) })).success).toBe(false);
     expect(EvidenceRef.safeParse(evidence({ href: 'javascript:alert(1)' })).success).toBe(false);
     expect(EvidenceRef.safeParse(evidence({ href: '//evil.example' })).success).toBe(false);
-    expect(EvidenceRef.safeParse(evidence({ href: 'https://git.example/p/1' })).success).toBe(
-      true,
-    );
+    expect(EvidenceRef.safeParse(evidence({ href: 'https://git.example/p/1' })).success).toBe(true);
     expect(EvidenceRef.safeParse(evidence({ href: null, accessible: false })).success).toBe(true);
     const { href: _h, locator: _l, ...minimal } = evidence();
     expect(EvidenceRef.safeParse(minimal).success).toBe(true);

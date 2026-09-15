@@ -992,7 +992,10 @@ describe('S-500 agent decisions showcase (specs/001 US5, data-model.md §37)', (
     expect(a.showcase).toHaveLength(EXPECTED_SHOWCASE.workflows);
     const withDecisions = runs.filter((r) => r.decisions.length > 0);
     expect(withDecisions.map((r) => r.externalId).sort()).toEqual(
-      [EXPECTED_AGENT_DECISIONS.active.externalId, EXPECTED_AGENT_DECISIONS.completed.externalId].sort(),
+      [
+        EXPECTED_AGENT_DECISIONS.active.externalId,
+        EXPECTED_AGENT_DECISIONS.completed.externalId,
+      ].sort(),
     );
     const active = runs.find((r) => r.externalId === EXPECTED_AGENT_DECISIONS.active.externalId)!;
     const completed = runs.find(
@@ -1003,9 +1006,9 @@ describe('S-500 agent decisions showcase (specs/001 US5, data-model.md §37)', (
     expect(completed.state).toBe('COMPLETED');
     expect(completed.decisions).toHaveLength(2);
     expect(a.showcase.find((s) => s.runs.includes(completed))!.externalId).toBe(SHOWCASE_WAITING);
-    expect(
-      a.workflows.find((w) => w.externalId === SHOWCASE_WAITING)!.project,
-    ).toBe('payments-api');
+    expect(a.workflows.find((w) => w.externalId === SHOWCASE_WAITING)!.project).toBe(
+      'payments-api',
+    );
     const all = runs.flatMap((r) => r.decisions);
     expect(all).toHaveLength(EXPECTED_AGENT_DECISIONS.decisions);
     for (const r of withDecisions) {
@@ -1093,9 +1096,9 @@ describe('S-500 agent decisions showcase (specs/001 US5, data-model.md §37)', (
           `select count(*) c from agent_decisions where policy_outcome = 'APPROVAL_REQUIRED' and risk_level = 'MEDIUM'`,
         ),
       ).toBe(1);
-      expect(await n(`select count(*) c from agent_decisions where policy_outcome = 'DENIED'`)).toBe(
-        1,
-      );
+      expect(
+        await n(`select count(*) c from agent_decisions where policy_outcome = 'DENIED'`),
+      ).toBe(1);
       expect(
         await n(
           `select count(*) c from agent_decisions d, jsonb_array_elements(d.evidence) e where (e->>'accessible')::boolean = false`,

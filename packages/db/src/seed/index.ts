@@ -195,7 +195,13 @@ async function insertShowcase(
   showcase: readonly SeedShowcase[],
   refs: Map<string, WorkflowRef>,
 ): Promise<ShowcaseCounts & { runIds: Map<string, string> }> {
-  const counts: ShowcaseCounts = { stages: 0, runs: 0, artifacts: 0, testRuns: 0, agentDecisions: 0 };
+  const counts: ShowcaseCounts = {
+    stages: 0,
+    runs: 0,
+    artifacts: 0,
+    testRuns: 0,
+    agentDecisions: 0,
+  };
   const runIds = new Map<string, string>();
   for (const sc of showcase) {
     const ref = refs.get(sc.externalId)!;
