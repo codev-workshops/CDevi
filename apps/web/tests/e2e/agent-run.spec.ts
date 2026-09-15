@@ -1,8 +1,7 @@
-import AxeBuilder from '@axe-core/playwright';
 import { createPool } from '@cdevi/db';
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import { E2E } from '../../playwright.config';
-import { API, signIn, uniq } from './helpers';
+import { API, expectAxeClean, measureLcp, signIn, uniq } from './helpers';
 
 // Agent Run Inspector Independent Test (specs/001 US5, quickstart §6, plan §7): the seeded showcase run
 // `s500-001-r7` (3 decisions, one restricted evidence) is read as-is; anything that mutates is done on a workflow
@@ -113,16 +112,6 @@ const decision = (position: number, extra: Record<string, unknown> = {}) => ({
 const decisions = (page: Page) =>
   page.getByRole('list', { name: 'Decisions' }).locator('.cd-decision');
 const progress = (page: Page) => page.getByRole('list', { name: 'Progress' });
-
-async function expectAxeClean(page: Page, label: string) {
-  const results = await new AxeBuilder({ page })
-    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
-    .analyze();
-  expect(
-    results.violations.map((v) => `${v.id}: ${v.help} — ${v.nodes.map((n) => n.html).join(' | ')}`),
-    label,
-  ).toEqual([]);
-}
 
 test.describe('Agent Run Inspector — Independent Test (specs/001 US5)', () => {
   test('US5 AS-1/AS-2: engineer opens a run from Workflow Detail and sees header, timeline and three decisions with evidence', async ({
@@ -367,7 +356,7 @@ test.describe('Agent Run Inspector — Independent Test (specs/001 US5)', () => 
     );
   });
 
-  test('an unknown or foreign run renders the same safe message and a way back', async ({
+  test('FR-032: an unknown or foreign run renders the same safe message and a way back', async ({
     page,
   }) => {
     await signIn(page, 'engineer1@cdevi.demo');
@@ -419,24 +408,7 @@ test.describe('Agent Run Inspector — Independent Test (specs/001 US5)', () => 
       await page.goto('about:blank');
       await page.goto(url, { waitUntil: 'load' });
       await expect(page.getByRole('heading', { level: 1 })).toHaveText('Review Agent — Review');
-      samples.push(
-        await page.evaluate(
-          () =>
-            new Promise<number>((resolve) => {
-              let value = 0;
-              const po = new PerformanceObserver((list) => {
-                for (const e of list.getEntries()) value = e.startTime;
-              });
-              po.observe({ type: 'largest-contentful-paint', buffered: true });
-              setTimeout(() => {
-                po.disconnect();
-                const nav = performance.getEntriesByType('navigation')[0] as
-                  PerformanceNavigationTiming | undefined;
-                resolve(Math.max(value, nav?.responseEnd ?? 0));
-              }, 300);
-            }),
-        ),
-      );
+      samples.push(await measureLcp(page));
     }
     samples.sort((a, b) => a - b);
     console.log(`/agents/runs/{id} initial content ms: ${samples.join(', ')}`);

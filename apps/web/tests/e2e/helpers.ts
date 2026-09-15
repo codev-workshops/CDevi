@@ -1,3 +1,4 @@
+import AxeBuilder from '@axe-core/playwright';
 import { expect, type APIRequestContext, type Page } from '@playwright/test';
 import { E2E } from '../../playwright.config';
 
@@ -97,4 +98,38 @@ export async function ingestAnalysis(
   });
   expect(res.ok(), await res.text()).toBeTruthy();
   return (await res.json()) as { outcome: 'accepted' | 'stale'; id: string; state: string };
+}
+
+/** Page-level axe scan (WCAG 2.2 AA); fails with every violation and its offending nodes listed. */
+export async function expectAxeClean(page: Page, label: string) {
+  const results = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
+    .analyze();
+  expect(
+    results.violations.map((v) => `${v.id}: ${v.help} — ${v.nodes.map((n) => n.html).join(' | ')}`),
+    label,
+  ).toEqual([]);
+}
+
+/**
+ * Largest Contentful Paint of the current document in ms (SC-003/SC-007). Falls back to the navigation
+ * `responseEnd` when the browser has not reported an LCP entry within 300 ms.
+ */
+export function measureLcp(page: Page) {
+  return page.evaluate(
+    () =>
+      new Promise<number>((resolve) => {
+        let value = 0;
+        const po = new PerformanceObserver((list) => {
+          for (const e of list.getEntries()) value = e.startTime;
+        });
+        po.observe({ type: 'largest-contentful-paint', buffered: true });
+        setTimeout(() => {
+          po.disconnect();
+          const nav = performance.getEntriesByType('navigation')[0] as
+            PerformanceNavigationTiming | undefined;
+          resolve(Math.max(value, nav?.responseEnd ?? 0));
+        }, 300);
+      }),
+  );
 }
