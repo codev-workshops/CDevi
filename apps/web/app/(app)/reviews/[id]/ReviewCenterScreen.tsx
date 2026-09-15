@@ -15,7 +15,6 @@ import {
   blockingOpenCount,
   canActOnFinding,
   canActOnFindingState,
-  cycleProgress,
   cycleStateWord,
   findingStateWord,
   iterationWord,
@@ -635,7 +634,12 @@ export function ReviewCenterScreen({ initial, userRole, now }: ReviewCenterScree
         </GateList>
       </Card>
 
-      {ready ? (
+      {!latest ? (
+        <Notice tone="info">
+          <Pill variant="neutral">not yet reviewed</Pill> Merge readiness is unknown until the AI
+          review reports its findings.
+        </Notice>
+      ) : ready ? (
         <Notice tone="info">
           <Pill variant="done">ready</Pill> Ready for merge approval — no blocking findings open.
         </Notice>
@@ -797,7 +801,6 @@ export function ReviewCenterScreen({ initial, userRole, now }: ReviewCenterScree
 
 function CycleCard({ cycle, referenceNow }: { cycle: ReviewCycleView; referenceNow: Date }) {
   const id = useId();
-  const progress = cycleProgress(cycle);
   return (
     <Card as="section" aria-labelledby={id}>
       <h3 id={id}>Review Cycle #{cycle.cycleNumber}</h3>
@@ -835,8 +838,8 @@ function CycleCard({ cycle, referenceNow }: { cycle: ReviewCycleView; referenceN
       />
       <Mono>{iterationWord(cycle)}</Mono>
       <Meter
-        value={progress.value}
-        max={progress.max}
+        value={cycle.iteration}
+        max={cycle.maxIterations}
         label={iterationWord(cycle)}
         warn={cycle.iteration >= cycle.maxIterations}
       />

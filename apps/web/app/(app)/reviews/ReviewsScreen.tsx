@@ -7,8 +7,8 @@ import {
   reviewStatusWord,
   type PullRequestStatus,
 } from '@cdevi/contracts/review-model';
-import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { ApiError, apiFetch, reviewsPath, type ReviewsQuery } from '../../../lib/api';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { apiFetch, reviewsPath, type ReviewsQuery } from '../../../lib/api';
 import {
   Button,
   Field,
@@ -25,6 +25,7 @@ import {
 } from '../../../lib/ds';
 import { humanAgo } from '../../../lib/format';
 import { subscribeInboxStream } from '../../../lib/inbox-stream';
+import { appendPage, meta, plural, redirectIfExpired } from '../../../lib/list-screen';
 import { PROJECT_COOKIE } from '../../../lib/navigation';
 
 export interface ReviewsScreenProps {
@@ -40,20 +41,6 @@ type LoadMode = 'filter' | 'refresh' | 'more';
 
 const REFETCH_DEBOUNCE_MS = 300;
 const PAGE_SIZE = 50;
-
-const Sep = () => <> · </>;
-
-function meta(parts: ReactNode[]): ReactNode {
-  const shown = parts.filter((p) => p !== null && p !== undefined && p !== '');
-  return shown.map((p, i) => (
-    <Fragment key={i}>
-      {i > 0 ? <Sep /> : null}
-      {p}
-    </Fragment>
-  ));
-}
-
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 const REVIEW_PILL: Record<NonNullable<ReviewListItem['reviewStatus']>, PillVariant> = {
   RUNNING: 'run',
@@ -138,20 +125,14 @@ export function ReviewsScreen({ me, initial, now, project = 'all', state }: Revi
         if (mode === 'more') {
           const added = next.items.slice(0, PAGE_SIZE);
           setAnnouncement(`${added.length} more loaded`);
-          setPage((prev) => {
-            const seen = new Set(prev.items.map((r) => r.id));
-            return { ...next, items: [...prev.items, ...added.filter((r) => !seen.has(r.id))] };
-          });
+          setPage((prev) => appendPage(prev, next, added));
         } else {
           setAnnouncement('');
           setPage(next);
         }
       } catch (e) {
         if (seq !== requestSeq.current) return;
-        if (e instanceof ApiError && e.status === 401 && typeof window !== 'undefined') {
-          window.location.assign('/sign-in?reason=expired&next=/reviews');
-          return;
-        }
+        if (redirectIfExpired(e, '/reviews')) return;
         setError(mode);
       } finally {
         if (seq === requestSeq.current) setLoading(null);

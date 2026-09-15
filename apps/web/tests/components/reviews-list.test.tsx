@@ -3,6 +3,15 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReviewsScreen } from '../../app/(app)/reviews/ReviewsScreen';
 import { expectNoViolations, renderApp } from '../a11y';
+import {
+  fetchMock,
+  installLiveMocks,
+  jsonResponse,
+  lastUrl,
+  problem,
+  saffron,
+  sources,
+} from '../live';
 import { me } from '../fixtures/requirements';
 import {
   NOW,
@@ -15,40 +24,11 @@ import {
   listPopulated,
 } from '../fixtures/reviews';
 
-type Listener = (ev: { data: string }) => void;
-const sources: FakeSource[] = [];
-class FakeSource {
-  listeners = new Map<string, Listener[]>();
-  constructor() {
-    sources.push(this);
-  }
-  addEventListener(type: string, fn: Listener) {
-    this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn]);
-  }
-  emit(type: string, data: string) {
-    for (const fn of this.listeners.get(type) ?? []) fn({ data });
-  }
-  close() {}
-}
-
-const fetchMock = vi.fn();
-const jsonResponse = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': status >= 400 ? 'application/problem+json' : 'application/json' },
-  });
-const problem = (status: number) =>
-  jsonResponse({ type: 'about:blank', title: 'Nope', status }, status);
-const lastUrl = () => new URL(String(fetchMock.mock.calls.at(-1)![0]), 'http://localhost');
-const saffron = (c: Element) => c.querySelectorAll('.cd-saffron').length;
 const list = () => screen.getByRole('list', { name: 'Pull requests under review' });
 const rows = () => within(list()).getAllByRole('listitem');
 
 beforeEach(() => {
-  fetchMock.mockReset();
-  sources.length = 0;
-  vi.stubGlobal('fetch', fetchMock);
-  vi.stubGlobal('EventSource', FakeSource);
+  installLiveMocks();
   document.cookie = 'cdevi_project=; Path=/; Max-Age=0';
   window.history.replaceState(null, '', '/reviews');
 });

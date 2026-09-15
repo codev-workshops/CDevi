@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { REVIEW_LANE_WORDS, REVIEW_LANES } from '@cdevi/contracts/review-model';
 import { ReviewCenterScreen } from '../../app/(app)/reviews/[id]/ReviewCenterScreen';
 import { expectNoViolations, renderApp } from '../a11y';
+import { fetchMock, installLiveMocks, jsonResponse, problem, sources } from '../live';
 import {
   FINDING_IDS,
   NOW,
@@ -17,36 +18,8 @@ import {
   reviewView,
 } from '../fixtures/reviews';
 
-type Listener = (ev: { data: string }) => void;
-const sources: FakeSource[] = [];
-class FakeSource {
-  listeners = new Map<string, Listener[]>();
-  constructor() {
-    sources.push(this);
-  }
-  addEventListener(type: string, fn: Listener) {
-    this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn]);
-  }
-  emit(type: string, data: string) {
-    for (const fn of this.listeners.get(type) ?? []) fn({ data });
-  }
-  close() {}
-}
-
-const fetchMock = vi.fn();
-const jsonResponse = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': status >= 400 ? 'application/problem+json' : 'application/json' },
-  });
-const problem = (status: number, detail: string) =>
-  jsonResponse({ type: 'about:blank', title: 'Conflict', status, detail }, status);
-
 beforeEach(() => {
-  fetchMock.mockReset();
-  sources.length = 0;
-  vi.stubGlobal('fetch', fetchMock);
-  vi.stubGlobal('EventSource', FakeSource);
+  installLiveMocks();
   window.location.hash = '';
 });
 afterEach(() => {
@@ -232,7 +205,7 @@ describe('PR Review Center (specs/001 US6)', () => {
       .map((d) => d.textContent);
     expect(defs.slice(0, 3)).toEqual(['5', '0', '5']);
     const meter = within(cards[0]!).getByRole('meter', { name: 'Iteration 4 of 5' });
-    expect(meter).toHaveAttribute('aria-valuenow', '0');
+    expect(meter).toHaveAttribute('aria-valuenow', '4');
     expect(meter).toHaveAttribute('aria-valuemax', '5');
     await waitFor(() => expect(cards[0]).toHaveFocus());
 
@@ -348,7 +321,7 @@ describe('PR Review Center (specs/001 US6)', () => {
     ]);
     expect(within(cards[0]!).getByRole('meter', { name: 'Iteration 3 of 5' })).toHaveAttribute(
       'aria-valuenow',
-      '6',
+      '3',
     );
     expect(cards[0]).toHaveTextContent('completed');
     expect(screen.queryByRole('button', { name: /Run Again|Escalate/ })).toBeNull();
@@ -414,7 +387,7 @@ describe('PR Review Center (specs/001 US6)', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull());
   });
 
-  it('no latest review yet renders pending lanes and an empty findings notice', () => {
+  it('FR-022 no latest review yet renders pending lanes, an empty findings notice and no readiness verdict', () => {
     renderApp(
       <ReviewCenterScreen
         initial={reviewView({
@@ -431,6 +404,9 @@ describe('PR Review Center (specs/001 US6)', () => {
     const lanes = screen.getByRole('group', { name: 'Review lanes' });
     expect(within(lanes).getAllByRole('img', { name: 'not yet checked' })).toHaveLength(7);
     expect(screen.getByText(/No findings reported yet/)).toBeInTheDocument();
+    expect(screen.getByText(/Merge readiness is unknown/)).toBeInTheDocument();
+    expect(screen.queryByText(/Ready for merge approval/)).toBeNull();
+    expect(screen.queryByText(/Not ready for merge approval/)).toBeNull();
   });
 
   it('axe: no violations', async () => {

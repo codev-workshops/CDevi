@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WorkflowDetailScreen } from '../../app/(app)/workflows/[id]/WorkflowDetailScreen';
 import { expectNoViolations, renderApp } from '../a11y';
+import { fetchMock, installLiveMocks, jsonResponse, sources } from '../live';
 import {
   blockedDetail,
   completedDetail,
@@ -13,34 +14,8 @@ import {
 } from '../fixtures/workflow-detail';
 import { PR_ID, workflowPullRequest } from '../fixtures/reviews';
 
-type Listener = (ev: { data: string }) => void;
-const sources: FakeSource[] = [];
-class FakeSource {
-  listeners = new Map<string, Listener[]>();
-  constructor() {
-    sources.push(this);
-  }
-  addEventListener(type: string, fn: Listener) {
-    this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn]);
-  }
-  emit(type: string, data: string) {
-    for (const fn of this.listeners.get(type) ?? []) fn({ data });
-  }
-  close() {}
-}
-
-const fetchMock = vi.fn();
-const jsonResponse = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': status >= 400 ? 'application/problem+json' : 'application/json' },
-  });
-
 beforeEach(() => {
-  fetchMock.mockReset();
-  sources.length = 0;
-  vi.stubGlobal('fetch', fetchMock);
-  vi.stubGlobal('EventSource', FakeSource);
+  installLiveMocks();
 });
 afterEach(() => vi.unstubAllGlobals());
 
