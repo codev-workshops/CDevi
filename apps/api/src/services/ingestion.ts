@@ -531,6 +531,19 @@ export class IngestionService {
     body: AgentDecisionsIngest,
   ): Promise<AgentDecisionsIngestResult> {
     return this.run(async (client) => {
+      // Lock order matches upsertAgentRun (workflow → stage → run): resolve the run's workflow
+      // without locking, lock the workflow row, then lock the run and re-read its watermark.
+      const ref = (
+        await client.query<{ workflow_id: string }>(
+          `SELECT workflow_id FROM agent_runs WHERE organization_id = $1 AND external_id = $2`,
+          [this.principal.organizationId, externalId],
+        )
+      ).rows[0];
+      if (!ref) throw problems.notFound(`Unknown agent run ${externalId}.`);
+      await client.query(
+        `SELECT id FROM workflows WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [this.principal.organizationId, ref.workflow_id],
+      );
       const run = (
         await client.query<{
           id: string;
