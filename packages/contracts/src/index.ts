@@ -11,6 +11,9 @@ export * from './decisions';
 export * from './approval-center';
 export * from './dashboard';
 export * from './dashboard-model';
+export * from './requirements';
+export * from './workflow-list';
+export * from './integrations';
 // requirement-rules also declares zod-free twins of `RequirementState` / `RequirementActions`;
 // the Zod versions in ./requirements win at the package root, so re-export by name.
 export {
@@ -38,7 +41,6 @@ export {
   OBJECTIVE_MAX,
   adfToPlainText,
   mapJiraEvent,
-  type SubmitLabel,
   type RequirementCursor,
   type WorkflowCursor,
   type RequirementListFilters,
