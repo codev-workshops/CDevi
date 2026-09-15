@@ -1,13 +1,15 @@
 /**
  * Drizzle schema mirroring migrations/0001_init.sql, 0002_workflow_detail.sql, 0003_approval_center.sql,
- * 0004_dashboard.sql (indexes only) and 0005_requirements.sql. The SQL files are the source of truth
+ * 0004_dashboard.sql (indexes only), 0005_requirements.sql and 0006_agent_decisions.sql. The SQL files are the source of truth
  * for triggers, partial indexes, RLS and grants, which Drizzle does not model; this file gives queries types.
  */
 import type {
   AgentRunEvent,
   ClarificationOption,
   DecisionLinks,
+  EvidenceRef,
   ExternalRef,
+  RunStep,
 } from '@cdevi/contracts';
 import { sql } from 'drizzle-orm';
 import {
@@ -78,6 +80,8 @@ export const analysisItemKind = pgEnum('analysis_item_kind', [
   'open_question',
 ]);
 export const externalFlag = pgEnum('external_flag', ['deleted', 'closed']);
+export const confidenceLevel = pgEnum('confidence_level', ['LOW', 'MEDIUM', 'HIGH']);
+export const policyOutcome = pgEnum('policy_outcome', ['ALLOWED', 'APPROVAL_REQUIRED', 'DENIED']);
 
 export const organizations = pgTable('organizations', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -219,6 +223,8 @@ export const agentRuns = pgTable(
     finishedAt: ts('finished_at'),
     summary: text('summary'),
     timeline: jsonb('timeline').$type<AgentRunEvent[]>().notNull().default([]),
+    /** 0006: runtime-provided structured progress, ≤ 20 steps (US5 AS-3). */
+    steps: jsonb('steps').$type<RunStep[]>().notNull().default([]),
     createdAt: ts('created_at').notNull().defaultNow(),
     updatedAt: ts('updated_at').notNull().defaultNow(),
   },
@@ -481,3 +487,35 @@ export const requirementTransitions = pgTable(
   (t) => [index('requirement_transitions_req_idx').on(t.requirementId, t.occurredAt)],
 );
 export type RequirementTransitionRow = typeof requirementTransitions.$inferSelect;
+
+/**
+ * Decisions reported by the runtime for one agent run (0006_agent_decisions.sql §33; FR-017, FR-018).
+ * Replaced whole per ingest call (DELETE + INSERT, app_user has no UPDATE); `reason` is a bounded summary.
+ * risk_level is optional in US5 (mandatory with US8).
+ */
+export const agentDecisions = pgTable(
+  'agent_decisions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').notNull(),
+    projectId: uuid('project_id').notNull(),
+    workflowId: uuid('workflow_id').notNull(),
+    stageId: uuid('stage_id').notNull(),
+    agentRunId: uuid('agent_run_id').notNull(),
+    position: smallint('position').notNull(),
+    decidedAt: ts('decided_at').notNull(),
+    action: text('action').notNull(),
+    reason: text('reason').notNull(),
+    confidence: confidenceLevel('confidence').notNull(),
+    policyOutcome: policyOutcome('policy_outcome').notNull(),
+    policyRef: text('policy_ref'),
+    riskLevel: riskLevel('risk_level'),
+    evidence: jsonb('evidence').$type<EvidenceRef[]>().notNull().default([]),
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('agent_decisions_run_position_key').on(t.agentRunId, t.position),
+    index('agent_decisions_run_idx').on(t.agentRunId, t.position),
+  ],
+);
+export type AgentDecisionRow = typeof agentDecisions.$inferSelect;
