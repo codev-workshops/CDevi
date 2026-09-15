@@ -150,6 +150,7 @@ describe.skipIf(skip)('migration 0001_init (data-model.md §2)', () => {
       'inbox_changed_agent_decisions',
       'inbox_changed_agent_decisions_deleted',
       'inbox_changed_agent_runs',
+      'inbox_changed_agent_runs_updated',
       'inbox_changed_approvals',
       'inbox_changed_artifacts',
       'inbox_changed_clarifications',
@@ -2102,12 +2103,52 @@ describe.skipIf(skip)(
         ]);
         await client.query(`delete from agent_decisions where agent_run_id=$1`, [f.run]);
         await insertDecision(client, f, 1);
+        await client.query(`update agent_runs set decisions_observed_at = now() where id=$1`, [
+          f.run,
+        ]);
         const afterReplace = (
           await client.query(`select count(*)::int c from inbox_change_log where seq > $1`, [
             before,
           ])
         ).rows[0].c;
-        expect(afterReplace, 'DELETE + INSERT in one transaction is one row').toBe(1);
+        expect(
+          afterReplace,
+          'DELETE + INSERT + watermark UPDATE in one transaction is one row',
+        ).toBe(1);
+        await client.query('ROLLBACK');
+
+        // The 0002 agent_runs trigger still fires for rendered columns, not for the watermark alone.
+        await client.query('BEGIN');
+        const g = await fixture(client);
+        const mark = (await client.query(`select coalesce(max(seq),0) as m from inbox_change_log`))
+          .rows[0].m;
+        await client.query(`update agent_runs set decisions_observed_at = now() where id=$1`, [
+          g.run,
+        ]);
+        expect(
+          (
+            await client.query(`select count(*)::int c from inbox_change_log where seq > $1`, [
+              mark,
+            ])
+          ).rows[0].c,
+          'watermark-only UPDATE does not notify',
+        ).toBe(0);
+        await client.query(
+          `update agent_runs set state = 'COMPLETED', finished_at = now() where id=$1`,
+          [g.run],
+        );
+        await client.query(
+          `update agent_runs set steps = '[{"label":"x","status":"completed"}]' where id=$1`,
+          [g.run],
+        );
+        expect(
+          (
+            await client.query(`select count(*)::int c from inbox_change_log where seq > $1`, [
+              mark,
+            ])
+          ).rows[0].c,
+          'state and steps UPDATEs notify (one row each)',
+        ).toBe(2);
         await client.query('ROLLBACK');
       } finally {
         client.release();

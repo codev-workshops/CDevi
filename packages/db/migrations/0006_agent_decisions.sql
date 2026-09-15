@@ -70,6 +70,18 @@ CREATE TRIGGER inbox_changed_agent_decisions AFTER INSERT ON agent_decisions
 CREATE TRIGGER inbox_changed_agent_decisions_deleted AFTER DELETE ON agent_decisions
   REFERENCING OLD TABLE AS deleted FOR EACH STATEMENT EXECUTE FUNCTION notify_agent_decision_changed();
 
+-- The accepted replacement also moves agent_runs.decisions_observed_at in the same transaction. That watermark
+-- is not something a page renders, so the 0002 agent_runs trigger is split: INSERTs and UPDATEs of any rendered
+-- column still notify; an UPDATE that touches only decisions_observed_at (and updated_at) does not — otherwise a
+-- replacement would emit a second frame for the same workflow.
+DROP TRIGGER inbox_changed_agent_runs ON agent_runs;
+CREATE TRIGGER inbox_changed_agent_runs AFTER INSERT ON agent_runs FOR EACH ROW EXECUTE FUNCTION notify_inbox_changed();
+CREATE TRIGGER inbox_changed_agent_runs_updated AFTER UPDATE ON agent_runs FOR EACH ROW
+  WHEN (ROW(OLD.stage_id, OLD.agent, OLD.model, OLD.state, OLD.started_at, OLD.finished_at, OLD.summary, OLD.timeline, OLD.steps)
+        IS DISTINCT FROM
+        ROW(NEW.stage_id, NEW.agent, NEW.model, NEW.state, NEW.started_at, NEW.finished_at, NEW.summary, NEW.timeline, NEW.steps))
+  EXECUTE FUNCTION notify_inbox_changed();
+
 -- §35 RLS policy (same shape as 0001–0005; not enabled here) and grants: replace-whole ingestion needs
 -- SELECT, INSERT and DELETE; decisions are never edited in place.
 CREATE POLICY agent_decisions_org_isolation ON agent_decisions
