@@ -69,8 +69,7 @@ async function markDocument(page: Page) {
 async function expectNotReloaded(page: Page) {
   expect(
     await page.evaluate(
-      () =>
-        typeof (window as unknown as { __cdeviNoReload?: number }).__cdeviNoReload === 'number',
+      () => typeof (window as unknown as { __cdeviNoReload?: number }).__cdeviNoReload === 'number',
     ),
     'the document was replaced (full reload) instead of updating in place',
   ).toBe(true);
@@ -205,7 +204,7 @@ test.describe('Dashboard — Independent Test (specs/001 US3)', () => {
     const risk = page.getByRole('region', { name: 'Risk' });
     await expect(risk.getByRole('link', { name: '2 pending approvals' })).toBeVisible();
     await expect(risk.getByRole('link', { name: '0 audit events · Last 7 days' })).toBeVisible();
-    await expect(risk.getByText('—')).toBeVisible();
+    await expect(risk.getByText('—', { exact: true })).toBeVisible();
     await expect(risk.getByRole('status')).toContainText(
       'Not connected yet — review findings arrive with PR Review (User Story 6).',
     );
@@ -318,55 +317,14 @@ test.describe('Dashboard — Independent Test (specs/001 US3)', () => {
   test('FR-026 HIGH and CRITICAL badges are visible in the risk region', async ({ page }) => {
     await openDemoDashboard(page);
     const risk = page.getByRole('region', { name: 'Risk' });
-    await expect(risk.getByText('HIGH', { exact: true }).first()).toBeVisible();
-    await expect(risk.getByText('CRITICAL', { exact: true }).first()).toBeVisible();
-    await expect(risk.getByText('HIGH', { exact: true })).toHaveCount(2);
-    await expect(risk.getByText('CRITICAL', { exact: true })).toHaveCount(2);
-  });
-
-  test('FR-034 an ingested WAITING_FOR_HUMAN transition updates running agents and the card pill within 5 s without reload (SC-003)', async ({
-    page,
-    request,
-  }) => {
-    await openDemoDashboard(page);
-    await expect(figure(page, '7 running agents')).toBeVisible();
-    const card = page
-      .getByRole('list', { name: 'Active workflows' })
-      .getByRole('listitem')
-      .filter({ hasText: 's500-d05' });
-    await expect(card.locator('.cd-pill')).toHaveText('running');
-    await expect(page.getByRole('status').filter({ hasText: 'live' })).toBeVisible();
-
-    await markDocument(page);
-    const sent = Date.now();
-    await transition(request, 's500-d05', 'WAITING_FOR_HUMAN', 'needs sign-off');
-    await expect(figure(page, '6 running agents')).toBeVisible({ timeout: 5_000 });
-    const elapsed = Date.now() - sent;
-    await expect(card.locator('.cd-pill')).toHaveText('needs you');
-    await expect(figure(page, '18 active workflows')).toBeVisible();
-    await expectNotReloaded(page);
-    console.log(`SC-003 dashboard refreshed ${elapsed} ms after the ingest`);
-    expect(elapsed).toBeLessThanOrEqual(5_000);
-  });
-
-  test('SC-002 an ingested BLOCKED transition raises the blocked workflows count in What needs me within 5 s', async ({
-    page,
-    request,
-  }) => {
-    await openDemoDashboard(page);
-    const needsMe = page.getByRole('region', { name: 'What needs me' });
-    await expect(needsMe.getByRole('link', { name: '1 blocked workflows' })).toBeVisible();
-    await markDocument(page);
-    const sent = Date.now();
-    await transition(request, 's500-d06', 'BLOCKED', 'vendor sandbox unavailable');
-    await expect(needsMe.getByRole('link', { name: '2 blocked workflows' })).toBeVisible({
-      timeout: 5_000,
-    });
-    const elapsed = Date.now() - sent;
-    await expect(figure(page, '3 open failures')).toBeVisible();
-    await expectNotReloaded(page);
-    console.log(`SC-002 needs-me refreshed ${elapsed} ms after the ingest`);
-    expect(elapsed).toBeLessThanOrEqual(5_000);
+    const high = risk.locator('[data-risk="HIGH"][data-prominent]');
+    const critical = risk.locator('[data-risk="CRITICAL"][data-prominent]');
+    await expect(high.first()).toBeVisible();
+    await expect(critical.first()).toBeVisible();
+    await expect(high).toHaveCount(2);
+    await expect(critical).toHaveCount(2);
+    await expect(high.first()).toHaveText(/high risk/i);
+    await expect(critical.first()).toHaveText(/critical risk/i);
   });
 
   test('SC-010 page-level axe passes and Tab reaches every figure link in the §5 order, Enter on Requirement navigates to /workflows?stage=1', async ({
@@ -411,8 +369,14 @@ test.describe('Dashboard — Independent Test (specs/001 US3)', () => {
           const el = document.activeElement as HTMLElement | null;
           return (
             el?.getAttribute('aria-label') ??
-            el?.getAttribute('aria-labelledby')?.split(' ').map((id) => document.getElementById(id)?.textContent?.trim()).join(' ') ??
-            (el?.tagName === 'SELECT' ? document.querySelector(`label[for="${el.id}"]`)?.textContent?.trim() : el?.textContent?.trim()) ??
+            el
+              ?.getAttribute('aria-labelledby')
+              ?.split(' ')
+              .map((id) => document.getElementById(id)?.textContent?.trim())
+              .join(' ') ??
+            (el?.tagName === 'SELECT'
+              ? document.querySelector(`label[for="${el.id}"]`)?.textContent?.trim()
+              : el?.textContent?.trim()) ??
             ''
           );
         }),
@@ -428,7 +392,10 @@ test.describe('Dashboard — Independent Test (specs/001 US3)', () => {
     await expect(cardLink).toBeFocused();
 
     // Enter on "Requirement" follows the stage link.
-    await page.getByRole('list', { name: 'Pipeline' }).getByRole('link', { name: 'Requirement' }).focus();
+    await page
+      .getByRole('list', { name: 'Pipeline' })
+      .getByRole('link', { name: 'Requirement' })
+      .focus();
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/\/workflows\?stage=1$/);
   });
@@ -456,8 +423,7 @@ test.describe('Dashboard — Independent Test (specs/001 US3)', () => {
             setTimeout(() => {
               po.disconnect();
               const nav = performance.getEntriesByType('navigation')[0] as
-                | PerformanceNavigationTiming
-                | undefined;
+                PerformanceNavigationTiming | undefined;
               resolve(Math.max(value, nav?.responseEnd ?? 0));
             }, 300);
           }),
@@ -468,5 +434,51 @@ test.describe('Dashboard — Independent Test (specs/001 US3)', () => {
     const p95 = samples[Math.ceil(samples.length * 0.95) - 1]!;
     console.log(`/dashboard initial content ms: median ${samples[5]}, p95 ${p95}`);
     expect(p95).toBeLessThanOrEqual(2_000);
+  });
+
+  // The two ingestion tests mutate the seeded Dashboard Demo figures, so they run last (workers: 1, in-file order).
+  test('FR-034 an ingested WAITING_FOR_HUMAN transition updates running agents and the card pill within 5 s without reload (SC-003)', async ({
+    page,
+    request,
+  }) => {
+    await openDemoDashboard(page);
+    await expect(figure(page, '7 running agents')).toBeVisible();
+    const card = page
+      .getByRole('list', { name: 'Active workflows' })
+      .getByRole('listitem')
+      .filter({ hasText: 's500-d05' });
+    await expect(card.locator('.cd-pill')).toHaveText('running');
+    await expect(page.getByRole('status').filter({ hasText: 'live' })).toBeVisible();
+
+    await markDocument(page);
+    const sent = Date.now();
+    await transition(request, 's500-d05', 'WAITING_FOR_HUMAN', 'needs sign-off');
+    await expect(figure(page, '6 running agents')).toBeVisible({ timeout: 5_000 });
+    const elapsed = Date.now() - sent;
+    await expect(card.locator('.cd-pill')).toHaveText('needs you');
+    await expect(figure(page, '18 active workflows')).toBeVisible();
+    await expectNotReloaded(page);
+    console.log(`SC-003 dashboard refreshed ${elapsed} ms after the ingest`);
+    expect(elapsed).toBeLessThanOrEqual(5_000);
+  });
+
+  test('SC-002 an ingested BLOCKED transition raises the blocked workflows count in What needs me within 5 s', async ({
+    page,
+    request,
+  }) => {
+    await openDemoDashboard(page);
+    const needsMe = page.getByRole('region', { name: 'What needs me' });
+    await expect(needsMe.getByRole('link', { name: '1 blocked workflows' })).toBeVisible();
+    await markDocument(page);
+    const sent = Date.now();
+    await transition(request, 's500-d06', 'BLOCKED', 'vendor sandbox unavailable');
+    await expect(needsMe.getByRole('link', { name: '2 blocked workflows' })).toBeVisible({
+      timeout: 5_000,
+    });
+    const elapsed = Date.now() - sent;
+    await expect(figure(page, '3 open failures')).toBeVisible();
+    await expectNotReloaded(page);
+    console.log(`SC-002 needs-me refreshed ${elapsed} ms after the ingest`);
+    expect(elapsed).toBeLessThanOrEqual(5_000);
   });
 });
