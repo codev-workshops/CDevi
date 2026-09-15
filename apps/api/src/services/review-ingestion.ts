@@ -1,0 +1,501 @@
+/**
+ * Runtime ingestion of pull requests, AI reviews and fix cycles (specs/001 US6, FR-018, FR-020, FR-034, FR-036).
+ * Bearer principal scoped to the project, one transaction per request, `observedAt` watermark per row
+ * (`stale` writes nothing), one `ingestion_log` row per request, never an `audit_events` row. The 0007 statement
+ * triggers append exactly one `inbox_change_log` row per workflow per transaction — every route below touches at
+ * least one review table row (the pull request, the review or the cycle) even when it replaces an empty finding set.
+ *
+ * Lock order (same as the finding actions): workflow row (pull request route only), pull request row, then the
+ * review or cycle row; findings are replaced whole underneath the review lock.
+ */
+import {
+  canTransition,
+  type FindingState,
+  type IngestResult,
+  type PullRequestIngest,
+  type ReviewCycleIngest,
+  type ReviewIngest,
+  type WorkflowState,
+} from '@cdevi/contracts';
+import type pg from 'pg';
+import { ProblemError, problems } from '../lib/problem';
+import type { IngestionPrincipal } from './auth';
+import { syncWorkflowStagePointer } from './workflow-detail';
+
+type Outcome = 'accepted' | 'stale' | 'rejected' | 'forbidden';
+
+interface PullRequestRow {
+  id: string;
+  project_id: string;
+  workflow_id: string;
+  workflow_state: WorkflowState;
+  observed_at: Date;
+}
+
+interface PreservedFinding {
+  external_id: string;
+  state: FindingState;
+  dismissed_reason: string | null;
+  dismissed_by_user_id: string | null;
+  dismissed_at: Date | null;
+  fix_cycle_id: string | null;
+  issue_requested_by_user_id: string | null;
+  issue_requested_at: Date | null;
+}
+
+interface StageRow {
+  id: string;
+  state: WorkflowState;
+  state_observed_at: Date;
+  started_at: Date | null;
+  finished_at: Date | null;
+}
+
+const REVIEW_STAGE_NAME = 'Review';
+const REVIEW_STAGE_POSITION = 6;
+const DEFAULT_MAX_ITERATIONS = 5;
+/** The runtime reports findings as OPEN or FIXED; human outcomes are preserved from the stored row, never ingested. */
+const RUNTIME_FINDING_STATES: readonly FindingState[] = ['OPEN', 'FIXED'];
+const TERMINAL_CYCLE_STATES = ['COMPLETED', 'FAILED', 'CANCELLED'];
+
+/** A review has no external id of its own in the ingest contract; it is named after its pull request and cycle. */
+export const reviewExternalId = (pullRequestExternalId: string, cycle: number): string =>
+  `rev-${cycle}:${pullRequestExternalId}`.slice(0, 128);
+
+export class ReviewIngestionService {
+  constructor(
+    private readonly pool: pg.Pool,
+    private readonly principal: IngestionPrincipal,
+    private readonly route: string,
+    private readonly targetExternalId: string,
+  ) {}
+
+  private async log(client: pg.PoolClient | pg.Pool, outcome: Outcome, detail?: string) {
+    await client.query(
+      `INSERT INTO ingestion_log (organization_id, principal_id, route, target_external_id, outcome, detail) VALUES ($1,$2,$3,$4,$5,$6)`,
+      [
+        this.principal.organizationId,
+        this.principal.id,
+        this.route,
+        this.targetExternalId,
+        outcome,
+        detail ?? null,
+      ],
+    );
+  }
+
+  private async run<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`SELECT set_config('app.organization_id', $1, true)`, [
+        this.principal.organizationId,
+      ]);
+      const result = await fn(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      if (e instanceof ProblemError) {
+        const outcome: Outcome = e.status === 403 ? 'forbidden' : 'rejected';
+        await this.log(this.pool, outcome, `${e.status} ${e.title}: ${e.detail ?? ''}`.trim());
+      }
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+
+  private assertScope(projectId: string) {
+    if (!this.principal.projectIds.includes(projectId))
+      throw problems.forbidden('This token is not scoped to that project.');
+  }
+
+  private async stale(client: pg.PoolClient, observedAt: string, stored: Date) {
+    await this.log(
+      client,
+      'stale',
+      `observedAt ${observedAt} is not newer than ${stored.toISOString()}`,
+    );
+  }
+
+  private async lockPullRequest(
+    client: pg.PoolClient,
+    externalId: string,
+  ): Promise<PullRequestRow> {
+    const pr = (
+      await client.query<PullRequestRow>(
+        `SELECT pr.id, pr.project_id, pr.workflow_id, w.state AS workflow_state, pr.observed_at
+           FROM pull_requests pr JOIN workflows w ON w.id = pr.workflow_id
+          WHERE pr.organization_id = $1 AND pr.external_id = $2 FOR UPDATE OF pr`,
+        [this.principal.organizationId, externalId],
+      )
+    ).rows[0];
+    if (!pr) throw problems.notFound(`Unknown pull request ${externalId}.`);
+    this.assertScope(pr.project_id);
+    return pr;
+  }
+
+  private async agentRunId(
+    client: pg.PoolClient,
+    workflowId: string,
+    externalId: string | undefined,
+  ): Promise<string | null> {
+    if (!externalId) return null;
+    const r = await client.query<{ id: string }>(
+      `SELECT id FROM agent_runs WHERE organization_id = $1 AND workflow_id = $2 AND external_id = $3`,
+      [this.principal.organizationId, workflowId, externalId],
+    );
+    if (!r.rows[0]) throw problems.notFound(`Unknown agent run ${externalId} on this workflow.`);
+    return r.rows[0].id;
+  }
+
+  /** `PUT /ingest/pull-requests/{externalId}` — one pull request per workflow, upserted by (organization, externalId). */
+  async upsertPullRequest(externalId: string, body: PullRequestIngest): Promise<IngestResult> {
+    return this.run(async (client) => {
+      const w = (
+        await client.query<{ id: string; project_id: string; state: WorkflowState }>(
+          `SELECT id, project_id, state FROM workflows WHERE organization_id = $1 AND external_id = $2 FOR UPDATE`,
+          [this.principal.organizationId, body.workflowExternalId],
+        )
+      ).rows[0];
+      if (!w) throw problems.notFound(`Unknown workflow ${body.workflowExternalId}.`);
+      this.assertScope(w.project_id);
+      let requirementId: string | null = null;
+      if (body.requirementExternalId) {
+        const rq = (
+          await client.query<{ id: string }>(
+            `SELECT id FROM requirements WHERE organization_id = $1 AND external_id = $2`,
+            [this.principal.organizationId, body.requirementExternalId],
+          )
+        ).rows[0];
+        if (!rq) throw problems.notFound(`Unknown requirement ${body.requirementExternalId}.`);
+        requirementId = rq.id;
+      }
+      const existing = (
+        await client.query<{ id: string; workflow_id: string; observed_at: Date }>(
+          `SELECT id, workflow_id, observed_at FROM pull_requests WHERE organization_id = $1 AND external_id = $2 FOR UPDATE`,
+          [this.principal.organizationId, externalId],
+        )
+      ).rows[0];
+      const observedAt = new Date(body.observedAt);
+      if (existing) {
+        if (existing.workflow_id !== w.id)
+          throw problems.invalidTransition(
+            `Pull request ${externalId} belongs to another workflow.`,
+          );
+        if (observedAt.getTime() <= existing.observed_at.getTime()) {
+          await this.stale(client, body.observedAt, existing.observed_at);
+          return { outcome: 'stale', id: existing.id, state: w.state };
+        }
+        await client.query(
+          `UPDATE pull_requests SET requirement_id = $2, number = $3, title = $4, href = $5, status = $6, observed_at = $7 WHERE id = $1`,
+          [existing.id, requirementId, body.number, body.title, body.href, body.status, observedAt],
+        );
+        await this.log(client, 'accepted');
+        return { outcome: 'accepted', id: existing.id, state: w.state };
+      }
+      const taken = (
+        await client.query<{ external_id: string }>(
+          `SELECT external_id FROM pull_requests WHERE workflow_id = $1`,
+          [w.id],
+        )
+      ).rows[0];
+      if (taken)
+        throw problems.invalidTransition(
+          `Workflow ${body.workflowExternalId} already has pull request ${taken.external_id}.`,
+        );
+      const id = (
+        await client.query<{ id: string }>(
+          `INSERT INTO pull_requests (organization_id, project_id, workflow_id, requirement_id, external_id, number, title, href, status, observed_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+          [
+            this.principal.organizationId,
+            w.project_id,
+            w.id,
+            requirementId,
+            externalId,
+            body.number,
+            body.title,
+            body.href,
+            body.status,
+            observedAt,
+          ],
+        )
+      ).rows[0]!.id;
+      await this.log(client, 'accepted');
+      return { outcome: 'accepted', id, state: w.state };
+    });
+  }
+
+  /**
+   * `PUT /ingest/pull-requests/{externalId}/reviews/{cycle}` — upserts the review of that cycle and replaces its
+   * finding set whole (ids server-side). Human outcomes survive by externalId: DISMISSED and ISSUE_REQUESTED keep
+   * their state and metadata, FIX_REQUESTED keeps its cycle until the runtime reports FIXED. The cycles route owns
+   * `review_cycles`; nothing here touches them.
+   */
+  async replaceReview(
+    externalId: string,
+    cycle: number,
+    body: ReviewIngest,
+  ): Promise<IngestResult> {
+    return this.run(async (client) => {
+      const bad = body.findings.findIndex(
+        (f) => f.state && !RUNTIME_FINDING_STATES.includes(f.state),
+      );
+      if (bad >= 0)
+        throw problems.validation([
+          {
+            path: `findings.${bad}.state`,
+            message: 'the runtime reports OPEN or FIXED; other states are human outcomes',
+          },
+        ]);
+      const pr = await this.lockPullRequest(client, externalId);
+      const existing = (
+        await client.query<{ id: string; observed_at: Date }>(
+          `SELECT id, observed_at FROM reviews WHERE pull_request_id = $1 AND cycle_number = $2 FOR UPDATE`,
+          [pr.id, cycle],
+        )
+      ).rows[0];
+      const observedAt = new Date(body.observedAt);
+      if (existing && observedAt.getTime() <= existing.observed_at.getTime()) {
+        await this.stale(client, body.observedAt, existing.observed_at);
+        return { outcome: 'stale', id: existing.id, state: pr.workflow_state };
+      }
+      const agentRunId = await this.agentRunId(client, pr.workflow_id, body.agentRunExternalId);
+      const lanes = JSON.stringify(body.lanes);
+      let reviewId: string;
+      if (existing) {
+        reviewId = existing.id;
+        await client.query(
+          `UPDATE reviews SET status = $2, lanes = $3, observed_at = $4, started_at = $5, finished_at = $6, agent_run_id = $7 WHERE id = $1`,
+          [
+            reviewId,
+            body.status,
+            lanes,
+            observedAt,
+            new Date(body.startedAt),
+            body.finishedAt ? new Date(body.finishedAt) : null,
+            agentRunId,
+          ],
+        );
+      } else {
+        reviewId = (
+          await client.query<{ id: string }>(
+            `INSERT INTO reviews (organization_id, project_id, workflow_id, pull_request_id, external_id, cycle_number, status, lanes, observed_at, started_at, finished_at, agent_run_id)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+            [
+              this.principal.organizationId,
+              pr.project_id,
+              pr.workflow_id,
+              pr.id,
+              reviewExternalId(externalId, cycle),
+              cycle,
+              body.status,
+              lanes,
+              observedAt,
+              new Date(body.startedAt),
+              body.finishedAt ? new Date(body.finishedAt) : null,
+              agentRunId,
+            ],
+          )
+        ).rows[0]!.id;
+      }
+
+      const preserved = new Map(
+        (
+          await client.query<PreservedFinding>(
+            // externalId is unique per organization: a finding the runtime carries over from an earlier cycle
+            // moves into this review with its human outcome.
+            `DELETE FROM review_findings WHERE review_id = $1 OR (pull_request_id = $2 AND external_id = ANY($3::text[]))
+             RETURNING external_id, state, dismissed_reason, dismissed_by_user_id, dismissed_at, fix_cycle_id, issue_requested_by_user_id, issue_requested_at`,
+            [reviewId, pr.id, body.findings.map((f) => f.externalId)],
+          )
+        ).rows.map((f) => [f.external_id, f] as const),
+      );
+      for (const f of body.findings) {
+        const prev = preserved.get(f.externalId);
+        const state = mergedState(prev?.state, f.state);
+        const keep = prev && state === prev.state ? prev : null;
+        await client.query(
+          `INSERT INTO review_findings (organization_id, project_id, workflow_id, pull_request_id, review_id, external_id, position, lane, severity, blocking,
+                                        title, description, impact, evidence, recommended_fix, state, dismissed_reason, dismissed_by_user_id, dismissed_at,
+                                        fix_cycle_id, issue_requested_by_user_id, issue_requested_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
+          [
+            this.principal.organizationId,
+            pr.project_id,
+            pr.workflow_id,
+            pr.id,
+            reviewId,
+            f.externalId,
+            f.position,
+            f.lane,
+            f.severity,
+            f.blocking,
+            f.title,
+            f.description,
+            f.impact,
+            JSON.stringify(f.evidence),
+            f.recommendedFix,
+            state,
+            keep?.dismissed_reason ?? null,
+            keep?.dismissed_by_user_id ?? null,
+            keep?.dismissed_at ?? null,
+            prev?.fix_cycle_id ?? null,
+            keep?.issue_requested_by_user_id ?? null,
+            keep?.issue_requested_at ?? null,
+          ],
+        );
+      }
+      await this.log(client, 'accepted');
+      return { outcome: 'accepted', id: reviewId, state: pr.workflow_state };
+    });
+  }
+
+  /**
+   * `PUT /ingest/pull-requests/{externalId}/cycles/{cycle}` — upserts the fix cycle; a cycle already terminal is a
+   * 409. COMPLETED / FAILED move the workflow's Review stage the way the stage ingest route does (state machine,
+   * `workflow_transitions` row with `principal_id`, stage pointer re-synced); CANCELLED leaves the stage alone.
+   */
+  async upsertCycle(
+    externalId: string,
+    cycle: number,
+    body: ReviewCycleIngest,
+  ): Promise<IngestResult> {
+    return this.run(async (client) => {
+      const pr = await this.lockPullRequest(client, externalId);
+      const existing = (
+        await client.query<{
+          id: string;
+          state: string;
+          observed_at: Date;
+          max_iterations: number;
+          started_at: Date;
+        }>(
+          `SELECT id, state, observed_at, max_iterations, started_at FROM review_cycles WHERE pull_request_id = $1 AND cycle_number = $2 FOR UPDATE`,
+          [pr.id, cycle],
+        )
+      ).rows[0];
+      const observedAt = new Date(body.observedAt);
+      if (existing && observedAt.getTime() <= existing.observed_at.getTime()) {
+        await this.stale(client, body.observedAt, existing.observed_at);
+        return { outcome: 'stale', id: existing.id, state: pr.workflow_state };
+      }
+      if (existing && TERMINAL_CYCLE_STATES.includes(existing.state))
+        throw problems.invalidTransition(`Cycle ${cycle} is already ${existing.state}.`);
+      const maxIterations =
+        body.maxIterations ?? existing?.max_iterations ?? DEFAULT_MAX_ITERATIONS;
+      if (body.iteration > maxIterations)
+        throw problems.validation([
+          { path: 'iteration', message: `must not exceed maxIterations (${maxIterations})` },
+        ]);
+      const agentRunId = await this.agentRunId(client, pr.workflow_id, body.agentRunExternalId);
+      const finishedAt = body.finishedAt
+        ? new Date(body.finishedAt)
+        : TERMINAL_CYCLE_STATES.includes(body.state)
+          ? observedAt
+          : null;
+      let id: string;
+      if (existing) {
+        id = existing.id;
+        await client.query(
+          `UPDATE review_cycles SET findings_count = $2, fixed_count = $3, remaining_count = $4, iteration = $5, max_iterations = $6, state = $7,
+                  started_at = $8, finished_at = $9, agent_run_id = COALESCE($10, agent_run_id), observed_at = $11 WHERE id = $1`,
+          [
+            id,
+            body.findingsCount,
+            body.fixedCount,
+            body.remainingCount,
+            body.iteration,
+            maxIterations,
+            body.state,
+            new Date(body.startedAt),
+            finishedAt,
+            agentRunId,
+            observedAt,
+          ],
+        );
+      } else {
+        id = (
+          await client.query<{ id: string }>(
+            `INSERT INTO review_cycles (organization_id, project_id, workflow_id, pull_request_id, cycle_number, findings_count, fixed_count, remaining_count,
+                                        iteration, max_iterations, state, requested_by_agent, started_at, finished_at, agent_run_id, observed_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
+            [
+              this.principal.organizationId,
+              pr.project_id,
+              pr.workflow_id,
+              pr.id,
+              cycle,
+              body.findingsCount,
+              body.fixedCount,
+              body.remainingCount,
+              body.iteration,
+              maxIterations,
+              body.state,
+              this.principal.name,
+              new Date(body.startedAt),
+              finishedAt,
+              agentRunId,
+              observedAt,
+            ],
+          )
+        ).rows[0]!.id;
+      }
+      if (body.state === 'COMPLETED' || body.state === 'FAILED')
+        await this.syncReviewStage(client, pr.workflow_id, body.state, observedAt, cycle);
+      await this.log(client, 'accepted');
+      return { outcome: 'accepted', id, state: pr.workflow_state };
+    });
+  }
+
+  private async syncReviewStage(
+    client: pg.PoolClient,
+    workflowId: string,
+    to: 'COMPLETED' | 'FAILED',
+    observedAt: Date,
+    cycle: number,
+  ): Promise<void> {
+    const stage = (
+      await client.query<StageRow>(
+        `SELECT id, state, state_observed_at, started_at, finished_at FROM workflow_stages
+          WHERE workflow_id = $1 AND (name = $2 OR position = $3)
+          ORDER BY (name = $2) DESC, position LIMIT 1 FOR UPDATE`,
+        [workflowId, REVIEW_STAGE_NAME, REVIEW_STAGE_POSITION],
+      )
+    ).rows[0];
+    if (!stage || stage.state === to) return;
+    if (observedAt.getTime() <= stage.state_observed_at.getTime()) return;
+    if (!canTransition(stage.state, to)) return;
+    const reason = `Fix cycle ${cycle} ${to.toLowerCase()}`;
+    await client.query(
+      `UPDATE workflow_stages SET state = $2, state_observed_at = $3, state_reason = $4, finished_at = COALESCE(finished_at, $3) WHERE id = $1`,
+      [stage.id, to, observedAt, reason],
+    );
+    await client.query(
+      `INSERT INTO workflow_transitions (organization_id, workflow_id, stage_id, from_state, to_state, observed_at, reason, principal_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [
+        this.principal.organizationId,
+        workflowId,
+        stage.id,
+        stage.state,
+        to,
+        observedAt,
+        reason,
+        this.principal.id,
+      ],
+    );
+    await syncWorkflowStagePointer(client, workflowId);
+  }
+}
+
+/** The stored human outcome wins; the runtime may only open a finding or report it FIXED. */
+function mergedState(
+  prev: FindingState | undefined,
+  reported: FindingState | undefined,
+): FindingState {
+  if (prev === 'DISMISSED' || prev === 'ISSUE_REQUESTED') return prev;
+  if (prev === 'FIX_REQUESTED') return reported === 'FIXED' ? 'FIXED' : 'FIX_REQUESTED';
+  return reported ?? 'OPEN';
+}
