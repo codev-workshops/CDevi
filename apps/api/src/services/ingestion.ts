@@ -493,10 +493,11 @@ export class IngestionService {
       await this.assertOwnedBy(client, 'agent_runs', externalId, w.id);
       const timeline = body.timeline.slice(-50);
       const r = await client.query<{ id: string }>(
-        `INSERT INTO agent_runs (organization_id, project_id, workflow_id, stage_id, external_id, agent, model, state, started_at, finished_at, summary, timeline)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
+        `INSERT INTO agent_runs (organization_id, project_id, workflow_id, stage_id, external_id, agent, model, state, started_at, finished_at, summary, timeline, steps)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb)
          ON CONFLICT (organization_id, external_id) DO UPDATE SET stage_id = EXCLUDED.stage_id, agent = EXCLUDED.agent, model = COALESCE(EXCLUDED.model, agent_runs.model),
-           state = EXCLUDED.state, started_at = EXCLUDED.started_at, finished_at = EXCLUDED.finished_at, summary = COALESCE(EXCLUDED.summary, agent_runs.summary), timeline = EXCLUDED.timeline
+           state = EXCLUDED.state, started_at = EXCLUDED.started_at, finished_at = EXCLUDED.finished_at, summary = COALESCE(EXCLUDED.summary, agent_runs.summary), timeline = EXCLUDED.timeline,
+           steps = EXCLUDED.steps
          RETURNING id`,
         [
           this.principal.organizationId,
@@ -511,6 +512,7 @@ export class IngestionService {
           body.finishedAt ? new Date(body.finishedAt) : null,
           body.summary ?? null,
           JSON.stringify(timeline),
+          JSON.stringify(body.steps),
         ],
       );
       await this.log(client, 'accepted');

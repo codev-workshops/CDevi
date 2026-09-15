@@ -306,7 +306,7 @@ export async function workflowDetail(
           : null,
       riskLevel: w.state === 'WAITING_FOR_HUMAN' ? (approval?.riskLevel ?? null) : null,
     },
-    stages: ordered.map((s) => toStageView(s, current, now)),
+    stages: ordered.map((s) => toStageView(s, current, now, runs)),
     currentStage: current
       ? {
           stage: stageRef(current),

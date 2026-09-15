@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { asIngest, iso, MIN, plus, skipDb, testApp, uniq } from './helpers';
+import { asIngest, asUser, iso, MIN, plus, signIn, skipDb, testApp, uniq } from './helpers';
 
 describe.skipIf(skipDb)('US1 ingestion: stages, agent runs, artifacts, test runs (FR-002)', () => {
   let app: FastifyInstance;
@@ -262,6 +262,71 @@ describe.skipIf(skipDb)('US1 ingestion: stages, agent runs, artifacts, test runs
     );
     expect(missing.statusCode).toBe(404);
     expect(missing.json().type).toMatch(/unknown-stage/);
+  });
+
+  it('FR-016 FR-017 agent run upsert persists runtime `steps` (default [] then replaced on re-PUT) and GET /api/workflows/{id} lists the run under its stage as agentRuns (US5 drill-down)', async () => {
+    const { ext, id } = await newWorkflow();
+    await putStage(ext, 1, { name: 'Plan', state: 'RUNNING', observedAt: iso(plus(-29 * MIN)) });
+    await putStage(ext, 1, { name: 'Plan', state: 'COMPLETED', observedAt: iso(plus(-28 * MIN)) });
+    await putStage(ext, 2, {
+      name: 'Implement',
+      state: 'RUNNING',
+      observedAt: iso(plus(-28 * MIN)),
+    });
+    const runExt = uniq('run');
+    const body = (steps?: unknown) => ({
+      workflowExternalId: ext,
+      stagePosition: 2,
+      agent: 'coder',
+      state: 'RUNNING',
+      startedAt: iso(plus(-27 * MIN)),
+      ...(steps === undefined ? {} : { steps }),
+    });
+    const first = await app.inject(
+      asIngest({ method: 'PUT', url: `/api/ingest/agent-runs/${runExt}`, payload: body() }),
+    );
+    expect(first.statusCode, first.body).toBe(200);
+    const runId = first.json().id as string;
+    const stepsOf = async () =>
+      (
+        await app.pool.query<{ steps: unknown }>(`SELECT steps FROM agent_runs WHERE id = $1`, [
+          runId,
+        ])
+      ).rows[0]!.steps;
+    expect(await stepsOf()).toEqual([]);
+
+    const steps = [
+      { label: 'Read the plan', status: 'completed' },
+      { label: 'Write the code', status: 'running' },
+      { label: 'Run the tests', status: 'pending' },
+    ];
+    const second = await app.inject(
+      asIngest({ method: 'PUT', url: `/api/ingest/agent-runs/${runExt}`, payload: body(steps) }),
+    );
+    expect(second.statusCode, second.body).toBe(200);
+    expect(await stepsOf()).toEqual(steps);
+
+    const tooMany = await app.inject(
+      asIngest({
+        method: 'PUT',
+        url: `/api/ingest/agent-runs/${runExt}`,
+        payload: body(Array.from({ length: 21 }, () => ({ label: 's', status: 'pending' }))),
+      }),
+    );
+    expect(tooMany.statusCode).toBe(400);
+    expect(await stepsOf()).toEqual(steps);
+
+    const admin = await signIn(app, 'admin@cdevi.demo');
+    const detail = await app.inject(asUser(admin, { method: 'GET', url: `/api/workflows/${id}` }));
+    expect(detail.statusCode, detail.body).toBe(200);
+    const stages = detail.json().stages as {
+      position: number;
+      agentRuns: { id: string; agent: string; state: string; stagePosition: number }[];
+    }[];
+    expect(stages.find((s) => s.position === 1)?.agentRuns).toEqual([]);
+    expect(stages.find((s) => s.position === 2)?.agentRuns).toEqual([
+      { id: runId, agent: 'coder', state: 'RUNNING', stagePosition: 2 },
+    ]);
   });
 
   it('FR-002 artifacts become immutable once the producing stage completes (409)', async () => {
