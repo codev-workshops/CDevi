@@ -465,7 +465,7 @@ Replace the `/requirements` placeholder and the `/requirements/new` stub with th
 
 **Testing**: Vitest — `contracts` (Zod schemas incl. rejects; pure rules: transitions, actions per role × state, resulting state from analysis, cursor encode/decode, hrefs, Jira event mapping and ADF → text, signature helper; OpenAPI snapshot), `db` (0005 objects, RLS policies, grants, append-only trigger, follow-workflow trigger, `EXPLAIN` on the list filters; seed requirements and `EXPECTED_REQUIREMENTS`; S-500 / dashboard-demo invariants and the `audit_events = 0` seed assertions unchanged; exactly two existing `schema.test.ts` assertions — the `inbox_changed_%` trigger list and the 0004 `pg_tables` list — are updated for 0005's objects, quickstart §5.5), `api` (integration on real Postgres, fixed clock: every route × role × state, exactly-once approve under concurrency, one-transaction workflow creation with seven stages, ingest idempotency and `ingestion_log`, webhook signature (valid / wrong / missing / replayed) and event mapping, BLOCKED edge case, `GET /workflows` filters and cursor, `Server-Timing` at the SC-007 fixture), `web` (component + axe in every ui-requirements.md §5 state; role/state gating of actions; exactly one `.cd-saffron` where allowed and zero elsewhere; AI-generated labels; refetch on `inbox.changed`; design-system `RequirementStatePill` behaviour + axe + gallery). Playwright `apps/web/tests/e2e/requirements.spec.ts` = the Independent Test (create → submit → analysis with open questions → resubmit → analysis without → approve → workflow visible at `/workflows/{id}`, on the Dashboard and in `GET /api/workflows?requirement=`; list filters; live update ≤ 5 s; keyboard walk; page axe; initial content ≤ 2 s). Test names start with the FR/SC id; red → green order in tasks.md Phase 9
 
-**Target Platform / Project Type**: unchanged (web app in the existing monorepo; CI `ci.yml` unchanged; `JIRA_WEBHOOK_SECRET` added to `.env.example` with a placeholder — never a real value)
+**Target Platform / Project Type**: unchanged (web app in the existing monorepo). CI: `.github/workflows/ci.yml` is **not edited** — its `e2e` job sets only `DATABASE_URL`/`SESSION_SECRET`, so the webhook secret the FR-008 e2e scenarios sign with is a **test-only constant** `E2E.jiraWebhookSecret` in `apps/web/playwright.config.ts`, injected as `JIRA_WEBHOOK_SECRET` into the API `webServer` `sharedEnv` (the same pattern as `CDEVI_SIGNIN_RATE_MAX` and the `SESSION_SECRET` fallback there); the `api` Vitest project passes its own `JIRA_TEST_SECRET` (`apps/api/tests/helpers.ts`) through the `buildApp` option, so no CI environment variable is added anywhere. Runtime: `apps/api/src/main.ts` reads `process.env['JIRA_WEBHOOK_SECRET']` and passes it as `BuildOptions.jiraWebhookSecret` (no `env.ts` module — the API has none); `.env.example` gains a placeholder — never a real value
 
 **Performance Goals** (Principle IV; workload = SC-007 organization extended with 2 000 requirements / 20 000 analysis items; measured on CI `ubuntu-latest` with the Postgres service; and the seeded database for e2e):
 - Requirements list initial content (filters + first rows visible) ≤ 2 s p95 (SC-007) — Playwright trace over 10 runs in `requirements.spec.ts`; server first paint carries the first page
@@ -489,7 +489,7 @@ Replace the `/requirements` placeholder and the `/requirements/new` stub with th
 | Principle | Check | Result |
 |-----------|-------|--------|
 | I — Specification and contracts first | `Requirement*`, `WorkflowList*`, `JiraWebhookEvent`, `RequirementAnalysisIngest` Zod schemas + pure `requirement-rules` in `@cdevi/contracts` → OpenAPI fragment (snapshot-tested) → API validation → web types; ui-requirements.md written before code; `0005_requirements.sql` hand-written and mirrored in `schema.ts` | PASS |
-| II — Tests before behaviour | Every task in tasks.md Phase 9 has a failing test first (9a–9e); pure rules tested without a DB; live suites identified (`db`, `api`, e2e); exactly-once and one-transaction properties are tests; fixed clock; signature tests use a test secret from the test env, never the repo | PASS |
+| II — Tests before behaviour | Every task in tasks.md Phase 9 has a failing test first (9a–9e); pure rules tested without a DB; live suites identified (`db`, `api`, e2e); exactly-once and one-transaction properties are tests; fixed clock; signature tests use test-only constants (`JIRA_TEST_SECRET` in `apps/api/tests/helpers.ts`, `E2E.jiraWebhookSecret` in `apps/web/playwright.config.ts`) injected through `BuildOptions.jiraWebhookSecret`, never a real secret in the repo or CI | PASS |
 | III — Design system, defined states, accessibility | Every region maps to a component (below); the missing pattern (`RequirementStatePill`) is added to the package per DESIGN.md §8 before it is consumed; §5 of the screen contract defines loading / populated / empty / error / submitting / disabled per screen; axe in component tests and Playwright; keyboard/focus contract §6; one saffron per screen justified in §7 | PASS |
 | IV — Performance budgets | Eleven numeric budgets with measurement methods above; every list bounded to 50 with a keyset cursor; one transaction per read/write; indexes proven by `EXPLAIN` in a test | PASS |
 | Security (constitution §Security) | Session auth + `visibleProjects` on every read; role checks on every mutating route (`canCreateRequirement`, `canDecide`); ingestion principal scoped to the project; webhook: HMAC over the raw body, `timingSafeEqual`, secret from env, unmapped keys ignored without leaking existence, body size capped at 256 KB, rate-limited; Problems carry no SQL/stack/body; Jira URLs rendered with `rel="noopener noreferrer"` and only `https:` accepted | PASS |
@@ -520,6 +520,7 @@ specs/001-sdlc-control-plane-mvp/
 
 ```
 packages/contracts/
+├── src/common.ts                # EXTENDED: splitCsv (comma-separated query → string[] preprocess); line(n) already here
 ├── src/requirements.ts          # NEW: RequirementState, RequirementSource, ExternalFlag, ExternalRef, AnalysisItem, Requirement, RequirementDetail, RequirementListQuery, RequirementListPage, CreateRequirementRequest, RejectRequirementRequest, RequirementActions, RequirementIdParams (Zod)
 ├── src/workflow-list.ts         # NEW: WorkflowListQuery, WorkflowListItem, WorkflowListPage (Zod; FR-003 shape)
 ├── src/integrations.ts          # NEW: JiraWebhookEvent, JiraWebhookResult (Zod)
@@ -560,8 +561,9 @@ apps/api/
 ├── src/routes/ingest.ts                # EXTENDED: PUT /ingest/requirements/:externalId/analysis
 ├── src/routes/workflows.ts             # EXTENDED: GET /workflows
 ├── src/routes/inbox.ts, src/plugins/notify.ts # EXTENDED: InboxChange.requirementId (nullable) in NOTIFY parsing, replay and SSE frame
-├── src/app.ts                          # EXTENDED: register requirementsRoutes, integrationsRoutes; schemas in swagger components
-└── tests/requirements.test.ts, tests/ingest-requirements.test.ts, tests/jira-webhook.test.ts, tests/workflows-list.test.ts (NEW); tests/helpers.ts (EXTENDED: seedSc007Org grows requirements; signJira)
+├── src/app.ts                          # EXTENDED: BuildOptions.jiraWebhookSecret?: string; register requirementsRoutes, integrationsRoutes ({ secret: opts.jiraWebhookSecret }); schemas in swagger components
+├── src/main.ts                         # EXTENDED: jiraWebhookSecret: process.env['JIRA_WEBHOOK_SECRET'] passed to buildApp (next to rateLimit.signInMax)
+└── tests/requirements.test.ts, tests/ingest-requirements.test.ts, tests/jira-webhook.test.ts, tests/workflows-list.test.ts (NEW); tests/helpers.ts (EXTENDED: seedSc007Org grows requirements; JIRA_TEST_SECRET, signJira)
 
 apps/web/
 ├── app/(app)/requirements/page.tsx                    # NEW: server — cookie + filters → apiFetch('/api/requirements…')
@@ -574,6 +576,7 @@ apps/web/
 ├── lib/session.ts                                     # EXTENDED: getRequirementList(filters), getRequirementDetail(id) (cached)
 ├── lib/inbox-stream.ts                                # EXTENDED: `requirementId` filter option (frameId(data, key))
 ├── lib/ds.ts                                          # EXTENDED: re-export RequirementStatePill
+├── playwright.config.ts                               # EXTENDED: E2E.jiraWebhookSecret constant; sharedEnv.JIRA_WEBHOOK_SECRET = E2E.jiraWebhookSecret (test-only value, CI needs no new env)
 ├── tests/fixtures/requirements.ts                     # NEW: typed RequirementListPage / RequirementDetail fixtures per state
 ├── tests/components/requirements-list.test.tsx, requirement-detail.test.tsx, requirement-create.test.tsx # NEW
 ├── tests/components/new-requirement.test.tsx          # UNCHANGED (Inbox button)
@@ -582,6 +585,7 @@ apps/web/
 docs/architecture.md   # EXTENDED: §4 Requirements landed, §6 requirements/integrations query contracts, §8 layout
 AGENTS.md              # EXTENDED: US4 routes in "Backend and web app work"; requirement-rules subpath; JIRA_WEBHOOK_SECRET
 .env.example           # EXTENDED: JIRA_WEBHOOK_SECRET=change-me (placeholder)
+.github/workflows/ci.yml  # UNCHANGED (test secrets live in playwright.config.ts / tests/helpers.ts, see Technical Context)
 ```
 
 **Structure Decision**: the existing monorepo; no new package, no new workspace script. The requirements seed is data in `packages/db/src/seed/requirements.ts`, not a fixture file. The webhook lives under `routes/integrations.ts` so US8 (Integrations screen, outbound Jira) extends the same module.
@@ -604,6 +608,7 @@ AGENTS.md              # EXTENDED: US4 routes in "Backend and web app work"; req
 | `inbox_change_log.workflow_id` becomes nullable + `requirement_id` column | FR-034: an analysis arriving must reach the open Requirement Detail without a page refresh; the only live channel is `inbox_changed` | A second NOTIFY channel would duplicate the LISTEN client, replay table and SSE endpoint; polling would break SC-003 |
 | Trigger `requirements_follow_workflow()` | `Approved → In Implementation → Completed` must follow the linked workflow whoever writes it (ingestion, US2 decisions, US1 actions) | Calling a service from three writers couples 9c to every existing path and can be forgotten by the next writer |
 | Design-system minor (1.4.0) | DR-01 for requirement states; DESIGN.md §4 already prescribes the mapping | App-side `Pill` switch violates DR-09/`tokens.ts` single-mapping rule (R41) |
+| **Open item — webhook mapping lookup under RLS** (R36, data-model §22 Notes) | `integration_project_mappings` is read on `app.pool` before `app.organization_id` is known (the webhook carries no organization); with `CDEVI_RLS=on` the org-isolation policy hides every row and the webhook answers `202 ignored`. Dev, test and CI run with RLS off, which US4 depends on exactly as the sessions bootstrap in `apps/api/src/plugins/db.ts` already does | Widening the policy (`OR current_setting('app.organization_id', true) IS NULL`) or a bypass role is a deployment-story decision that also covers the sessions bootstrap; deciding it inside US4 would silently change RLS semantics for an existing table. **Tracked**: carried into the deployment/RLS story; T118 records it in `docs/architecture.md` §6 so it is not lost |
 
 ## Post-Design Constitution Re-check
 
