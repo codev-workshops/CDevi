@@ -282,7 +282,7 @@ describe.skipIf(skipDb)(
       const token = `cdvi_${uniq('scoped').replace(/[^a-z0-9]/gi, '')}`;
       const other = await pool.query<{ id: string }>(
         `INSERT INTO ingestion_principals (organization_id, name, token_hash, project_ids)
-         SELECT p.organization_id, 'web-app-only', $2, ARRAY[p.id] FROM projects p WHERE p.key = 'web-app' RETURNING id`,
+         SELECT p.organization_id, 'web-app-only', $1, ARRAY[p.id] FROM projects p WHERE p.key = 'web-app' RETURNING id`,
         [hashToken(token)],
       );
       expect(other.rows).toHaveLength(1);

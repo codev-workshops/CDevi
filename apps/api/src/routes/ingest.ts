@@ -5,6 +5,8 @@ import {
   ClarificationUpsert,
   ExternalIdParams,
   IngestResult,
+  RequirementAnalysisIngest,
+  RequirementIngestResult,
   StagePositionParams,
   StageUpsert,
   TestRunUpsert,
@@ -15,6 +17,7 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { FastifyRequest } from 'fastify';
 import { IngestionService } from '../services/ingestion';
+import { ingestRequirementAnalysis } from '../services/requirement-analysis';
 
 export default async function ingestRoutes(app: FastifyInstance) {
   const r = app.withTypeProvider<ZodTypeProvider>();
@@ -167,6 +170,29 @@ export default async function ingestRoutes(app: FastifyInstance) {
       svc(request, 'PUT /ingest/test-runs/{externalId}', request.params.externalId).upsertTestRun(
         request.params.externalId,
         request.body,
+      ),
+  );
+
+  // ---- specs/001 US4: the agent runtime delivers a requirement's analysis
+
+  r.put(
+    '/ingest/requirements/:externalId/analysis',
+    {
+      schema: {
+        tags: ['ingest'],
+        params: ExternalIdParams,
+        body: RequirementAnalysisIngest,
+        response: { 200: RequirementIngestResult },
+      },
+      preHandler: app.requirePrincipal,
+    },
+    async (request) =>
+      ingestRequirementAnalysis(
+        app.pool,
+        request.principal!,
+        request.params.externalId,
+        request.body,
+        app.now(),
       ),
   );
 }
