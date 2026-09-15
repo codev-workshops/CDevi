@@ -16,6 +16,22 @@ import {
 import { WorkflowActionRequest, WorkflowDetail } from './workflow-detail';
 import { AlreadyResolvedProblem, AnswerRequest, ApproveRequest, RejectRequest } from './decisions';
 import { ApprovalCenterDetail, ApprovalCenterSnapshot, DecisionResult } from './approval-center';
+import {
+  ActiveWorkflowCard,
+  DashboardCounts,
+  DashboardHealth,
+  DashboardNeedsMe,
+  DashboardPipeline,
+  DashboardQuery,
+  DashboardRisk,
+  DashboardSnapshot,
+  Figure,
+  PipelineStage,
+  Rate,
+  SecurityFindings,
+  Window,
+} from './dashboard';
+import { ACTIVE_CARD_LIMIT, WINDOW_KEYS } from './dashboard-model';
 
 type Json = Record<string, unknown>;
 
@@ -78,21 +94,31 @@ const decisionErrors = {
   '409': alreadyResolved,
 };
 
+const projectQuery = {
+  name: 'project',
+  in: 'query',
+  required: false,
+  schema: {
+    oneOf: [{ const: 'all' }, { type: 'string', format: 'uuid' }],
+    default: 'all',
+  },
+};
+
 /**
- * specs/001 US1 fragment: Workflow Detail read + actions and the stage/run/artifact/test-run ingestion routes.
- * `specs/001-sdlc-control-plane-mvp/contracts/openapi.yaml` is a snapshot of this.
+ * specs/001 US1–US3 fragment: Workflow Detail read + actions, the stage/run/artifact/test-run ingestion routes,
+ * the Approval Center and the Dashboard. `specs/001-sdlc-control-plane-mvp/contracts/openapi.yaml` is a snapshot of this.
  */
 export function buildWorkflowDetailOpenApi(): Json {
   return {
     openapi: '3.1.0',
     info: {
-      title: 'CDevi API — Workflow Detail and Approval Center (specs/001 US1–US2)',
-      version: '0.2.0',
+      title: 'CDevi API — Workflow Detail, Approval Center and Dashboard (specs/001 US1–US3)',
+      version: '0.3.0',
       description:
-        'Generated from Zod schemas in packages/contracts (`pnpm -F @cdevi/contracts openapi`) and snapshot-tested; edit the schemas, not the yaml. Extends the specs/003 document: same session cookie, Bearer ingestion tokens, Problem errors. Live updates reuse GET /inbox/stream — the client filters inbox.changed frames by workflowId. Human decisions (approve, reject, answer) are a separate path from agent ingestion: session user, approver/administrator only, exactly once.',
+        'Generated from Zod schemas in packages/contracts (`pnpm -F @cdevi/contracts openapi`) and snapshot-tested; edit the schemas, not the yaml. Extends the specs/003 document: same session cookie, Bearer ingestion tokens, Problem errors. Live updates reuse GET /inbox/stream — the client filters inbox.changed frames by workflowId (Dashboard: refetch on any frame, coalesced). Human decisions (approve, reject, answer) are a separate path from agent ingestion: session user, approver/administrator only, exactly once. The Dashboard is a read model over existing tables: every figure carries the href of the filtered list behind it.',
     },
     servers: [{ url: '/api' }],
-    tags: [{ name: 'workflows' }, { name: 'ingest' }, { name: 'approvals' }],
+    tags: [{ name: 'workflows' }, { name: 'ingest' }, { name: 'approvals' }, { name: 'dashboard' }],
     paths: {
       '/workflows/{id}': {
         get: {
@@ -199,17 +225,7 @@ export function buildWorkflowDetailOpenApi(): Json {
           description:
             'Items whose workflow is WAITING_FOR_HUMAN and that are not yet decided/answered, across the visible projects (administrators: all; others: memberships) or one project. Ordered highest risk first, then oldest; clarifications after every approval. Bounded to 200.',
           security: [{ sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'project',
-              in: 'query',
-              required: false,
-              schema: {
-                oneOf: [{ const: 'all' }, { type: 'string', format: 'uuid' }],
-                default: 'all',
-              },
-            },
-          ],
+          parameters: [projectQuery],
           responses: {
             '200': {
               ...json('ApprovalCenterSnapshot'),
@@ -285,6 +301,33 @@ export function buildWorkflowDetailOpenApi(): Json {
           },
         },
       },
+      '/dashboard': {
+        get: {
+          tags: ['dashboard'],
+          summary: 'Dashboard snapshot: counts, pipeline, needs-me, health, risk, active workflows (FR-023, FR-025, FR-026)',
+          description: `Read model over the visible projects (administrators: all; others: memberships) or one project. Point-in-time counts and the pipeline use the current state; rates, PRs generated and HIGH/CRITICAL audit events use the window (${WINDOW_KEYS.join('|')}, default 7d). Every figure carries the href of the filtered list behind it. activeWorkflows is bounded to ${ACTIVE_CARD_LIMIT} cards (activeWorkflowsTotal carries the full count). securityFindings is connected:false until review findings exist (US6).`,
+          security: [{ sessionCookie: [] }],
+          parameters: [
+            projectQuery,
+            {
+              name: 'window',
+              in: 'query',
+              required: false,
+              schema: { type: 'string', enum: [...WINDOW_KEYS], default: '7d' },
+            },
+          ],
+          responses: {
+            '200': {
+              ...json('DashboardSnapshot'),
+              headers: {
+                'Server-Timing': { schema: { type: 'string' }, description: 'dashboard;dur=…' },
+              },
+            },
+            '400': problem('Invalid query (project must be all|uuid, window must be 24h|7d|30d)'),
+            '401': problem('Not signed in'),
+          },
+        },
+      },
     },
     components: {
       securitySchemes: {
@@ -307,6 +350,19 @@ export function buildWorkflowDetailOpenApi(): Json {
         AnswerRequest: schema(AnswerRequest),
         DecisionResult: schema(DecisionResult),
         AlreadyResolvedProblem: schema(AlreadyResolvedProblem),
+        DashboardQuery: schema(DashboardQuery),
+        Window: schema(Window),
+        Figure: schema(Figure),
+        Rate: schema(Rate),
+        PipelineStage: schema(PipelineStage),
+        DashboardCounts: schema(DashboardCounts),
+        DashboardPipeline: schema(DashboardPipeline),
+        DashboardNeedsMe: schema(DashboardNeedsMe),
+        DashboardHealth: schema(DashboardHealth),
+        SecurityFindings: schema(SecurityFindings),
+        DashboardRisk: schema(DashboardRisk),
+        ActiveWorkflowCard: schema(ActiveWorkflowCard),
+        DashboardSnapshot: schema(DashboardSnapshot),
       },
     },
   };
@@ -321,7 +377,12 @@ export function buildFullOpenApi(): Json {
   return {
     ...base,
     info: { ...(base['info'] as Json), title: 'CDevi API' },
-    tags: [...(base['tags'] as Json[]), { name: 'workflows' }, { name: 'approvals' }],
+    tags: [
+      ...(base['tags'] as Json[]),
+      { name: 'workflows' },
+      { name: 'approvals' },
+      { name: 'dashboard' },
+    ],
     paths: { ...(base['paths'] as Json), ...(frag['paths'] as Json) },
     components: {
       securitySchemes: components.securitySchemes,

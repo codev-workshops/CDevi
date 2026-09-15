@@ -9,3 +9,5 @@ export * from './workflow-detail-model';
 export * from './decision-rules';
 export * from './decisions';
 export * from './approval-center';
+export * from './dashboard';
+export * from './dashboard-model';
