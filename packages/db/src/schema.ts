@@ -1,9 +1,14 @@
 /**
- * Drizzle schema mirroring migrations/0001_init.sql, 0002_workflow_detail.sql, 0003_approval_center.sql and
- * 0004_dashboard.sql (indexes only). The SQL files are the source of truth
+ * Drizzle schema mirroring migrations/0001_init.sql, 0002_workflow_detail.sql, 0003_approval_center.sql,
+ * 0004_dashboard.sql (indexes only) and 0005_requirements.sql. The SQL files are the source of truth
  * for triggers, partial indexes, RLS and grants, which Drizzle does not model; this file gives queries types.
  */
-import type { AgentRunEvent, ClarificationOption, DecisionLinks } from '@cdevi/contracts';
+import type {
+  AgentRunEvent,
+  ClarificationOption,
+  DecisionLinks,
+  ExternalRef,
+} from '@cdevi/contracts';
 import { sql } from 'drizzle-orm';
 import {
   bigserial,
@@ -18,6 +23,7 @@ import {
   smallint,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
 
@@ -55,6 +61,23 @@ export const artifactType = pgEnum('artifact_type', [
   'pull_request',
 ]);
 export const testRunStatus = pgEnum('test_run_status', ['RUNNING', 'PASSED', 'FAILED']);
+export const requirementState = pgEnum('requirement_state', [
+  'DRAFT',
+  'ANALYZING',
+  'NEEDS_CLARIFICATION',
+  'READY',
+  'APPROVED',
+  'IN_IMPLEMENTATION',
+  'COMPLETED',
+  'REJECTED',
+]);
+export const requirementSource = pgEnum('requirement_source', ['manual', 'jira']);
+export const analysisItemKind = pgEnum('analysis_item_kind', [
+  'acceptance_criterion',
+  'rule',
+  'open_question',
+]);
+export const externalFlag = pgEnum('external_flag', ['deleted', 'closed']);
 
 export const organizations = pgTable('organizations', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -114,25 +137,36 @@ export const ingestionPrincipals = pgTable('ingestion_principals', {
   createdAt: ts('created_at').notNull().defaultNow(),
 });
 
-export const workflows = pgTable('workflows', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  organizationId: uuid('organization_id').notNull(),
-  projectId: uuid('project_id').notNull(),
-  externalId: text('external_id').notNull(),
-  title: text('title').notNull(),
-  agent: text('agent'),
-  state: workflowState('state').notNull(),
-  stateObservedAt: ts('state_observed_at').notNull(),
-  stateReason: text('state_reason'),
-  stageIndex: smallint('stage_index'),
-  stageCount: smallint('stage_count').default(7),
-  stageName: text('stage_name'),
-  pullRequestRef: text('pull_request_ref'),
-  startedAt: ts('started_at'),
-  finishedAt: ts('finished_at'),
-  createdAt: ts('created_at').notNull().defaultNow(),
-  updatedAt: ts('updated_at').notNull().defaultNow(),
-});
+export const workflows = pgTable(
+  'workflows',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').notNull(),
+    projectId: uuid('project_id').notNull(),
+    externalId: text('external_id').notNull(),
+    title: text('title').notNull(),
+    agent: text('agent'),
+    state: workflowState('state').notNull(),
+    stateObservedAt: ts('state_observed_at').notNull(),
+    stateReason: text('state_reason'),
+    stageIndex: smallint('stage_index'),
+    stageCount: smallint('stage_count').default(7),
+    stageName: text('stage_name'),
+    pullRequestRef: text('pull_request_ref'),
+    startedAt: ts('started_at'),
+    finishedAt: ts('finished_at'),
+    /** 0005: the requirement this workflow implements (one workflow per requirement); ON DELETE SET NULL. */
+    requirementId: uuid('requirement_id'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('workflows_requirement_idx')
+      .on(t.requirementId)
+      .where(sql`${t.requirementId} IS NOT NULL`),
+    index('workflows_list_idx').on(t.organizationId, t.stateObservedAt.desc(), t.id.desc()),
+  ],
+);
 
 export const workflowTransitions = pgTable('workflow_transitions', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -302,11 +336,13 @@ export const ingestionLog = pgTable('ingestion_log', {
   detail: text('detail'),
 });
 
+/** One of workflowId / requirementId is set (inbox_change_log_target_check, 0005). */
 export const inboxChangeLog = pgTable('inbox_change_log', {
   seq: bigserial('seq', { mode: 'number' }).primaryKey(),
   organizationId: uuid('organization_id').notNull(),
   projectId: uuid('project_id').notNull(),
-  workflowId: uuid('workflow_id').notNull(),
+  workflowId: uuid('workflow_id'),
+  requirementId: uuid('requirement_id'),
   occurredAt: ts('occurred_at').notNull().defaultNow(),
 });
 
@@ -337,3 +373,111 @@ export const auditEvents = pgTable(
   ],
 );
 export type AuditEvent = typeof auditEvents.$inferSelect;
+
+/** Jira project key → CDevi project (0005_requirements.sql §22.1; app_user is SELECT-only). */
+export const integrationProjectMappings = pgTable('integration_project_mappings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  organizationId: uuid('organization_id').notNull(),
+  projectId: uuid('project_id').notNull(),
+  provider: text('provider').$type<'jira'>().notNull(),
+  externalProjectKey: text('external_project_key').notNull(),
+  externalBaseUrl: text('external_base_url').notNull(),
+  createdAt: ts('created_at').notNull().defaultNow(),
+});
+
+/** Requirements (0005_requirements.sql §22.2; FR-007..FR-010). */
+export const requirements = pgTable(
+  'requirements',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').notNull(),
+    projectId: uuid('project_id').notNull(),
+    externalId: text('external_id').notNull(),
+    title: text('title').notNull(),
+    businessObjective: text('business_objective').notNull(),
+    state: requirementState('state').notNull().default('DRAFT'),
+    source: requirementSource('source').notNull().default('manual'),
+    externalRef: jsonb('external_ref').$type<ExternalRef>(),
+    externalFlag: externalFlag('external_flag'),
+    externalFlaggedAt: ts('external_flagged_at'),
+    createdByUserId: uuid('created_by_user_id'),
+    assigneeUserId: uuid('assignee_user_id'),
+    submittedByUserId: uuid('submitted_by_user_id'),
+    submittedAt: ts('submitted_at'),
+    analysisObservedAt: ts('analysis_observed_at'),
+    analysisAgent: text('analysis_agent'),
+    analysisSummary: text('analysis_summary'),
+    approvedByUserId: uuid('approved_by_user_id'),
+    approvedAt: ts('approved_at'),
+    rejectedByUserId: uuid('rejected_by_user_id'),
+    rejectedAt: ts('rejected_at'),
+    rejectionReason: text('rejection_reason'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('requirements_jira_key_idx')
+      .on(t.organizationId, sql`(${t.externalRef}->>'key')`)
+      .where(sql`${t.source} = 'jira'`),
+    index('requirements_list_idx').on(
+      t.organizationId,
+      t.projectId,
+      t.createdAt.desc(),
+      t.id.desc(),
+    ),
+    index('requirements_state_idx').on(t.organizationId, t.state, t.createdAt.desc(), t.id.desc()),
+    index('requirements_assignee_idx')
+      .on(t.organizationId, t.assigneeUserId, t.createdAt.desc(), t.id.desc())
+      .where(sql`${t.assigneeUserId} IS NOT NULL`),
+  ],
+);
+export type RequirementRow = typeof requirements.$inferSelect;
+
+/**
+ * Acceptance criteria, AI-identified rules and open questions (0005 §22.3). Human-authored and AI-generated
+ * items have disjoint position spaces: UNIQUE (requirement_id, kind, ai_generated, position).
+ */
+export const requirementAnalysisItems = pgTable(
+  'requirement_analysis_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').notNull(),
+    projectId: uuid('project_id').notNull(),
+    requirementId: uuid('requirement_id').notNull(),
+    kind: analysisItemKind('kind').notNull(),
+    position: smallint('position').notNull(),
+    text: text('text').notNull(),
+    aiGenerated: boolean('ai_generated').notNull(),
+    /** 'user:<display name>' | 'agent:<agent>' */
+    source: text('source').notNull(),
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('requirement_analysis_items_req_idx').on(
+      t.requirementId,
+      t.kind,
+      t.aiGenerated,
+      t.position,
+    ),
+  ],
+);
+export type RequirementAnalysisItemRow = typeof requirementAnalysisItems.$inferSelect;
+
+/** Append-only requirement state history (0005 §22.4); UPDATE/DELETE raise. */
+export const requirementTransitions = pgTable(
+  'requirement_transitions',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    organizationId: uuid('organization_id').notNull(),
+    requirementId: uuid('requirement_id').notNull(),
+    fromState: requirementState('from_state'),
+    toState: requirementState('to_state').notNull(),
+    actorType: text('actor_type').$type<'user' | 'agent' | 'system'>().notNull(),
+    actorId: text('actor_id'),
+    actorName: text('actor_name').notNull(),
+    reason: text('reason'),
+    occurredAt: ts('occurred_at').notNull().defaultNow(),
+  },
+  (t) => [index('requirement_transitions_req_idx').on(t.requirementId, t.occurredAt)],
+);
+export type RequirementTransitionRow = typeof requirementTransitions.$inferSelect;
