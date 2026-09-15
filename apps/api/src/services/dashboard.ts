@@ -123,14 +123,15 @@ export async function dashboardSnapshot(
     `WITH scoped AS (
        SELECT id FROM workflows
         WHERE organization_id = $1 AND project_id = ANY($2::uuid[])
-          AND (state = ANY($3::workflow_state[]) OR coalesce(finished_at, state_observed_at) >= $4)
+          AND (state = ANY($3::workflow_state[])
+               OR coalesce(finished_at, state_observed_at) BETWEEN $4 AND $5)
      )
      SELECT count(*) AS denominator,
             count(*) FILTER (WHERE EXISTS (SELECT 1 FROM approvals a WHERE a.workflow_id = scoped.id)
                                 OR EXISTS (SELECT 1 FROM clarifications c WHERE c.workflow_id = scoped.id)
                                 OR EXISTS (SELECT 1 FROM workflow_transitions t WHERE t.workflow_id = scoped.id AND t.user_id IS NOT NULL)) AS numerator
        FROM scoped`,
-    [org, projectIds, active, window.from],
+    [org, projectIds, active, window.from, window.to],
   );
   const au = await client.query<{ high_critical: string }>(
     `SELECT count(*) AS high_critical

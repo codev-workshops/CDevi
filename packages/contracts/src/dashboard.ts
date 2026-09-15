@@ -17,7 +17,10 @@ export const Window = z.object({ key: WindowKey, from: IsoDateTime, to: IsoDateT
 export type Window = z.infer<typeof Window>;
 
 /** Relative link to the filtered list behind a figure (FR-023, research R25). */
-export const Href = z.string().max(200).regex(/^\/(?!\/)/, { message: 'must start with /' });
+export const Href = z
+  .string()
+  .max(200)
+  .regex(/^\/(?!\/)/, { message: 'must start with /' });
 export type Href = z.infer<typeof Href>;
 
 const count = z.number().int().min(0);

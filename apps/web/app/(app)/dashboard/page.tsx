@@ -1,12 +1,7 @@
 import type { Metadata } from 'next';
 import { ApiError } from '../../../lib/api';
 import { Notice } from '../../../lib/ds';
-import {
-  getDashboardSnapshot,
-  getMe,
-  selectedProject,
-  selectedWindow,
-} from '../../../lib/session';
+import { getDashboardSnapshot, getMe, selectedProject, selectedWindow } from '../../../lib/session';
 import { DashboardScreen } from './DashboardScreen';
 
 export const metadata: Metadata = { title: 'Dashboard' };

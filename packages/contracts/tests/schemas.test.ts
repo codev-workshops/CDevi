@@ -287,7 +287,10 @@ describe('US3 dashboard schemas (specs/001 data-model.md §19)', () => {
     const ok = snapshot();
     expect(DashboardSnapshot.safeParse(ok).success).toBe(true);
 
-    const sixStages = { ...ok, pipeline: { ...ok.pipeline, stages: ok.pipeline.stages.slice(0, 6) } };
+    const sixStages = {
+      ...ok,
+      pipeline: { ...ok.pipeline, stages: ok.pipeline.stages.slice(0, 6) },
+    };
     expect(DashboardSnapshot.safeParse(sixStages).success).toBe(false);
     const eightStages = {
       ...ok,
@@ -333,9 +336,9 @@ describe('US3 dashboard schemas (specs/001 data-model.md §19)', () => {
     expect(
       SecurityFindings.safeParse({ connected: false, count: null, href: '/reviews' }).success,
     ).toBe(true);
-    expect(SecurityFindings.safeParse({ connected: true, count: 3, href: '/reviews' }).success).toBe(
-      true,
-    );
+    expect(
+      SecurityFindings.safeParse({ connected: true, count: 3, href: '/reviews' }).success,
+    ).toBe(true);
     expect(
       SecurityFindings.safeParse({ connected: false, count: 1, href: '/reviews' }).success,
     ).toBe(false);

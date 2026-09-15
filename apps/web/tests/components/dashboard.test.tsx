@@ -2,6 +2,7 @@ import { ACTIVE_STATES, SDLC_STAGES } from '@cdevi/contracts/dashboard-model';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AppFrame } from '../../app/(app)/AppFrame';
 import { DashboardScreen } from '../../app/(app)/dashboard/DashboardScreen';
 import { expectNoViolations, renderApp } from '../a11y';
 import {
@@ -283,6 +284,27 @@ describe('Dashboard (specs/001 US3)', () => {
     await waitFor(() => expect(link('118 active workflows')).toBeInTheDocument());
     expect(link('28 approvals')).toBeInTheDocument();
     expect(select).toHaveFocus();
+  });
+
+  it('FR-025 opening ?project=<uuid> remembers that project in the shared cookie so figure links land on the same scope', () => {
+    document.cookie = 'cdevi_project=all; Path=/';
+    renderApp(<DashboardScreen me={adminMe} initial={populated} />);
+    expect(document.cookie).toContain(`cdevi_project=${DASHBOARD_DEMO.id}`);
+    expect(document.cookie).not.toContain('cdevi_project=all');
+  });
+
+  it('FR-025 the Approvals nav count follows the Dashboard snapshot (approvals + clarifications) after a refetch', async () => {
+    const user = userEvent.setup();
+    fetchMock.mockResolvedValueOnce(jsonResponse(allProjects));
+    renderApp(
+      <AppFrame me={adminMe} needsYouCount={0} approvalsCount={99}>
+        <DashboardScreen me={adminMe} initial={populated} />
+      </AppFrame>,
+    );
+    const nav = screen.getByRole('navigation');
+    expect(within(nav).getByLabelText(/6 pending/)).toBeInTheDocument();
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Project' }), 'all');
+    await waitFor(() => expect(within(nav).getByLabelText(/42 pending/)).toBeInTheDocument());
   });
 
   it('FR-023 the window selector refetches with ?window= and relabels every windowed figure', async () => {

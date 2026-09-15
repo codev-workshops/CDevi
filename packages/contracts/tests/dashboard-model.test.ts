@@ -99,10 +99,11 @@ describe('dashboard-model (specs/001 data-model.md §20, research R24/R25)', () 
     }
   });
 
-  it('FR-023 dashboardHrefs(\'7d\') returns the R25 table (stage n → /workflows?stage=n, /approvals, /approvals?kind=clarification, /workflows?state=FAILED, /approvals?risk=HIGH,CRITICAL, /audit?risk=HIGH,CRITICAL&window=7d, /reviews)', () => {
+  it("FR-023 dashboardHrefs('7d') returns the R25 table (stage n → /workflows?stage=n, /approvals, /approvals?kind=clarification, /workflows?state=FAILED, /approvals?risk=HIGH,CRITICAL, /audit?risk=HIGH,CRITICAL&window=7d, /reviews)", () => {
     const hrefs = dashboardHrefs('7d');
     expect(hrefs).toEqual({
-      activeWorkflows: '/workflows?state=QUEUED,RUNNING,RETRYING,WAITING,WAITING_FOR_HUMAN,BLOCKED,FAILED',
+      activeWorkflows:
+        '/workflows?state=QUEUED,RUNNING,RETRYING,WAITING,WAITING_FOR_HUMAN,BLOCKED,FAILED',
       runningAgents: '/workflows?state=RUNNING,RETRYING',
       prsGenerated: '/workflows?hasPr=true&window=7d',
       openFailures: '/workflows?state=FAILED,BLOCKED',
@@ -208,7 +209,10 @@ describe('dashboard-model (specs/001 data-model.md §20, research R24/R25)', () 
       blocked: { value: 1, href: '/workflows?state=BLOCKED' },
     });
     expect(snap.risk.pendingHighCritical.value).toBeLessThanOrEqual(snap.needsMe.approvals.value);
-    expect(snap.risk.pendingHighCritical).toEqual({ value: 2, href: '/approvals?risk=HIGH,CRITICAL' });
+    expect(snap.risk.pendingHighCritical).toEqual({
+      value: 2,
+      href: '/approvals?risk=HIGH,CRITICAL',
+    });
     expect(snap.risk.auditHighCritical).toEqual({
       value: 0,
       href: '/audit?risk=HIGH,CRITICAL&window=7d',
@@ -269,7 +273,15 @@ describe('dashboard-model (specs/001 data-model.md §20, research R24/R25)', () 
   it('FR-023 buildDashboardSnapshot echoes the project, handles null stage rows and zero denominators', () => {
     const rows = demoRows();
     rows.testRuns = { passed: 0, total: 0 };
-    rows.cards = [cardRow(1, { stageIndex: null, stageCount: null, stageName: null, startedAt: null, agent: null })];
+    rows.cards = [
+      cardRow(1, {
+        stageIndex: null,
+        stageCount: null,
+        stageName: null,
+        startedAt: null,
+        agent: null,
+      }),
+    ];
     const snap = buildDashboardSnapshot(rows, NOW, '24h', uuid(9));
     expect(snap.project).toBe(uuid(9));
     expect(snap.window.key).toBe('24h');
@@ -282,7 +294,7 @@ describe('dashboard-model (specs/001 data-model.md §20, research R24/R25)', () 
     });
   });
 
-  it('FR-026 securityFindings is { connected: false, count: null, href: \'/reviews\' }', () => {
+  it("FR-026 securityFindings is { connected: false, count: null, href: '/reviews' }", () => {
     const snap = buildDashboardSnapshot(demoRows(), NOW, '7d', 'all');
     expect(snap.risk.securityFindings).toEqual({ connected: false, count: null, href: '/reviews' });
   });

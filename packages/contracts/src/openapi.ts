@@ -304,7 +304,8 @@ export function buildWorkflowDetailOpenApi(): Json {
       '/dashboard': {
         get: {
           tags: ['dashboard'],
-          summary: 'Dashboard snapshot: counts, pipeline, needs-me, health, risk, active workflows (FR-023, FR-025, FR-026)',
+          summary:
+            'Dashboard snapshot: counts, pipeline, needs-me, health, risk, active workflows (FR-023, FR-025, FR-026)',
           description: `Read model over the visible projects (administrators: all; others: memberships) or one project. Point-in-time counts and the pipeline use the current state; rates, PRs generated and HIGH/CRITICAL audit events use the window (${WINDOW_KEYS.join('|')}, default 7d). Every figure carries the href of the filtered list behind it. activeWorkflows is bounded to ${ACTIVE_CARD_LIMIT} cards (activeWorkflowsTotal carries the full count). securityFindings is connected:false until review findings exist (US6).`,
           security: [{ sessionCookie: [] }],
           parameters: [

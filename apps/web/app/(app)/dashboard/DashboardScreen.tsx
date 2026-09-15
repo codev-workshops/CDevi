@@ -34,6 +34,7 @@ import {
 import { humanAgo, humanDuration } from '../../../lib/format';
 import { subscribeInboxStream } from '../../../lib/inbox-stream';
 import { PROJECT_COOKIE } from '../../../lib/navigation';
+import { useInboxCount } from '../AppFrame';
 
 export interface DashboardScreenProps {
   me: Me;
@@ -172,9 +173,17 @@ export function DashboardScreen({ me, initial }: DashboardScreenProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
   const [connected, setConnected] = useState<boolean | null>(null);
+  const { setApprovalsCount } = useInboxCount();
   const requestSeq = useRef(0);
   const titleRef = useRef<HTMLDivElement>(null);
   const generatedAt = useMemo(() => new Date(snapshot.generatedAt), [snapshot.generatedAt]);
+
+  // The server resolved ?project= (or the cookie) into initial.project; keep the shared cookie in step
+  // so the lists the figures link to open on the same scope.
+  useEffect(() => rememberProject(initial.project), [initial.project]);
+
+  const pendingTotal = snapshot.needsMe.approvals.value + snapshot.needsMe.clarifications.value;
+  useEffect(() => setApprovalsCount(pendingTotal), [pendingTotal, setApprovalsCount]);
   // The wall clock is read only after mount so server and client render the same "Updated" label.
   const [clock, setClock] = useState<Date | null>(null);
   useEffect(() => {

@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   asIngest,
   asUser,
+  DAY,
   FIXED_NOW,
   iso,
   MIN,
@@ -321,6 +322,22 @@ describe.skipIf(skipDb)(
       expect(after.needsMe.approvals.value).toBe(5);
       expect(after.risk.pendingHighCritical.value).toBe(3);
       expect(after.health.humanInterventionRate).toMatchObject({ numerator: 9, denominator: 24 });
+    });
+
+    it('FR-023 a workflow completed after the window closes leaves the human intervention rate (both ends of the window bound Q6)', async () => {
+      const before = await snapshot(admin, `?project=${demo}`);
+      expect(before.health.humanInterventionRate).toMatchObject({ numerator: 9, denominator: 24 });
+      const done = await app.inject(
+        asIngest({
+          method: 'POST',
+          url: '/api/ingest/workflows/s500-d06/transitions',
+          payload: { toState: 'COMPLETED', observedAt: iso(plus(2 * DAY)), reason: 'clock skew' },
+        }),
+      );
+      expect(done.statusCode, done.body).toBe(200);
+      const after = await snapshot(admin, `?project=${demo}`);
+      expect(after.counts.activeWorkflows.value).toBe(17);
+      expect(after.health.humanInterventionRate).toMatchObject({ numerator: 9, denominator: 23 });
     });
   },
 );

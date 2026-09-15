@@ -21,7 +21,9 @@ const DAY = 24 * HOUR;
 
 // ---- R24 state sets
 /** The seven non-terminal states — WORKFLOW_STATES minus COMPLETED and CANCELLED. */
-export const ACTIVE_STATES: readonly WorkflowState[] = WORKFLOW_STATES.filter((s) => !isTerminal(s));
+export const ACTIVE_STATES: readonly WorkflowState[] = WORKFLOW_STATES.filter(
+  (s) => !isTerminal(s),
+);
 export const RUNNING_AGENT_STATES: readonly WorkflowState[] = ['RUNNING', 'RETRYING'];
 export const FAILURE_STATES: readonly WorkflowState[] = ['FAILED', 'BLOCKED'];
 
@@ -102,7 +104,9 @@ export function dashboardHrefs(window: WindowKey): DashboardHrefs {
 
 // ---- R24 display rules
 /** Percent with one decimal; null when there is no evidence (the UI renders "—", never 0 % or NaN). */
-export function ratePercent(rate: Pick<Rate, 'numerator' | 'denominator'> & { href?: string }): number | null {
+export function ratePercent(
+  rate: Pick<Rate, 'numerator' | 'denominator'> & { href?: string },
+): number | null {
   if (rate.denominator === 0) return null;
   return Math.round((1000 * rate.numerator) / rate.denominator) / 10;
 }
@@ -192,7 +196,11 @@ const rate = (numerator: number, denominator: number, href: string): Rate => ({
   href,
 });
 
-export function toActiveCard(row: ActiveCardRow, now: Date, hrefs: DashboardHrefs): ActiveWorkflowCard {
+export function toActiveCard(
+  row: ActiveCardRow,
+  now: Date,
+  hrefs: DashboardHrefs,
+): ActiveWorkflowCard {
   const progress = stageProgress(row.stageIndex, row.stageCount);
   return {
     workflowId: row.workflowId,
