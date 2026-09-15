@@ -4,6 +4,7 @@ import { hashPassword } from '../password';
 import { generateToken, hashToken } from '../token';
 import { buildDashboardShowcase, DASHBOARD_PROJECT, EXPECTED_DASHBOARD } from './dashboard';
 import { buildRequirements, EXPECTED_REQUIREMENTS, type RequirementsSeed } from './requirements';
+import { buildReviewSeed, type ReviewSeed } from './reviews';
 import { buildS500, PROJECTS, type SeedShowcase, type SeedWorkflow } from './s500';
 
 export {
@@ -14,6 +15,7 @@ export {
 } from './s500';
 export { DASHBOARD_FIGURES, DASHBOARD_PROJECT, EXPECTED_DASHBOARD } from './dashboard';
 export { EXPECTED_REQUIREMENTS, JIRA_MAPPING, REQUIREMENT_SHOWCASE } from './requirements';
+export { EXPECTED_REVIEW_SEED } from './reviews';
 
 export class SeedRefusedError extends Error {}
 
@@ -70,7 +72,17 @@ export interface SeedResult {
     dashboard: Record<keyof typeof EXPECTED_DASHBOARD, number>;
     /** specs/001 US4 requirements seed (research R44); compare with EXPECTED_REQUIREMENTS. */
     requirements: RequirementCounts;
+    /** specs/001 US6 review seed; compare with EXPECTED_REVIEW_SEED. */
+    reviews: ReviewCounts;
   };
+}
+
+interface ReviewCounts {
+  pullRequests: number;
+  reviews: number;
+  findings: number;
+  byState: Record<string, number>;
+  cycles: number;
 }
 
 type RequirementCounts = Omit<
@@ -489,6 +501,144 @@ async function insertRequirements(
   return counts;
 }
 
+/**
+ * specs/001 US6: PR #1821 on `s500-001`, its cycle-3 review with seven lane results and seven findings, and the
+ * three fix-loop cycles. Cycles go first so a FIXED finding can reference its `fix_cycle_id`; the PR inherits the
+ * workflow's requirement link when one exists.
+ */
+async function insertReviews(
+  { client, org }: InsertContext,
+  { pullRequest, review, cycles }: ReviewSeed,
+  userIds: Map<string, string>,
+  workflowRefs: Map<string, WorkflowRef>,
+  runIds: Map<string, string>,
+): Promise<ReviewCounts> {
+  const counts: ReviewCounts = { pullRequests: 0, reviews: 0, findings: 0, byState: {}, cycles: 0 };
+  const ref = workflowRefs.get(pullRequest.workflow);
+  if (!ref) throw new Error(`review seed references unknown workflow ${pullRequest.workflow}`);
+  const runId = (externalId: string | null) => {
+    if (externalId === null) return null;
+    const id = runIds.get(externalId);
+    if (!id) throw new Error(`review seed references unknown agent run ${externalId}`);
+    return id;
+  };
+  const requirementId =
+    (
+      await client.query<{ requirement_id: string | null }>(
+        `SELECT requirement_id FROM workflows WHERE id = $1`,
+        [ref.id],
+      )
+    ).rows[0]?.requirement_id ?? null;
+  const prId = (
+    await client.query<{ id: string }>(
+      `INSERT INTO pull_requests (organization_id, project_id, workflow_id, requirement_id, external_id, number, title, href, status, observed_at, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,$10) RETURNING id`,
+      [
+        org,
+        ref.projectId,
+        ref.id,
+        requirementId,
+        pullRequest.externalId,
+        pullRequest.number,
+        pullRequest.title,
+        pullRequest.href,
+        pullRequest.status,
+        pullRequest.observedAt,
+      ],
+    )
+  ).rows[0]!.id;
+  counts.pullRequests++;
+  const cycleIds = new Map<number, string>();
+  for (const c of cycles) {
+    const id = (
+      await client.query<{ id: string }>(
+        `INSERT INTO review_cycles (organization_id, project_id, workflow_id, pull_request_id, cycle_number, findings_count, fixed_count, remaining_count, iteration, max_iterations, state, requested_by_agent, started_at, finished_at, agent_run_id, observed_at, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$13,$16) RETURNING id`,
+        [
+          org,
+          ref.projectId,
+          ref.id,
+          prId,
+          c.cycleNumber,
+          c.findingsCount,
+          c.fixedCount,
+          c.remainingCount,
+          c.iteration,
+          c.maxIterations,
+          c.state,
+          c.requestedByAgent,
+          c.startedAt,
+          c.finishedAt,
+          runId(c.agentRun),
+          c.observedAt,
+        ],
+      )
+    ).rows[0]!.id;
+    cycleIds.set(c.cycleNumber, id);
+    counts.cycles++;
+  }
+  const reviewId = (
+    await client.query<{ id: string }>(
+      `INSERT INTO reviews (organization_id, project_id, workflow_id, pull_request_id, external_id, cycle_number, status, lanes, observed_at, started_at, finished_at, agent_run_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$10,$9) RETURNING id`,
+      [
+        org,
+        ref.projectId,
+        ref.id,
+        prId,
+        review.externalId,
+        review.cycleNumber,
+        review.status,
+        JSON.stringify(review.lanes),
+        review.observedAt,
+        review.startedAt,
+        review.finishedAt,
+        runId(review.agentRun),
+      ],
+    )
+  ).rows[0]!.id;
+  counts.reviews++;
+  for (const f of review.findings) {
+    const fixCycleId = f.fixCycle === null ? null : cycleIds.get(f.fixCycle);
+    if (fixCycleId === undefined)
+      throw new Error(`review seed references unknown cycle ${f.fixCycle}`);
+    const dismissedBy = f.dismissedBy === null ? null : userIds.get(f.dismissedBy);
+    if (dismissedBy === undefined)
+      throw new Error(`review seed references unknown user ${f.dismissedBy}`);
+    await client.query(
+      `INSERT INTO review_findings (organization_id, project_id, workflow_id, pull_request_id, review_id, external_id, position, lane, severity, blocking, title, description, impact, evidence, recommended_fix, state, dismissed_reason, dismissed_by_user_id, dismissed_at, fix_cycle_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,$17,$18,$19,$20,$21,$22)`,
+      [
+        org,
+        ref.projectId,
+        ref.id,
+        prId,
+        reviewId,
+        f.externalId,
+        f.position,
+        f.lane,
+        f.severity,
+        f.blocking,
+        f.title,
+        f.description,
+        f.impact,
+        JSON.stringify(f.evidence),
+        f.recommendedFix,
+        f.state,
+        f.dismissedReason,
+        dismissedBy,
+        f.dismissedAt,
+        fixCycleId,
+        review.observedAt,
+        f.dismissedAt ?? review.observedAt,
+      ],
+    );
+    counts.findings++;
+    counts.byState[f.state] = (counts.byState[f.state] ?? 0) + 1;
+  }
+  return counts;
+}
+
 /** Truncates every table and loads S-500, the dashboard-demo project and the US4 requirements. Refuses to run in production (FR-022). */
 export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
   const env = opts.env ?? process.env;
@@ -507,6 +657,7 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
   const { users, workflows, showcase } = buildS500(base);
   const dashboard = buildDashboardShowcase(base);
   const requirementsSeed = buildRequirements(base);
+  const reviewSeed = buildReviewSeed(base);
   const passwordHash = await hashPassword(password);
 
   const client = new pg.Client({ connectionString });
@@ -514,7 +665,7 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
   try {
     await client.query('BEGIN');
     await client.query(
-      `TRUNCATE requirement_transitions, requirement_analysis_items, requirements, integration_project_mappings, audit_events, inbox_change_log, ingestion_log, test_runs, artifacts, agent_runs, workflow_stages, workflow_transitions, approvals, clarifications, workflows, sessions, project_memberships, ingestion_principals, users, projects, organizations RESTART IDENTITY CASCADE`,
+      `TRUNCATE review_findings, reviews, review_cycles, pull_requests, requirement_transitions, requirement_analysis_items, requirements, integration_project_mappings, audit_events, inbox_change_log, ingestion_log, test_runs, artifacts, agent_runs, workflow_stages, workflow_transitions, approvals, clarifications, workflows, sessions, project_memberships, ingestion_principals, users, projects, organizations RESTART IDENTITY CASCADE`,
     );
     const org = (
       await client.query<{ id: string }>(
@@ -574,6 +725,14 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
     const dashCounts = await insertShowcase(ctx, dashboard.showcase, dash.refs);
     // specs/001 US4 requirements (research R44): links point at S-500 rows, so they come last.
     const requirementCounts = await insertRequirements(ctx, requirementsSeed, userIds, s500.refs);
+    // specs/001 US6 review seed: after requirements so PR #1821 inherits s500-001's requirement link.
+    const reviewCounts = await insertReviews(
+      ctx,
+      reviewSeed,
+      userIds,
+      s500.refs,
+      s500Counts.runIds,
+    );
     const approvals = s500.approvals + dash.approvals;
     const clarifications = s500.clarifications + dash.clarifications;
     const counts = {
@@ -605,6 +764,13 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
         )})  analysis items ${requirementCounts.analysisItems} (${requirementCounts.aiGenerated} AI-generated)  transitions ${requirementCounts.transitions}  linked workflows ${requirementCounts.linkedWorkflows}  Jira mappings ${requirementCounts.mappings}`,
     );
     log(
+      `  reviews: PR #${reviewSeed.pullRequest.number} (${reviewSeed.pullRequest.externalId}) reviews ${reviewCounts.reviews}  findings ${reviewCounts.findings} (${Object.entries(
+        reviewCounts.byState,
+      )
+        .map(([s, c]) => `${s} ${c}`)
+        .join(', ')})  cycles ${reviewCounts.cycles}`,
+    );
+    log(
       '  Demo credentials (shown once): admin@cdevi.demo, approver1@cdevi.demo, engineer1@cdevi.demo, viewer1@cdevi.demo',
     );
     log(`  Password (all demo users): ${password}`);
@@ -631,6 +797,7 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
           testRuns: dashCounts.testRuns,
         },
         requirements: requirementCounts,
+        reviews: reviewCounts,
       },
     };
   } catch (e) {

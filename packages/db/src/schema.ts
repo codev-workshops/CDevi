@@ -1,6 +1,6 @@
 /**
  * Drizzle schema mirroring migrations/0001_init.sql, 0002_workflow_detail.sql, 0003_approval_center.sql,
- * 0004_dashboard.sql (indexes only), 0005_requirements.sql and 0006_agent_decisions.sql. The SQL files are the source of truth
+ * 0004_dashboard.sql (indexes only), 0005_requirements.sql, 0006_agent_decisions.sql and 0007_reviews.sql. The SQL files are the source of truth
  * for triggers, partial indexes, RLS and grants, which Drizzle does not model; this file gives queries types.
  */
 import type {
@@ -9,6 +9,7 @@ import type {
   DecisionLinks,
   EvidenceRef,
   ExternalRef,
+  LaneResult,
   RunStep,
 } from '@cdevi/contracts';
 import { sql } from 'drizzle-orm';
@@ -82,6 +83,43 @@ export const analysisItemKind = pgEnum('analysis_item_kind', [
 export const externalFlag = pgEnum('external_flag', ['deleted', 'closed']);
 export const confidenceLevel = pgEnum('confidence_level', ['LOW', 'MEDIUM', 'HIGH']);
 export const policyOutcome = pgEnum('policy_outcome', ['ALLOWED', 'APPROVAL_REQUIRED', 'DENIED']);
+export const reviewLane = pgEnum('review_lane', [
+  'correctness',
+  'security',
+  'dependencies',
+  'edge_cases',
+  'testing',
+  'architecture',
+  'general',
+]);
+export const laneStatus = pgEnum('lane_status', ['PASS', 'WARN', 'FAIL']);
+export const reviewStatus = pgEnum('review_status', ['RUNNING', 'COMPLETE', 'FAILED']);
+export const findingSeverity = pgEnum('finding_severity', [
+  'CRITICAL',
+  'HIGH',
+  'MEDIUM',
+  'LOW',
+  'INFO',
+]);
+export const findingBlocking = pgEnum('finding_blocking', [
+  'BLOCKING',
+  'NON_BLOCKING',
+  'SUGGESTION',
+]);
+export const findingState = pgEnum('finding_state', [
+  'OPEN',
+  'FIX_REQUESTED',
+  'FIXED',
+  'DISMISSED',
+  'ISSUE_REQUESTED',
+]);
+export const reviewCycleState = pgEnum('review_cycle_state', [
+  'RUNNING',
+  'COMPLETED',
+  'FAILED',
+  'CANCELLED',
+]);
+export const pullRequestStatus = pgEnum('pull_request_status', ['OPEN', 'MERGED', 'CLOSED']);
 
 export const organizations = pgTable('organizations', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -521,3 +559,152 @@ export const agentDecisions = pgTable(
   ],
 );
 export type AgentDecisionRow = typeof agentDecisions.$inferSelect;
+
+/**
+ * Pull request of a workflow (0007_reviews.sql; US6). One per workflow in the MVP (workflow_id UNIQUE);
+ * observed_at is the ingest watermark. readyForMerge is derived from review_findings, never stored.
+ */
+export const pullRequests = pgTable(
+  'pull_requests',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').notNull(),
+    projectId: uuid('project_id').notNull(),
+    workflowId: uuid('workflow_id').notNull(),
+    requirementId: uuid('requirement_id'),
+    externalId: text('external_id').notNull(),
+    number: integer('number').notNull(),
+    title: text('title').notNull(),
+    href: text('href').notNull(),
+    status: pullRequestStatus('status').notNull().default('OPEN'),
+    observedAt: ts('observed_at').notNull(),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('pull_requests_workflow_id_key').on(t.workflowId),
+    uniqueIndex('pull_requests_organization_id_external_id_key').on(t.organizationId, t.externalId),
+    index('pull_requests_list_idx').on(t.organizationId, t.projectId, t.updatedAt, t.id),
+    index('pull_requests_requirement_idx')
+      .on(t.requirementId)
+      .where(sql`${t.requirementId} IS NOT NULL`),
+  ],
+);
+export type PullRequestRow = typeof pullRequests.$inferSelect;
+
+/**
+ * Fix-loop history of a pull request (0007; AS-4). Created by Apply Fix (RUNNING, iteration n+1) or reported by
+ * the runtime; fixed_count + remaining_count ≤ findings_count and iteration ≤ max_iterations (default 5).
+ */
+export const reviewCycles = pgTable(
+  'review_cycles',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').notNull(),
+    projectId: uuid('project_id').notNull(),
+    workflowId: uuid('workflow_id').notNull(),
+    pullRequestId: uuid('pull_request_id').notNull(),
+    cycleNumber: integer('cycle_number').notNull(),
+    findingsCount: integer('findings_count').notNull(),
+    fixedCount: integer('fixed_count').notNull().default(0),
+    remainingCount: integer('remaining_count').notNull(),
+    iteration: integer('iteration').notNull(),
+    maxIterations: integer('max_iterations').notNull().default(5),
+    state: reviewCycleState('state').notNull().default('RUNNING'),
+    requestedByUserId: uuid('requested_by_user_id'),
+    requestedByAgent: text('requested_by_agent'),
+    startedAt: ts('started_at').notNull(),
+    finishedAt: ts('finished_at'),
+    agentRunId: uuid('agent_run_id'),
+    observedAt: ts('observed_at').notNull(),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('review_cycles_pull_request_id_cycle_number_key').on(
+      t.pullRequestId,
+      t.cycleNumber,
+    ),
+    index('review_cycles_pr_idx').on(t.pullRequestId, t.cycleNumber),
+  ],
+);
+export type ReviewCycleRow = typeof reviewCycles.$inferSelect;
+
+/**
+ * One AI review per (pull request, cycle) (0007; FR-020). `lanes` is exactly seven typed LaneResult entries;
+ * observed_at is the replace-whole watermark of PUT /ingest/pull-requests/{externalId}/reviews/{cycle}.
+ */
+export const reviews = pgTable(
+  'reviews',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').notNull(),
+    projectId: uuid('project_id').notNull(),
+    workflowId: uuid('workflow_id').notNull(),
+    pullRequestId: uuid('pull_request_id').notNull(),
+    externalId: text('external_id').notNull(),
+    cycleNumber: integer('cycle_number').notNull(),
+    status: reviewStatus('status').notNull().default('RUNNING'),
+    lanes: jsonb('lanes').$type<LaneResult[]>().notNull(),
+    observedAt: ts('observed_at').notNull(),
+    startedAt: ts('started_at').notNull(),
+    finishedAt: ts('finished_at'),
+    agentRunId: uuid('agent_run_id'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('reviews_pull_request_id_cycle_number_key').on(t.pullRequestId, t.cycleNumber),
+    uniqueIndex('reviews_organization_id_external_id_key').on(t.organizationId, t.externalId),
+    index('reviews_pr_idx').on(t.pullRequestId, t.cycleNumber),
+  ],
+);
+export type ReviewRow = typeof reviews.$inferSelect;
+
+/**
+ * Findings of a review (0007; FR-020, FR-021). Replaced whole by the review ingest; human actions move `state`
+ * OPEN → DISMISSED | FIX_REQUESTED | ISSUE_REQUESTED in place. Bounded summaries only (FR-018); evidence ≤ 10.
+ */
+export const reviewFindings = pgTable(
+  'review_findings',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').notNull(),
+    projectId: uuid('project_id').notNull(),
+    workflowId: uuid('workflow_id').notNull(),
+    pullRequestId: uuid('pull_request_id').notNull(),
+    reviewId: uuid('review_id').notNull(),
+    externalId: text('external_id').notNull(),
+    position: smallint('position').notNull(),
+    lane: reviewLane('lane').notNull(),
+    severity: findingSeverity('severity').notNull(),
+    blocking: findingBlocking('blocking').notNull(),
+    title: text('title').notNull(),
+    description: text('description').notNull(),
+    impact: text('impact').notNull(),
+    evidence: jsonb('evidence').$type<EvidenceRef[]>().notNull().default([]),
+    recommendedFix: text('recommended_fix').notNull(),
+    state: findingState('state').notNull().default('OPEN'),
+    dismissedReason: text('dismissed_reason'),
+    dismissedByUserId: uuid('dismissed_by_user_id'),
+    dismissedAt: ts('dismissed_at'),
+    fixCycleId: uuid('fix_cycle_id'),
+    issueRequestedByUserId: uuid('issue_requested_by_user_id'),
+    issueRequestedAt: ts('issue_requested_at'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('review_findings_review_id_position_key').on(t.reviewId, t.position),
+    uniqueIndex('review_findings_organization_id_external_id_key').on(
+      t.organizationId,
+      t.externalId,
+    ),
+    index('review_findings_review_idx').on(t.reviewId, t.position),
+    index('review_findings_pr_idx').on(t.pullRequestId, t.position),
+    index('review_findings_blocking_open_idx')
+      .on(t.pullRequestId)
+      .where(sql`${t.blocking} = 'BLOCKING' AND ${t.state} IN ('OPEN', 'FIX_REQUESTED')`),
+  ],
+);
+export type ReviewFindingRow = typeof reviewFindings.$inferSelect;
