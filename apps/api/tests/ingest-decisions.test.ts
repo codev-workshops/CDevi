@@ -239,6 +239,41 @@ describe.skipIf(skipDb)(
       expect(newerOnTerminal.json()).toEqual({ result: 'accepted', count: 3 });
     });
 
+    it('FR-036 decisions replacement takes locks in the same order as the run upsert (workflow → run): a concurrent upsert holding the workflow lock and then taking the run lock completes without a 40P01 deadlock', async () => {
+      const run = await newRun();
+      expect((await putDecisions(run.ext, batch(1, iso(plus(-10 * MIN))))).statusCode).toBe(200);
+      const upsert = await pool.connect();
+      try {
+        // Connection A mirrors upsertAgentRun: workflow row locked first…
+        await upsert.query('BEGIN');
+        await upsert.query(`SELECT id FROM workflows WHERE id = $1 FOR UPDATE`, [run.workflowId]);
+        // …while connection B (the route) starts a decisions replacement for a run in that workflow.
+        const replace = putDecisions(run.ext, batch(2, iso(plus(-8 * MIN))));
+        await new Promise((r) => setTimeout(r, 300));
+        // …then A takes the run row (the ON CONFLICT UPDATE of the upsert) and commits.
+        const a = await upsert.query(
+          `UPDATE agent_runs SET summary = 'moved on' WHERE id = $1 RETURNING id`,
+          [run.id],
+        );
+        expect(a.rowCount).toBe(1);
+        await upsert.query('COMMIT');
+        const b = await replace;
+        expect(b.statusCode, b.body).toBe(200);
+        expect(b.json()).toEqual({ result: 'accepted', count: 2 });
+      } finally {
+        await upsert.query('ROLLBACK').catch(() => {});
+        upsert.release();
+      }
+      expect((await rows(run.id)).map((r) => r.position)).toEqual([1, 2]);
+      expect(
+        (
+          await pool.query<{ summary: string }>(`SELECT summary FROM agent_runs WHERE id = $1`, [
+            run.id,
+          ])
+        ).rows[0]!.summary,
+      ).toBe('moved on');
+    });
+
     it('FR-018 unknown reasoning keys → 400', async () => {
       const run = await newRun();
       for (const key of ['reasoning', 'chainOfThought', 'thoughts']) {
@@ -254,6 +289,25 @@ describe.skipIf(skipDb)(
       }
       const top = await putDecisions(run.ext, { ...batch(1), rationale: 'nope' });
       expect(top.statusCode).toBe(400);
+      expect(await rows(run.id)).toEqual([]);
+      expect(await logRows(run.ext)).toEqual([]);
+    });
+
+    it('FR-018 unknown keys inside an evidence item → 400 (EvidenceRef is strict, nothing is silently stripped)', async () => {
+      const run = await newRun();
+      for (const key of ['reasoning', 'chainOfThought']) {
+        const r = await putDecisions(run.ext, {
+          observedAt: iso(plus(-10 * MIN)),
+          decisions: [
+            decision(1, { evidence: [{ ...evidence(), [key]: 'I inferred this from the diff…' }] }),
+          ],
+        });
+        expect(r.statusCode, `${key}: ${r.body}`).toBe(400);
+        const p = r.json() as Problem;
+        expect(p.type).toBe('urn:cdevi:problem:validation');
+        expect(JSON.stringify(p.errors)).toContain(key);
+        expect(r.body).not.toContain('inferred this');
+      }
       expect(await rows(run.id)).toEqual([]);
       expect(await logRows(run.ext)).toEqual([]);
     });
