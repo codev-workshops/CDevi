@@ -1,9 +1,10 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { __nav } from 'next/navigation';
 import { CreateRequirementForm } from '../../app/(app)/requirements/new/CreateRequirementForm';
 import { expectNoViolations, renderApp } from '../a11y';
+// vitest aliases `next/navigation` to this module, so the component's `useRouter().push` lands in `__nav.pushed`.
+import { __nav } from '../mocks/next-navigation';
 import { OTHER_PROJECT, PROJECT, detailDraft, me } from '../fixtures/requirements';
 
 const fetchMock = vi.fn();
@@ -21,7 +22,8 @@ const saffron = (c: Element) => c.querySelectorAll('.cd-saffron').length;
 const field = {
   project: () => screen.getByRole('combobox', { name: /Project/ }) as HTMLSelectElement,
   title: () => screen.getByRole('textbox', { name: /Title/ }) as HTMLInputElement,
-  objective: () => screen.getByRole('textbox', { name: /Business objective/ }) as HTMLTextAreaElement,
+  objective: () =>
+    screen.getByRole('textbox', { name: /Business objective/ }) as HTMLTextAreaElement,
   criteria: () =>
     screen.getByRole('textbox', { name: /Acceptance criteria/ }) as HTMLTextAreaElement,
 };
@@ -33,7 +35,8 @@ const errorOf = (el: HTMLElement) => {
   return alerts.map((n) => n!.textContent).join(' ');
 };
 
-const VALID_OBJECTIVE = 'Merchants need partial refunds so support can stop issuing manual credits.';
+const VALID_OBJECTIVE =
+  'Merchants need partial refunds so support can stop issuing manual credits.';
 
 async function fillValid(user: ReturnType<typeof userEvent.setup>) {
   await user.type(field.title(), 'Partial refunds');
@@ -59,7 +62,9 @@ describe('Create requirement form (specs/001 US4 scenario 1, ui-requirements.md 
     const project = field.project();
     expect(project).toHaveAttribute('id', 'req-project');
     expect(project).toBeRequired();
-    const options = within(project).getAllByRole('option').map((o) => o.textContent);
+    const options = within(project)
+      .getAllByRole('option')
+      .map((o) => o.textContent);
     expect(options).toEqual([PROJECT.name, OTHER_PROJECT.name]);
     expect(project.value).toBe(OTHER_PROJECT.id);
 
@@ -103,7 +108,9 @@ describe('Create requirement form (specs/001 US4 scenario 1, ui-requirements.md 
     await user.click(screen.getByRole('button', { name: 'Create requirement' }));
     expect(fetchMock).not.toHaveBeenCalled();
     expect(errorOf(field.title())).toBe('Enter a title (3–200 characters)');
-    expect(errorOf(field.objective())).toBe('Describe the business objective (10–4 000 characters)');
+    expect(errorOf(field.objective())).toBe(
+      'Describe the business objective (10–4 000 characters)',
+    );
     expect(field.title()).toHaveFocus();
     expect(field.criteria()).not.toHaveAttribute('aria-invalid');
     expect(screen.getByRole('button', { name: 'Create requirement' })).toBeEnabled();
@@ -113,7 +120,9 @@ describe('Create requirement form (specs/001 US4 scenario 1, ui-requirements.md 
     await user.type(field.title(), 'Partial refunds');
     await user.tab();
     expect(field.title()).not.toHaveAttribute('aria-invalid');
-    expect(errorOf(field.objective())).toBe('Describe the business objective (10–4 000 characters)');
+    expect(errorOf(field.objective())).toBe(
+      'Describe the business objective (10–4 000 characters)',
+    );
   });
 
   it('FR-007 "Choose a project" when no project is selectable', async () => {
@@ -150,7 +159,9 @@ describe('Create requirement form (specs/001 US4 scenario 1, ui-requirements.md 
 
     await user.clear(field.criteria());
     await user.click(field.criteria());
-    await user.paste('  Refund up to the captured amount \n\n\nRefund creates a ledger entry\n   \n');
+    await user.paste(
+      '  Refund up to the captured amount \n\n\nRefund creates a ledger entry\n   \n',
+    );
     await user.click(screen.getByRole('button', { name: 'Create requirement' }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(lastCall().body.acceptanceCriteria).toEqual([

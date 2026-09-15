@@ -198,7 +198,9 @@ function analysis(openQuestions: string[], withHuman = false): RequirementDetail
     observedAt: hoursAgo(2),
     summary: 'The requirement is well scoped; two payment flows are affected.',
     acceptanceCriteria: [
-      ...(withHuman ? [item('acceptance_criterion', 'Captures below 1 EUR are rejected', 'Engineer 1')] : []),
+      ...(withHuman
+        ? [item('acceptance_criterion', 'Captures below 1 EUR are rejected', 'Engineer 1')]
+        : []),
       item('acceptance_criterion', 'A partial capture reduces the authorised amount'),
       item('acceptance_criterion', 'The remaining authorisation is released after 7 days'),
     ],
@@ -242,7 +244,14 @@ export function detail(seed: DetailSeed): RequirementDetail {
     decisionReason: requirement.state === 'REJECTED' ? 'Out of scope for this quarter' : null,
     actions: requirementActions(requirement.state, role),
     transitions: [
-      { fromState: null, toState: 'DRAFT', actorType: 'user', actorName: ENGINEER.name, reason: null, occurredAt: daysAgo(4) },
+      {
+        fromState: null,
+        toState: 'DRAFT',
+        actorType: 'user',
+        actorName: ENGINEER.name,
+        reason: null,
+        occurredAt: daysAgo(4),
+      },
       ...(submitted
         ? [
             {
@@ -277,10 +286,14 @@ export const detailDraft = (role: Role = 'engineer') => detail({ n: 1, role });
 export const detailAnalyzing = (role: Role = 'engineer') => detail({ n: 2, role });
 export const detailNeedsClarification = (role: Role = 'engineer') =>
   detail({ n: 3, role, analysis: analysis(OPEN_QUESTIONS, true) });
-export const detailReady = (role: Role = 'approver') => detail({ n: 4, role, analysis: analysis([]) });
-export const detailApproved = (role: Role = 'approver') => detail({ n: 5, role, analysis: analysis([]) });
-export const detailCompleted = (role: Role = 'approver') => detail({ n: 7, role, analysis: analysis([]) });
-export const detailRejected = (role: Role = 'approver') => detail({ n: 8, role, analysis: analysis([]) });
+export const detailReady = (role: Role = 'approver') =>
+  detail({ n: 4, role, analysis: analysis([]) });
+export const detailApproved = (role: Role = 'approver') =>
+  detail({ n: 5, role, analysis: analysis([]) });
+export const detailCompleted = (role: Role = 'approver') =>
+  detail({ n: 7, role, analysis: analysis([]) });
+export const detailRejected = (role: Role = 'approver') =>
+  detail({ n: 8, role, analysis: analysis([]) });
 /** req-seed-005 after its Jira issue was deleted externally: flagged, workflow BLOCKED (spec edge case). */
 export const detailFlagged = (role: Role = 'approver') =>
   detail({
@@ -289,7 +302,12 @@ export const detailFlagged = (role: Role = 'approver') =>
     analysis: analysis([]),
     rowOver: {
       source: 'jira',
-      externalRef: { provider: 'jira', key: 'PAY-241', url: 'https://jira.example.invalid/browse/PAY-241', updatedAt: daysAgo(1) },
+      externalRef: {
+        provider: 'jira',
+        key: 'PAY-241',
+        url: 'https://jira.example.invalid/browse/PAY-241',
+        updatedAt: daysAgo(1),
+      },
       externalFlag: 'deleted',
       externalFlaggedAt: hoursAgo(1),
       workflow: {

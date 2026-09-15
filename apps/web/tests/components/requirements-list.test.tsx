@@ -63,7 +63,9 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe('Requirements list (specs/001 US4, ui-requirements.md §2/§5.1)', () => {
   it('FR-009 renders ≤ 50 rows with title link /requirements/{id}, RequirementStatePill word, Mono external id, project key, assignee or Unassigned, and "2 open questions" for req-seed-003', async () => {
-    const { container } = renderApp(<RequirementsListScreen me={me('engineer')} initial={listPopulated()} />);
+    const { container } = renderApp(
+      <RequirementsListScreen me={me('engineer')} initial={listPopulated()} />,
+    );
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Requirements');
     expect(screen.getByText('8 of 8 requirements')).toBeInTheDocument();
@@ -113,10 +115,14 @@ describe('Requirements list (specs/001 US4, ui-requirements.md §2/§5.1)', () =
     renderApp(
       <RequirementsListScreen
         me={me('engineer')}
-        initial={page({ items: [flagged, ...SEED_ROWS.filter((r) => r.externalId !== 'req-seed-005')] })}
+        initial={page({
+          items: [flagged, ...SEED_ROWS.filter((r) => r.externalId !== 'req-seed-005')],
+        })}
       />,
     );
-    const jira = screen.getByRole('link', { name: `Open ${JIRA_KEY} in Jira (opens in a new tab)` });
+    const jira = screen.getByRole('link', {
+      name: `Open ${JIRA_KEY} in Jira (opens in a new tab)`,
+    });
     expect(jira).toHaveAttribute('href', JIRA_URL);
     expect(jira).toHaveAttribute('target', '_blank');
     expect(jira).toHaveAttribute('rel', 'noopener noreferrer');
@@ -132,16 +138,15 @@ describe('Requirements list (specs/001 US4, ui-requirements.md §2/§5.1)', () =
     const user = userEvent.setup();
     fetchMock.mockResolvedValue(jsonResponse(listFiltered()));
     const m = me('approver');
-    renderApp(
-      <RequirementsListScreen me={m} initial={page({ nextCursor: 'cursor-page-1' })} />,
-    );
+    renderApp(<RequirementsListScreen me={m} initial={page({ nextCursor: 'cursor-page-1' })} />);
     expect(screen.getByRole('button', { name: 'Load more' })).toBeInTheDocument();
 
     const project = screen.getByRole('combobox', { name: 'Project' });
-    expect(within(project).getAllByRole('option').map((o) => o.textContent)).toEqual([
-      'All projects',
-      ...m.projects.map((p) => p.name),
-    ]);
+    expect(
+      within(project)
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['All projects', ...m.projects.map((p) => p.name)]);
     await user.selectOptions(project, PROJECT.id);
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(lastUrl().pathname).toBe('/api/requirements');
@@ -152,7 +157,11 @@ describe('Requirements list (specs/001 US4, ui-requirements.md §2/§5.1)', () =
     expect(project).toHaveFocus();
 
     const state = screen.getByRole('combobox', { name: 'State' });
-    expect(within(state).getAllByRole('option').map((o) => o.textContent)).toEqual([
+    expect(
+      within(state)
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual([
       'Any state',
       'draft',
       'analyzing',
@@ -181,7 +190,9 @@ describe('Requirements list (specs/001 US4, ui-requirements.md §2/§5.1)', () =
     expect(lastUrl().searchParams.get('state')).toBe('NEEDS_CLARIFICATION');
     expect(new URL(window.location.href).searchParams.get('assignee')).toBe('me');
 
-    await waitFor(() => expect(screen.getByText('1 of 1 requirements · filtered')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText('1 of 1 requirements · filtered')).toBeInTheDocument(),
+    );
     expect(rows()).toHaveLength(1);
     expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull();
   });
@@ -211,7 +222,12 @@ describe('Requirements list (specs/001 US4, ui-requirements.md §2/§5.1)', () =
   it('FR-009 "Load more" keeps focus on itself while more pages remain', async () => {
     const user = userEvent.setup();
     fetchMock.mockResolvedValueOnce(jsonResponse(bulkPage(50, 50, { nextCursor: 'cursor-b' })));
-    renderApp(<RequirementsListScreen me={me('engineer')} initial={bulkPage(50, 0, { nextCursor: 'cursor-a' })} />);
+    renderApp(
+      <RequirementsListScreen
+        me={me('engineer')}
+        initial={bulkPage(50, 0, { nextCursor: 'cursor-a' })}
+      />,
+    );
     const more = screen.getByRole('button', { name: 'Load more' });
     await user.click(more);
     await waitFor(() => expect(rows()).toHaveLength(100));
@@ -301,7 +317,9 @@ describe('Requirements list (specs/001 US4, ui-requirements.md §2/§5.1)', () =
 
   it('FR-009 error state shows an alert and Retry; the last good page stays rendered', async () => {
     const user = userEvent.setup();
-    fetchMock.mockResolvedValueOnce(problem(500)).mockResolvedValueOnce(jsonResponse(listFiltered()));
+    fetchMock
+      .mockResolvedValueOnce(problem(500))
+      .mockResolvedValueOnce(jsonResponse(listFiltered()));
     const { container } = renderApp(
       <RequirementsListScreen me={me('engineer')} initial={listPopulated()} />,
     );

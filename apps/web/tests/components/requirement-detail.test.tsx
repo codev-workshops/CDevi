@@ -142,9 +142,13 @@ describe('Requirement detail (specs/001 US4, ui-requirements.md §3/§5.2)', () 
     ].filter((i) => i.aiGenerated);
     expect(aiItems).toHaveLength(5);
     // summary + every AI item carries the visible label
-    expect(within(msg as HTMLElement).getAllByText('AI-generated')).toHaveLength(aiItems.length + 1);
+    expect(within(msg as HTMLElement).getAllByText('AI-generated')).toHaveLength(
+      aiItems.length + 1,
+    );
     for (const item of aiItems) {
-      const li = within(msg as HTMLElement).getByText(item.text).closest('li')!;
+      const li = within(msg as HTMLElement)
+        .getByText(item.text)
+        .closest('li')!;
       expect(within(li).getByText('AI-generated')).toHaveClass('cd-pill');
     }
     expect(within(analysis).getByText(/^Observed /)).toHaveClass('cd-mono');
@@ -158,7 +162,9 @@ describe('Requirement detail (specs/001 US4, ui-requirements.md §3/§5.2)', () 
   });
 
   it('FR-009 DRAFT shows "No analysis yet" and ANALYZING shows the in-progress notice', async () => {
-    const draft = renderApp(<RequirementDetailScreen me={me('engineer')} initial={detailDraft()} />);
+    const draft = renderApp(
+      <RequirementDetailScreen me={me('engineer')} initial={detailDraft()} />,
+    );
     const analysis = region('Analysis');
     expect(within(analysis).getByRole('status')).toHaveTextContent(
       'No analysis yet — submit the requirement for analysis.',
@@ -181,7 +187,9 @@ describe('Requirement detail (specs/001 US4, ui-requirements.md §3/§5.2)', () 
   });
 
   it('FR-032 actions: engineer on DRAFT sees primary "Submit for analysis" and a disabled "Reject…" with help; engineer on NEEDS_CLARIFICATION sees saffron "Resubmit for analysis"; approver on READY sees saffron "Approve" and ghost "Reject…"; viewer sees no buttons and the read-only help; nobody sees actions on APPROVED/COMPLETED/REJECTED', async () => {
-    const draft = renderApp(<RequirementDetailScreen me={me('engineer')} initial={detailDraft()} />);
+    const draft = renderApp(
+      <RequirementDetailScreen me={me('engineer')} initial={detailDraft()} />,
+    );
     const submit = screen.getByRole('button', { name: 'Submit for analysis' });
     expect(submit).toBeEnabled();
     expect(submit).not.toHaveClass('cd-saffron', 'cd-ghost');
@@ -200,11 +208,16 @@ describe('Requirement detail (specs/001 US4, ui-requirements.md §3/§5.2)', () 
       <RequirementDetailScreen me={me('engineer')} initial={detailNeedsClarification()} />,
     );
     expect(screen.getByRole('button', { name: 'Resubmit for analysis' })).toHaveClass('cd-saffron');
-    expect(screen.getByRole('button', { name: 'Reject…' })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('button', { name: 'Reject…' })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
     expect(saffron(nc.container)).toBe(1);
     nc.unmount();
 
-    const ready = renderApp(<RequirementDetailScreen me={me('approver')} initial={detailReady()} />);
+    const ready = renderApp(
+      <RequirementDetailScreen me={me('approver')} initial={detailReady()} />,
+    );
     const approve = screen.getByRole('button', { name: 'Approve' });
     expect(approve).toHaveClass('cd-saffron');
     expect(approve).toBeEnabled();
@@ -221,9 +234,9 @@ describe('Requirement detail (specs/001 US4, ui-requirements.md §3/§5.2)', () 
     );
     const approveDraft = screen.getByRole('button', { name: 'Approve' });
     expect(approveDraft).toHaveAttribute('aria-disabled', 'true');
-    expect(document.getElementById(approveDraft.getAttribute('aria-describedby')!)).toHaveTextContent(
-      'Analysis has not finished',
-    );
+    expect(
+      document.getElementById(approveDraft.getAttribute('aria-describedby')!),
+    ).toHaveTextContent('Analysis has not finished');
     expect(screen.getByRole('button', { name: 'Reject…' })).toBeEnabled();
     expect(screen.queryByRole('button', { name: 'Submit for analysis' })).not.toBeNull();
     expect(saffron(approverDraft.container)).toBe(0);
@@ -279,7 +292,9 @@ describe('Requirement detail (specs/001 US4, ui-requirements.md §3/§5.2)', () 
     const alert = screen.getByRole('alert');
     expect(alert).toHaveClass('cd-notice', 'cd-error');
     expect(alert).toHaveTextContent('The linked Jira issue PAY-241 was deleted on');
-    expect(alert).toHaveTextContent('The linked workflow is paused in BLOCKED until a person decides.');
+    expect(alert).toHaveTextContent(
+      'The linked workflow is paused in BLOCKED until a person decides.',
+    );
     expect(within(alert).getByRole('link', { name: /s500-001/ })).toHaveAttribute(
       'href',
       d.requirement.workflow!.href,
@@ -296,7 +311,9 @@ describe('Requirement detail (specs/001 US4, ui-requirements.md §3/§5.2)', () 
     const user = userEvent.setup();
     const d = detailReady();
     const approved = detailApproved();
-    fetchMock.mockResolvedValueOnce(jsonResponse({ ...approved, requirement: { ...approved.requirement, id: d.requirement.id } }));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ ...approved, requirement: { ...approved.requirement, id: d.requirement.id } }),
+    );
     const { container, unmount } = renderApp(
       <RequirementDetailScreen me={me('approver')} initial={d} />,
     );
@@ -308,13 +325,17 @@ describe('Requirement detail (specs/001 US4, ui-requirements.md §3/§5.2)', () 
     expect(screen.queryAllByRole('button')).toHaveLength(0);
     const pillHost = screen.getByText('approved').closest('[tabindex="-1"]')!;
     expect(pillHost).toHaveFocus();
-    expect(within(region('Decision')).getByRole('link', { name: 's500-001 · stage 1 of 7' })).toBeInTheDocument();
+    expect(
+      within(region('Decision')).getByRole('link', { name: 's500-001 · stage 1 of 7' }),
+    ).toBeInTheDocument();
     expect(saffron(container)).toBe(0);
     unmount();
 
     fetchMock.mockReset();
     fetchMock.mockResolvedValueOnce(problem(409, 'Invalid transition'));
-    const again = renderApp(<RequirementDetailScreen me={me('approver')} initial={detailReady()} />);
+    const again = renderApp(
+      <RequirementDetailScreen me={me('approver')} initial={detailReady()} />,
+    );
     await user.click(screen.getByRole('button', { name: 'Approve' }));
     await waitFor(() =>
       expect(screen.getByRole('alert')).toHaveTextContent('This requirement was already decided.'),
@@ -352,7 +373,12 @@ describe('Requirement detail (specs/001 US4, ui-requirements.md §3/§5.2)', () 
     for (const b of within(bar as HTMLElement).getAllByRole('button')) {
       expect(b.hasAttribute('disabled') || b.getAttribute('aria-disabled') === 'true').toBe(true);
     }
-    resolve(jsonResponse({ ...detailAnalyzing(), requirement: { ...detailAnalyzing().requirement, id: d.requirement.id } }));
+    resolve(
+      jsonResponse({
+        ...detailAnalyzing(),
+        requirement: { ...detailAnalyzing().requirement, id: d.requirement.id },
+      }),
+    );
     await waitFor(() => expect(screen.getByText('analyzing')).toHaveClass('cd-pill'));
     expect(bar).not.toHaveAttribute('aria-busy', 'true');
   });
@@ -361,7 +387,9 @@ describe('Requirement detail (specs/001 US4, ui-requirements.md §3/§5.2)', () 
     const user = userEvent.setup();
     const d = detailReady();
     const rejected = detailRejected();
-    fetchMock.mockResolvedValueOnce(jsonResponse({ ...rejected, requirement: { ...rejected.requirement, id: d.requirement.id } }));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ ...rejected, requirement: { ...rejected.requirement, id: d.requirement.id } }),
+    );
     const { container } = renderApp(<RequirementDetailScreen me={me('approver')} initial={d} />);
     expect(screen.queryByRole('textbox', { name: 'Reason' })).toBeNull();
 
@@ -381,7 +409,10 @@ describe('Requirement detail (specs/001 US4, ui-requirements.md §3/§5.2)', () 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(screen.getByRole('textbox', { name: 'Reason' })).toHaveAttribute('aria-invalid', 'true');
 
-    await user.type(screen.getByRole('textbox', { name: 'Reason' }), 'Out of scope for this quarter');
+    await user.type(
+      screen.getByRole('textbox', { name: 'Reason' }),
+      'Out of scope for this quarter',
+    );
     await user.click(screen.getByRole('button', { name: 'Confirm rejection' }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(lastCall().url).toBe(`/api/requirements/${d.requirement.id}/reject`);
@@ -412,7 +443,10 @@ describe('Requirement detail (specs/001 US4, ui-requirements.md §3/§5.2)', () 
       expect(fetchMock).toHaveBeenCalledTimes(1);
       expect(lastCall().url).toBe(`/api/requirements/${d.requirement.id}`);
 
-      es.emit('inbox.changed', JSON.stringify({ workflowId: d.requirement.workflow!.id, table: 'workflows' }));
+      es.emit(
+        'inbox.changed',
+        JSON.stringify({ workflowId: d.requirement.workflow!.id, table: 'workflows' }),
+      );
       await vi.advanceTimersByTimeAsync(500);
       expect(fetchMock).toHaveBeenCalledTimes(2);
     } finally {
