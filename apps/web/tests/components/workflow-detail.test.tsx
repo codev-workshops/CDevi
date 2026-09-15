@@ -11,6 +11,7 @@ import {
   emptyDetail,
   failedDetail,
 } from '../fixtures/workflow-detail';
+import { PR_ID, workflowPullRequest } from '../fixtures/reviews';
 
 type Listener = (ev: { data: string }) => void;
 const sources: FakeSource[] = [];
@@ -372,5 +373,44 @@ describe('Workflow Detail (specs/001 US1)', () => {
     expect(screen.getByText('No activity yet.')).toBeInTheDocument();
     expect(screen.getByText('No artifacts yet.')).toBeInTheDocument();
     expect(screen.getByText('No stages recorded yet.')).toBeInTheDocument();
+  });
+
+  it('FR-020 Workflow Detail links to the review', async () => {
+    const d = detail({ pullRequest: workflowPullRequest() });
+    const { container } = renderApp(<WorkflowDetailScreen initial={d} userRole="engineer" />);
+    const card = screen.getByRole('region', { name: 'Pull request' });
+    expect(card).toHaveTextContent('#1821 PAY-1391 Refund processing');
+    expect(within(card).getByText('complete')).toHaveClass('cd-pill');
+    expect(within(card).getByRole('link', { name: 'Open review' })).toHaveAttribute(
+      'href',
+      `/reviews/${PR_ID}`,
+    );
+    expect(within(card).getByRole('link', { name: /Open pull request/ })).toHaveAttribute(
+      'href',
+      d.pullRequest!.href,
+    );
+    // FR-022 marker on Workflow Detail, never hidden.
+    expect(card).toHaveTextContent('Not ready for merge approval — 1 blocking finding open');
+    expect(within(card).getByText('not ready')).toHaveClass('cd-pill');
+    expect(card.querySelector('.cd-saffron')).toBeNull();
+    await expectNoViolations(container);
+  });
+
+  it('FR-022 Workflow Detail shows the ready marker when the pull request has no blocking findings', () => {
+    const d = detail({
+      pullRequest: workflowPullRequest({ readyForMerge: true, blockingOpenCount: 0 }),
+    });
+    renderApp(<WorkflowDetailScreen initial={d} userRole="engineer" />);
+    const card = screen.getByRole('region', { name: 'Pull request' });
+    expect(card).toHaveTextContent('Ready for merge approval');
+    expect(within(card).queryByText(/Not ready/)).toBeNull();
+  });
+
+  it('FR-020 Workflow Detail keeps the pullRequestRef fallback when pullRequest is null', () => {
+    const d = detail();
+    expect(d.pullRequest).toBeNull();
+    renderApp(<WorkflowDetailScreen initial={d} userRole="engineer" />);
+    expect(screen.queryByRole('region', { name: 'Pull request' })).toBeNull();
+    expect(screen.getByText(d.workflow.pullRequestRef!)).toBeInTheDocument();
   });
 });
