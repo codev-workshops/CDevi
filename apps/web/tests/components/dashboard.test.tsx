@@ -43,6 +43,11 @@ const problem = (status: number) =>
 const region = (name: string) => screen.getByRole('region', { name });
 const link = (name: string | RegExp) => screen.getByRole('link', { name });
 const saffron = (container: Element) => container.querySelectorAll('.cd-saffron').length;
+const updatedAt = () => {
+  const t = screen.getByText('Updated').querySelector('time');
+  expect(t).toHaveTextContent(/^(just now|\d+ (min|h|d) ago)$/);
+  return t?.getAttribute('datetime');
+};
 
 beforeEach(() => {
   fetchMock.mockReset();
@@ -70,7 +75,7 @@ describe('Dashboard (specs/001 US3)', () => {
       '/workflows?hasPr=true&window=7d',
     );
     expect(link('2 open failures')).toHaveAttribute('href', '/workflows?state=FAILED,BLOCKED');
-    expect(screen.getByText('Updated just now')).toBeInTheDocument();
+    expect(updatedAt()).toBe(populated.generatedAt);
     expect(screen.getByText('live')).toHaveClass('cd-pill');
   });
 
@@ -135,7 +140,7 @@ describe('Dashboard (specs/001 US3)', () => {
     const health = region('Health · Last 7 days');
     const rate = (name: string, pct: string, fraction: string, href: string) => {
       const meter = within(health).getByRole('meter', { name });
-      expect(meter).not.toHaveClass('cd-muted');
+      expect(meter.querySelector('i')).not.toHaveClass('cd-muted');
       const a = within(health).getByRole('link', { name: pct });
       expect(a).toHaveAttribute('href', href);
       const described = document.getElementById(a.getAttribute('aria-describedby') ?? '');
@@ -286,11 +291,11 @@ describe('Dashboard (specs/001 US3)', () => {
     renderApp(<DashboardScreen me={adminMe} initial={populated} />);
 
     const select = screen.getByRole('combobox', { name: 'Window' });
-    expect(within(select).getAllByRole('option').map((o) => o.textContent)).toEqual([
-      'Last 24 hours',
-      'Last 7 days',
-      'Last 30 days',
-    ]);
+    expect(
+      within(select)
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['Last 24 hours', 'Last 7 days', 'Last 30 days']);
     expect(select).toHaveValue('7d');
     await user.selectOptions(select, '24h');
 
@@ -300,7 +305,9 @@ describe('Dashboard (specs/001 US3)', () => {
     expect(url.searchParams.get('project')).toBe(DASHBOARD_DEMO.id);
     expect(new URL(window.location.href).searchParams.get('window')).toBe('24h');
     await waitFor(() =>
-      expect(screen.getByRole('heading', { level: 2, name: 'Health · Last 24 hours' })).toBeVisible(),
+      expect(
+        screen.getByRole('heading', { level: 2, name: 'Health · Last 24 hours' }),
+      ).toBeVisible(),
     );
     expect(link('1 PRs generated · Last 24 hours')).toBeInTheDocument();
   });
@@ -310,9 +317,17 @@ describe('Dashboard (specs/001 US3)', () => {
     try {
       const next = {
         ...populated,
-        counts: { ...populated.counts, activeWorkflows: { ...populated.counts.activeWorkflows, value: 19 } },
+        counts: {
+          ...populated.counts,
+          activeWorkflows: { ...populated.counts.activeWorkflows, value: 19 },
+        },
       };
-      fetchMock.mockResolvedValue(jsonResponse(next));
+      let resolve: (r: Response) => void = () => {};
+      fetchMock.mockReturnValue(
+        new Promise<Response>((r) => {
+          resolve = r;
+        }),
+      );
       const { container } = renderApp(<DashboardScreen me={adminMe} initial={populated} />);
       expect(sources).toHaveLength(1);
       const es = sources[0]!;
@@ -327,10 +342,12 @@ describe('Dashboard (specs/001 US3)', () => {
 
       await vi.advanceTimersByTimeAsync(100);
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      expect(container.querySelector('[aria-busy="true"]')).not.toBeNull();
+      await waitFor(() => expect(container.querySelector('[aria-busy="true"]')).not.toBeNull());
       expect(link('18 active workflows')).toBeInTheDocument();
+      expect(screen.getByText('updating')).toHaveClass('cd-pill');
       await expectNoViolations(container);
 
+      resolve(jsonResponse(next));
       await waitFor(() => expect(link('19 active workflows')).toBeInTheDocument());
       expect(container.querySelector('[aria-busy="true"]')).toBeNull();
     } finally {
@@ -354,13 +371,17 @@ describe('Dashboard (specs/001 US3)', () => {
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent("Couldn't load the dashboard.");
     expect(link('18 active workflows')).toBeInTheDocument();
-    expect(screen.getByText('Updated just now')).toBeInTheDocument();
+    expect(updatedAt()).toBe(populated.generatedAt);
     await expectNoViolations(container);
 
-    fetchMock.mockResolvedValueOnce(jsonResponse({ ...populated, window: { ...populated.window, key: '30d' } }));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ ...populated, window: { ...populated.window, key: '30d' } }),
+    );
     await user.click(within(alert).getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    expect(new URL(String(fetchMock.mock.calls[1]![0]), 'http://localhost').searchParams.get('window')).toBe('30d');
+    expect(
+      new URL(String(fetchMock.mock.calls[1]![0]), 'http://localhost').searchParams.get('window'),
+    ).toBe('30d');
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
     expect(screen.getByRole('heading', { level: 1 })).toHaveFocus();
   });
@@ -380,14 +401,14 @@ describe('Dashboard (specs/001 US3)', () => {
 
     await user.click(within(list).getByRole('button', { name: 'Show all projects' }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    expect(new URL(String(fetchMock.mock.calls[0]![0]), 'http://localhost').searchParams.get('project')).toBe('all');
+    expect(
+      new URL(String(fetchMock.mock.calls[0]![0]), 'http://localhost').searchParams.get('project'),
+    ).toBe('all');
     expect(screen.getByRole('combobox', { name: 'Project' })).toHaveValue('all');
   });
 
   it('FR-025 the all-projects empty state has no project name and no reset control', () => {
-    renderApp(
-      <DashboardScreen me={me} initial={{ ...empty, project: 'all' }} />,
-    );
+    renderApp(<DashboardScreen me={me} initial={{ ...empty, project: 'all' }} />);
     expect(screen.getByText('No active workflows.')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Show all projects' })).toBeNull();
   });
