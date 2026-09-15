@@ -102,7 +102,7 @@ Tests assert the exact `.cd-saffron` count per state: list 0; detail 1 for the t
 - Selects: "Project", "State", "Assignee" (list); "Project", "Title", "Business objective", "Acceptance criteria (optional)" (create).
 - Lists: `aria-label="Requirements"`, `aria-label="Requirement history"`.
 - Row links: "{title}"; "Workflow {externalId}, stage {i} of {n}"; "Open {key} in Jira (opens in a new tab)".
-- Pills: text equals `REQUIREMENT_STATE_WORDS[state]` (e.g. "needs clarification"); workflow pills equal `stateToPill(state).word`; "AI-generated"; "Authored by {name}"; "Jira closed" / "Jira deleted".
+- Pills: requirement pills (`RequirementStatePill`) render `requirementStateToPill[state].word` from `@cdevi/design-system`, which equals `REQUIREMENT_STATE_WORDS[state]` from `@cdevi/contracts/requirement-rules` (e.g. "needs clarification"; both are `Record`s, asserted equal in T110); workflow pills (`StatePill`) render `stateToPill[state].word`; "AI-generated"; "Authored by {name}"; "Jira closed" / "Jira deleted".
 - Buttons: "New requirement", "Load more", "Submit for analysis", "Resubmit for analysis", "Approve", "Reject…", "Confirm rejection", "Cancel", "Create requirement", "Retry", "Clear filters".
 - Notices: role `status` for info, `alert` for error/warning.
 
