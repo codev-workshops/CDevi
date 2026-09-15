@@ -375,6 +375,16 @@ export function AgentRunScreen({ initial, now }: AgentRunScreenProps) {
                 </>
               ),
             },
+            {
+              term: 'Finished',
+              detail: run.finishedAt ? (
+                <time dateTime={run.finishedAt}>
+                  {absolute(run.finishedAt)} ({humanAgo(new Date(run.finishedAt), referenceNow)})
+                </time>
+              ) : (
+                'in progress'
+              ),
+            },
             { term: 'Status', detail: <StatePill state={run.state} /> },
           ]}
         />
