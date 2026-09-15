@@ -102,7 +102,11 @@ export async function getAgentRunDetail(
     finishedAt: run.finished_at?.toISOString() ?? null,
     durationMs: runDuration(run.started_at, run.finished_at, now),
     summary: run.summary,
-    workflow: { id: run.workflow_id, externalId: run.workflow_external_id, title: run.workflow_title },
+    workflow: {
+      id: run.workflow_id,
+      externalId: run.workflow_external_id,
+      title: run.workflow_title,
+    },
     stage: { position: run.stage_position, name: run.stage_name },
     steps: run.steps.slice(0, 20),
     timeline: run.timeline.slice(-50),

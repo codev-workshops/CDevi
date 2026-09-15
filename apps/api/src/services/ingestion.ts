@@ -554,13 +554,20 @@ export class IngestionService {
             )
           ).rows[0]!.c,
         );
-      if (run.decisions_observed_at && observedAt.getTime() <= run.decisions_observed_at.getTime()) {
+      if (
+        run.decisions_observed_at &&
+        observedAt.getTime() <= run.decisions_observed_at.getTime()
+      ) {
         const stored = run.decisions_observed_at.toISOString();
         if (isTerminal(run.state) || run.state === 'FAILED')
           throw problems.invalidTransition(
             `Agent run ${externalId} is ${run.state}; decisions observed at ${body.observedAt} are not newer than ${stored}.`,
           );
-        await this.log(client, 'stale', `observedAt ${body.observedAt} is not newer than ${stored}`);
+        await this.log(
+          client,
+          'stale',
+          `observedAt ${body.observedAt} is not newer than ${stored}`,
+        );
         return { result: 'stale', count: await existingCount() };
       }
       const deleted = await client.query(`DELETE FROM agent_decisions WHERE agent_run_id = $1`, [

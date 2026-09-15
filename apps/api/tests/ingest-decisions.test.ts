@@ -48,7 +48,11 @@ describe.skipIf(skipDb)(
 
     const putRun = (ext: string, payload: Record<string, unknown>) =>
       app.inject(asIngest({ method: 'PUT', url: `/api/ingest/agent-runs/${ext}`, payload }));
-    const putDecisions = (ext: string, body: NonNullable<InjectOptions['payload']>, token?: string) =>
+    const putDecisions = (
+      ext: string,
+      body: NonNullable<InjectOptions['payload']>,
+      token?: string,
+    ) =>
       app.inject(
         asIngest(
           { method: 'PUT', url: `/api/ingest/agent-runs/${ext}/decisions`, payload: body },
@@ -147,7 +151,12 @@ describe.skipIf(skipDb)(
       expect(stored.map((r) => r.position)).toEqual([1, 2, 3]);
       expect(stored[1]!.risk_level).toBe('HIGH');
       expect(stored[2]!.evidence).toEqual([
-        { kind: 'artifact', label: 'src/auth/limiter.ts', locator: 'src/auth/limiter.ts:12', accessible: false },
+        {
+          kind: 'artifact',
+          label: 'src/auth/limiter.ts',
+          locator: 'src/auth/limiter.ts:12',
+          accessible: false,
+        },
       ]);
       const copied = await pool.query<{ ok: boolean }>(
         `SELECT bool_and(d.organization_id = r.organization_id AND d.project_id = r.project_id AND d.workflow_id = r.workflow_id AND d.stage_id = r.stage_id) ok
@@ -265,7 +274,10 @@ describe.skipIf(skipDb)(
         ],
         [
           '601-char reason',
-          { observedAt: iso(plus(-10 * MIN)), decisions: [decision(1, { reason: 'x'.repeat(601) })] },
+          {
+            observedAt: iso(plus(-10 * MIN)),
+            decisions: [decision(1, { reason: 'x'.repeat(601) })],
+          },
         ],
         [
           'evidence without accessible',
@@ -312,7 +324,10 @@ describe.skipIf(skipDb)(
 
       const fresh = await newRun();
       const freshBase = await inboxCount(fresh.workflowId);
-      const emptyOnEmpty = await putDecisions(fresh.ext, { observedAt: iso(plus(-9 * MIN)), decisions: [] });
+      const emptyOnEmpty = await putDecisions(fresh.ext, {
+        observedAt: iso(plus(-9 * MIN)),
+        decisions: [],
+      });
       expect(emptyOnEmpty.statusCode, emptyOnEmpty.body).toBe(200);
       expect(await inboxCount(fresh.workflowId)).toBe(freshBase + 1);
     });
