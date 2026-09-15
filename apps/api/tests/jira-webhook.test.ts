@@ -428,6 +428,42 @@ describe.skipIf(skipDb)('POST /api/integrations/jira/webhook (specs/001 US4, FR-
     }
   });
 
+  it('FR-008 a stale done update (older than the stored updatedAt) is ignored and leaves the requirement unflagged and the workflow QUEUED; a newer done update advances updatedAt and flags closed', async () => {
+    const { requirementId, workflowId } = await approvedJira('PAY-254');
+    // the reopen at -3 min was processed first …
+    const reopened = await send(
+      issueEvent({ key: 'PAY-254', event: 'jira:issue_updated', updated: iso(plus(-3 * MIN)) }),
+    );
+    expect(reopened.json()).toMatchObject({ outcome: 'updated' });
+    // … then the delayed done from -4 min arrives
+    const stale = await send(
+      issueEvent({
+        key: 'PAY-254',
+        event: 'jira:issue_updated',
+        statusCategory: 'done',
+        updated: iso(plus(-4 * MIN)),
+      }),
+    );
+    expect(stale.statusCode, stale.body).toBe(202);
+    expect(stale.json()).toEqual({ outcome: 'ignored', requirementId });
+    expect((await detailByKey('PAY-254')).requirement.externalFlag).toBeNull();
+    expect((await workflowRow(workflowId)).state).toBe('QUEUED');
+
+    const fresh = await send(
+      issueEvent({
+        key: 'PAY-254',
+        event: 'jira:issue_updated',
+        statusCategory: 'done',
+        updated: iso(plus(-2 * MIN)),
+      }),
+    );
+    expect(fresh.json()).toEqual({ outcome: 'flagged', requirementId });
+    const d = await detailByKey('PAY-254');
+    expect(d.requirement.externalFlag).toBe('closed');
+    expect(d.requirement.externalRef?.updatedAt).toBe(iso(plus(-2 * MIN)));
+    expect((await workflowRow(workflowId)).state).toBe('BLOCKED');
+  });
+
   it('FR-008 a 300 KB body returns 413 and the 121st call in a minute from one IP returns 429', async () => {
     const big = issueEvent({ key: 'PAY-251', description: 'x'.repeat(300 * 1024) });
     const r = await send(big);

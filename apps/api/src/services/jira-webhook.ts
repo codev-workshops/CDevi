@@ -8,7 +8,12 @@
  * flag never changes the requirement state (spec.md edge case: a human decides).
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import type { ExternalFlag, JiraWebhookEvent, JiraWebhookResult, WorkflowState } from '@cdevi/contracts';
+import type {
+  ExternalFlag,
+  JiraWebhookEvent,
+  JiraWebhookResult,
+  WorkflowState,
+} from '@cdevi/contracts';
 import { mapJiraEvent } from '@cdevi/contracts/requirement-rules';
 import type pg from 'pg';
 import { recordRequirementAudit, recordRequirementTransition } from './requirements';
@@ -70,19 +75,37 @@ async function resolveAssignee(
   return r.rows[0]?.id ?? null;
 }
 
+/**
+ * Lock order is workflow → requirement, the same order `requirements_follow_workflow` uses when a
+ * workflow transition locks its requirement, so a concurrent ingest cannot deadlock the webhook.
+ */
 async function flagRequirement(
   client: pg.PoolClient,
   mapping: Mapping,
-  requirement: JiraRequirementRow,
+  requirementId: string,
   key: string,
   flag: ExternalFlag,
+  updatedAt: string | null,
   now: Date,
 ): Promise<JiraWebhookResult> {
   const wf = await client.query<LinkedWorkflowRow>(
     `SELECT id, external_id, state FROM workflows WHERE requirement_id = $1 FOR UPDATE`,
-    [requirement.id],
+    [requirementId],
   );
   const workflow = wf.rows[0] ?? null;
+  const locked = await client.query<JiraRequirementRow>(
+    `SELECT id, title, external_id, external_ref->>'updatedAt' AS external_updated_at FROM requirements
+      WHERE id = $1 FOR UPDATE`,
+    [requirementId],
+  );
+  const requirement = locked.rows[0];
+  if (!requirement) return { outcome: 'ignored', requirementId: null };
+  if (
+    updatedAt &&
+    requirement.external_updated_at &&
+    Date.parse(updatedAt) <= Date.parse(requirement.external_updated_at)
+  )
+    return { outcome: 'ignored', requirementId: requirement.id };
   const reason = `Jira ${key} ${flag} — human decision required`;
   let blocked = false;
   if (workflow && ACTIVE_WORKFLOW_STATES.includes(workflow.state)) {
@@ -104,8 +127,11 @@ async function flagRequirement(
     blocked = true;
   }
   await client.query(
-    `UPDATE requirements SET external_flag = $2, external_flagged_at = $3 WHERE id = $1`,
-    [requirement.id, flag, now],
+    `UPDATE requirements SET external_flag = $2, external_flagged_at = $3,
+        external_ref = CASE WHEN $4::text IS NULL THEN external_ref
+                            ELSE jsonb_set(external_ref, '{updatedAt}', to_jsonb($4::text)) END
+      WHERE id = $1`,
+    [requirement.id, flag, now, updatedAt],
   );
   await recordRequirementAudit(client, {
     organizationId: mapping.organization_id,
@@ -167,7 +193,22 @@ export async function applyJiraEvent(
   );
   const mapping = m.rows[0];
   if (!mapping) return { outcome: 'ignored', requirementId: null };
-  await client.query(`SELECT set_config('app.organization_id', $1, true)`, [mapping.organization_id]);
+  await client.query(`SELECT set_config('app.organization_id', $1, true)`, [
+    mapping.organization_id,
+  ]);
+
+  if (mapped.kind === 'flag') {
+    const found = await client.query<{ id: string }>(
+      `SELECT id FROM requirements
+        WHERE organization_id = $1 AND source = 'jira' AND external_ref->>'key' = $2`,
+      [mapping.organization_id, mapped.key],
+    );
+    const id = found.rows[0]?.id;
+    if (!id) return { outcome: 'ignored', requirementId: null };
+    // A deletion has no meaningful `updated`; only status-derived flags are ordered by it.
+    const watermark = mapped.flag === 'closed' ? (mapped.updatedAt ?? null) : null;
+    return flagRequirement(client, mapping, id, mapped.key, mapped.flag!, watermark, now);
+  }
 
   const existing = await client.query<JiraRequirementRow>(
     `SELECT id, title, external_id, external_ref->>'updatedAt' AS external_updated_at FROM requirements
@@ -183,15 +224,13 @@ export async function applyJiraEvent(
     updatedAt,
   };
 
-  if (mapped.kind === 'flag') {
-    if (!current) return { outcome: 'ignored', requirementId: null };
-    return flagRequirement(client, mapping, current, mapped.key, mapped.flag!, now);
-  }
-
   const assigneeId = await resolveAssignee(client, mapping.organization_id, mapped.assigneeEmail);
 
   if (current) {
-    if (current.external_updated_at && Date.parse(updatedAt) <= Date.parse(current.external_updated_at))
+    if (
+      current.external_updated_at &&
+      Date.parse(updatedAt) <= Date.parse(current.external_updated_at)
+    )
       return { outcome: 'ignored', requirementId: current.id };
     await client.query(
       `UPDATE requirements SET title = $2, business_objective = $3, assignee_user_id = $4, external_ref = $5::jsonb
