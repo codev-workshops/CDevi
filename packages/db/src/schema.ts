@@ -1,12 +1,15 @@
 /**
- * Drizzle schema mirroring migrations/0001_init.sql, 0002_workflow_detail.sql and 0003_approval_center.sql. The SQL files are the source of truth
+ * Drizzle schema mirroring migrations/0001_init.sql, 0002_workflow_detail.sql, 0003_approval_center.sql and
+ * 0004_dashboard.sql (indexes only). The SQL files are the source of truth
  * for triggers, partial indexes, RLS and grants, which Drizzle does not model; this file gives queries types.
  */
 import type { AgentRunEvent, ClarificationOption, DecisionLinks } from '@cdevi/contracts';
+import { sql } from 'drizzle-orm';
 import {
   bigserial,
   boolean,
   customType,
+  index,
   integer,
   jsonb,
   pgEnum,
@@ -166,23 +169,31 @@ export const workflowStages = pgTable('workflow_stages', {
   updatedAt: ts('updated_at').notNull().defaultNow(),
 });
 
-export const agentRuns = pgTable('agent_runs', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  organizationId: uuid('organization_id').notNull(),
-  projectId: uuid('project_id').notNull(),
-  workflowId: uuid('workflow_id').notNull(),
-  stageId: uuid('stage_id').notNull(),
-  externalId: text('external_id').notNull(),
-  agent: text('agent').notNull(),
-  model: text('model'),
-  state: workflowState('state').notNull(),
-  startedAt: ts('started_at').notNull(),
-  finishedAt: ts('finished_at'),
-  summary: text('summary'),
-  timeline: jsonb('timeline').$type<AgentRunEvent[]>().notNull().default([]),
-  createdAt: ts('created_at').notNull().defaultNow(),
-  updatedAt: ts('updated_at').notNull().defaultNow(),
-});
+export const agentRuns = pgTable(
+  'agent_runs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').notNull(),
+    projectId: uuid('project_id').notNull(),
+    workflowId: uuid('workflow_id').notNull(),
+    stageId: uuid('stage_id').notNull(),
+    externalId: text('external_id').notNull(),
+    agent: text('agent').notNull(),
+    model: text('model'),
+    state: workflowState('state').notNull(),
+    startedAt: ts('started_at').notNull(),
+    finishedAt: ts('finished_at'),
+    summary: text('summary'),
+    timeline: jsonb('timeline').$type<AgentRunEvent[]>().notNull().default([]),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('agent_runs_org_project_finished_idx')
+      .on(t.organizationId, t.projectId, t.finishedAt)
+      .where(sql`${t.finishedAt} IS NOT NULL`),
+  ],
+);
 
 export const artifacts = pgTable('artifacts', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -199,70 +210,86 @@ export const artifacts = pgTable('artifacts', {
   createdAt: ts('created_at').notNull().defaultNow(),
 });
 
-export const testRuns = pgTable('test_runs', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  organizationId: uuid('organization_id').notNull(),
-  projectId: uuid('project_id').notNull(),
-  workflowId: uuid('workflow_id').notNull(),
-  stageId: uuid('stage_id').notNull(),
-  externalId: text('external_id').notNull(),
-  category: text('category').notNull(),
-  status: testRunStatus('status').notNull(),
-  total: integer('total').notNull().default(0),
-  passed: integer('passed').notNull().default(0),
-  failed: integer('failed').notNull().default(0),
-  skipped: integer('skipped').notNull().default(0),
-  href: text('href'),
-  startedAt: ts('started_at').notNull(),
-  finishedAt: ts('finished_at'),
-  createdAt: ts('created_at').notNull().defaultNow(),
-  updatedAt: ts('updated_at').notNull().defaultNow(),
-});
+export const testRuns = pgTable(
+  'test_runs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').notNull(),
+    projectId: uuid('project_id').notNull(),
+    workflowId: uuid('workflow_id').notNull(),
+    stageId: uuid('stage_id').notNull(),
+    externalId: text('external_id').notNull(),
+    category: text('category').notNull(),
+    status: testRunStatus('status').notNull(),
+    total: integer('total').notNull().default(0),
+    passed: integer('passed').notNull().default(0),
+    failed: integer('failed').notNull().default(0),
+    skipped: integer('skipped').notNull().default(0),
+    href: text('href'),
+    startedAt: ts('started_at').notNull(),
+    finishedAt: ts('finished_at'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('test_runs_org_project_finished_idx')
+      .on(t.organizationId, t.projectId, t.finishedAt)
+      .where(sql`${t.finishedAt} IS NOT NULL`),
+  ],
+);
 
-export const approvals = pgTable('approvals', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  organizationId: uuid('organization_id').notNull(),
-  projectId: uuid('project_id').notNull(),
-  workflowId: uuid('workflow_id').notNull(),
-  externalId: text('external_id').notNull(),
-  ask: text('ask').notNull(),
-  riskLevel: riskLevel('risk_level').notNull(),
-  requestedByAgent: text('requested_by_agent'),
-  requestedAt: ts('requested_at').notNull(),
-  expiresAt: ts('expires_at'),
-  decision: approvalDecision('decision'),
-  decidedAt: ts('decided_at'),
-  decidedBy: text('decided_by'),
-  context: text('context'),
-  links: jsonb('links').$type<DecisionLinks>().notNull().default({}),
-  rejectionReason: text('rejection_reason'),
-  rejectionTarget: workflowState('rejection_target'),
-  decidedByUserId: uuid('decided_by_user_id'),
-  createdAt: ts('created_at').notNull().defaultNow(),
-  updatedAt: ts('updated_at').notNull().defaultNow(),
-});
+export const approvals = pgTable(
+  'approvals',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').notNull(),
+    projectId: uuid('project_id').notNull(),
+    workflowId: uuid('workflow_id').notNull(),
+    externalId: text('external_id').notNull(),
+    ask: text('ask').notNull(),
+    riskLevel: riskLevel('risk_level').notNull(),
+    requestedByAgent: text('requested_by_agent'),
+    requestedAt: ts('requested_at').notNull(),
+    expiresAt: ts('expires_at'),
+    decision: approvalDecision('decision'),
+    decidedAt: ts('decided_at'),
+    decidedBy: text('decided_by'),
+    context: text('context'),
+    links: jsonb('links').$type<DecisionLinks>().notNull().default({}),
+    rejectionReason: text('rejection_reason'),
+    rejectionTarget: workflowState('rejection_target'),
+    decidedByUserId: uuid('decided_by_user_id'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [index('approvals_workflow_idx').on(t.workflowId)],
+);
 
-export const clarifications = pgTable('clarifications', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  organizationId: uuid('organization_id').notNull(),
-  projectId: uuid('project_id').notNull(),
-  workflowId: uuid('workflow_id').notNull(),
-  externalId: text('external_id').notNull(),
-  question: text('question').notNull(),
-  requestedByAgent: text('requested_by_agent'),
-  requestedAt: ts('requested_at').notNull(),
-  hasRecommendedAnswer: boolean('has_recommended_answer').notNull().default(false),
-  answeredAt: ts('answered_at'),
-  answeredBy: text('answered_by'),
-  whyItMatters: text('why_it_matters'),
-  options: jsonb('options').$type<ClarificationOption[]>().notNull().default([]),
-  links: jsonb('links').$type<DecisionLinks>().notNull().default({}),
-  answerOption: text('answer_option'),
-  answerText: text('answer_text'),
-  answeredByUserId: uuid('answered_by_user_id'),
-  createdAt: ts('created_at').notNull().defaultNow(),
-  updatedAt: ts('updated_at').notNull().defaultNow(),
-});
+export const clarifications = pgTable(
+  'clarifications',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').notNull(),
+    projectId: uuid('project_id').notNull(),
+    workflowId: uuid('workflow_id').notNull(),
+    externalId: text('external_id').notNull(),
+    question: text('question').notNull(),
+    requestedByAgent: text('requested_by_agent'),
+    requestedAt: ts('requested_at').notNull(),
+    hasRecommendedAnswer: boolean('has_recommended_answer').notNull().default(false),
+    answeredAt: ts('answered_at'),
+    answeredBy: text('answered_by'),
+    whyItMatters: text('why_it_matters'),
+    options: jsonb('options').$type<ClarificationOption[]>().notNull().default([]),
+    links: jsonb('links').$type<DecisionLinks>().notNull().default({}),
+    answerOption: text('answer_option'),
+    answerText: text('answer_text'),
+    answeredByUserId: uuid('answered_by_user_id'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [index('clarifications_workflow_idx').on(t.workflowId)],
+);
 
 export const ingestionLog = pgTable('ingestion_log', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -284,21 +311,29 @@ export const inboxChangeLog = pgTable('inbox_change_log', {
 });
 
 /** Append-only audit trail of human decisions (0003_approval_center.sql; FR-029). */
-export const auditEvents = pgTable('audit_events', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  organizationId: uuid('organization_id').notNull(),
-  projectId: uuid('project_id'),
-  workflowId: uuid('workflow_id'),
-  actorType: text('actor_type').$type<'user' | 'agent' | 'system'>().notNull(),
-  actorId: text('actor_id'),
-  actorName: text('actor_name').notNull(),
-  action: text('action').notNull(),
-  targetType: text('target_type').notNull(),
-  targetId: uuid('target_id').notNull(),
-  riskLevel: riskLevel('risk_level'),
-  policy: text('policy'),
-  result: text('result').notNull(),
-  details: jsonb('details').$type<Record<string, unknown>>().notNull().default({}),
-  occurredAt: ts('occurred_at').notNull().defaultNow(),
-});
+export const auditEvents = pgTable(
+  'audit_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').notNull(),
+    projectId: uuid('project_id'),
+    workflowId: uuid('workflow_id'),
+    actorType: text('actor_type').$type<'user' | 'agent' | 'system'>().notNull(),
+    actorId: text('actor_id'),
+    actorName: text('actor_name').notNull(),
+    action: text('action').notNull(),
+    targetType: text('target_type').notNull(),
+    targetId: uuid('target_id').notNull(),
+    riskLevel: riskLevel('risk_level'),
+    policy: text('policy'),
+    result: text('result').notNull(),
+    details: jsonb('details').$type<Record<string, unknown>>().notNull().default({}),
+    occurredAt: ts('occurred_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('audit_events_org_risk_time_idx')
+      .on(t.organizationId, t.projectId, t.occurredAt.desc())
+      .where(sql`${t.riskLevel} IN ('HIGH','CRITICAL')`),
+  ],
+);
 export type AuditEvent = typeof auditEvents.$inferSelect;
