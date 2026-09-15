@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { hashPassword } from '@cdevi/db';
 import type { FastifyInstance, InjectOptions, LightMyRequestResponse } from 'fastify';
 import { buildApp, type BuildOptions } from '../src/app';
@@ -48,6 +49,13 @@ export const asIngest = (opts: InjectOptions, token = SEED_INGEST_TOKEN): Inject
   },
 });
 
+/** Shared secret the Jira webhook tests build the app with (never read from process.env). */
+export const JIRA_TEST_SECRET = 'jira-test-secret-0000000000000000';
+
+/** `x-hub-signature` value for a raw webhook body: `sha256=<hex HMAC-SHA256(secret, raw)>`. */
+export const signJira = (raw: Buffer | string, secret = JIRA_TEST_SECRET): string =>
+  `sha256=${createHmac('sha256', secret).update(raw).digest('hex')}`;
+
 export const iso = (d: Date) => d.toISOString();
 export const plus = (ms: number, from = FIXED_NOW) => new Date(from.getTime() + ms);
 export const MIN = 60_000;
@@ -65,9 +73,10 @@ export interface Sc007Org {
 }
 
 /**
- * SC-007 workload in a fresh organization: 500 workflows (50 of them active), 5 000 agent runs, 5 000 test runs
- * and 50 000 audit events spread over the 60 days before FIXED_NOW, inserted with `generate_series` so the
- * fixture costs a handful of statements. Returns an administrator who sees all four projects.
+ * SC-007 workload in a fresh organization: 500 workflows (50 of them active), 5 000 agent runs, 5 000 test runs,
+ * 50 000 audit events, 2 000 requirements (one in eight READY) with 20 000 analysis items spread over the 60 days
+ * before FIXED_NOW, inserted with `generate_series` so the fixture costs a handful of statements. Returns an
+ * administrator who sees all four projects.
  */
 export async function seedSc007Org(app: FastifyInstance, base = FIXED_NOW): Promise<Sc007Org> {
   const email = `${uniq('sc7-admin')}@cdevi.test`;
@@ -139,8 +148,31 @@ export async function seedSc007Org(app: FastifyInstance, base = FIXED_NOW): Prom
          FROM generate_series(1, 50000) g`,
       [organizationId, projectIds, base],
     );
+    await client.query(
+      `INSERT INTO requirements (organization_id, project_id, external_id, title, business_objective, state, created_at)
+       SELECT $1, ($2::uuid[])[(g % 4) + 1], 'sc7-req-' || g, 'Requirement ' || g, 'Business objective of requirement ' || g,
+              (ARRAY['DRAFT','ANALYZING','NEEDS_CLARIFICATION','READY','APPROVED','IN_IMPLEMENTATION','COMPLETED','REJECTED']::requirement_state[])[(g % 8) + 1],
+              $3::timestamptz - (g % 60) * interval '1 day' - (g % 1440) * interval '1 minute'
+         FROM generate_series(1, 2000) g`,
+      [organizationId, projectIds, base],
+    );
+    await client.query(
+      `INSERT INTO requirement_analysis_items (organization_id, project_id, requirement_id, kind, position, text, ai_generated, source)
+       SELECT r.organization_id, r.project_id, r.id,
+              (ARRAY['acceptance_criterion','acceptance_criterion','acceptance_criterion','acceptance_criterion','rule','rule','rule','rule','open_question','open_question']::analysis_item_kind[])[i],
+              (ARRAY[1,2,3,4,1,2,3,4,1,2])[i], 'Item ' || i || ' of ' || r.external_id, true, 'agent:Requirement Agent'
+         FROM requirements r CROSS JOIN generate_series(1, 10) i WHERE r.organization_id = $1`,
+      [organizationId],
+    );
+    await client.query(
+      `INSERT INTO requirement_transitions (organization_id, requirement_id, from_state, to_state, actor_type, actor_name, occurred_at)
+       SELECT organization_id, id, NULL, 'DRAFT', 'user', 'SC7 Admin', created_at FROM requirements WHERE organization_id = $1`,
+      [organizationId],
+    );
     await client.query('COMMIT');
-    await client.query('ANALYZE workflows, workflow_stages, agent_runs, test_runs, audit_events');
+    await client.query(
+      'ANALYZE workflows, workflow_stages, agent_runs, test_runs, audit_events, requirements, requirement_analysis_items',
+    );
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     throw e;

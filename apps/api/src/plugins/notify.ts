@@ -7,7 +7,9 @@ export interface InboxChange {
   seq: number;
   organizationId: string;
   projectId: string;
-  workflowId: string;
+  /** Exactly one of workflowId / requirementId is set (inbox_change_log_target_check). */
+  workflowId: string | null;
+  requirementId: string | null;
 }
 
 export interface Notifier {
@@ -61,13 +63,15 @@ export default fp<NotifyPluginOptions>(async (app: FastifyInstance, opts) => {
             seq: number | string;
             organizationId: string;
             projectId: string;
-            workflowId: string;
+            workflowId?: string | null;
+            requirementId?: string | null;
           };
           emitter.emit('change', {
             seq: Number(p.seq),
             organizationId: p.organizationId,
             projectId: p.projectId,
-            workflowId: p.workflowId,
+            workflowId: p.workflowId ?? null,
+            requirementId: p.requirementId ?? null,
           } satisfies InboxChange);
         } catch (e) {
           app.log.warn({ err: e }, 'bad inbox_changed payload');

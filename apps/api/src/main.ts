@@ -7,6 +7,7 @@ const now = fixed ? () => new Date(fixed) : () => new Date();
 buildApp({
   now,
   rateLimit: { signInMax: Number(process.env['CDEVI_SIGNIN_RATE_MAX'] ?? 5) },
+  jiraWebhookSecret: process.env['JIRA_WEBHOOK_SECRET'],
 })
   .then((app) => app.listen({ port, host: '0.0.0.0' }))
   .then((addr) => console.log(`api listening on ${addr}`))

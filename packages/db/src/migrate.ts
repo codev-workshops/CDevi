@@ -21,6 +21,10 @@ const RLS_TABLES = [
   'artifacts',
   'test_runs',
   'audit_events',
+  'integration_project_mappings',
+  'requirements',
+  'requirement_analysis_items',
+  'requirement_transitions',
 ];
 
 export interface MigrateOptions {
