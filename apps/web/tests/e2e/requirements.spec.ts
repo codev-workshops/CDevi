@@ -1,9 +1,8 @@
 import { createHmac } from 'node:crypto';
-import AxeBuilder from '@axe-core/playwright';
 import { createPool, hashPassword } from '@cdevi/db';
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import { E2E } from '../../playwright.config';
-import { API, ingestAnalysis, me, signIn, uniq } from './helpers';
+import { API, expectAxeClean, ingestAnalysis, me, signIn, uniq } from './helpers';
 
 // Requirements Independent Test (specs/001 US4, quickstart §5.5): engineer1 creates and submits a requirement, the
 // agent runtime is simulated through PUT /api/ingest/requirements/{externalId}/analysis, approver1 approves it and
@@ -41,16 +40,6 @@ interface Detail {
     workflow: { id: string; externalId: string; state: string; href: string } | null;
   };
   actions: { canSubmit: boolean; canApprove: boolean; canReject: boolean };
-}
-
-async function expectAxeClean(page: Page, label: string) {
-  const results = await new AxeBuilder({ page })
-    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
-    .analyze();
-  expect(
-    results.violations.map((v) => `${v.id}: ${v.help} — ${v.nodes.map((n) => n.html).join(' | ')}`),
-    label,
-  ).toEqual([]);
 }
 
 const statePill = (page: Page) => page.locator('.cd-pill[data-state]').first();
