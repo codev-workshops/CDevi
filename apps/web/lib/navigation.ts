@@ -20,8 +20,8 @@ export const NAV_ITEMS: readonly NavEntry[] = [
   { href: '/audit', label: 'Audit', group: 'Administration' },
 ];
 
-/** Sections that have their own route (specs/001 US1, US3); everything else is the `[section]` placeholder. */
-const BUILT_SECTIONS: ReadonlySet<string> = new Set(['/inbox', '/dashboard']);
+/** Sections that have their own route (specs/001 US1, US3, US4); everything else is the `[section]` placeholder. */
+const BUILT_SECTIONS: ReadonlySet<string> = new Set(['/inbox', '/dashboard', '/requirements']);
 
 export const PLACEHOLDER_SECTIONS: Record<string, string> = Object.fromEntries(
   NAV_ITEMS.filter((n) => !BUILT_SECTIONS.has(n.href)).map((n) => [n.href.slice(1), n.label]),
