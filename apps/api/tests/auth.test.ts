@@ -95,7 +95,8 @@ describe.skipIf(skipDb)('auth (FR-004, FR-005, FR-002)', () => {
     expect(me.user.role).toBe('administrator');
     expect(me.organization.isDemo).toBe(true);
     expect(me.organization.name).toBe('Acme Engineering');
-    expect(me.projects).toHaveLength(4);
+    // 4 S-500 projects + dashboard-demo (no memberships; administrators see every project).
+    expect(me.projects).toHaveLength(5);
     expect(me.canCreateRequirement).toBe(true);
 
     const viewer = await signIn(app, 'viewer1@cdevi.demo');
