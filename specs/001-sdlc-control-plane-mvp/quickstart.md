@@ -402,7 +402,7 @@ curl -s -X PUT localhost:3001/api/ingest/agent-runs/us5-run-01/decisions -H "aut
 
 | Budget | How |
 |--------|-----|
-| `GET /api/agent-runs/{id}` ≤ 150 ms p95, payload ≤ 48 KB | `apps/api/tests/agent-runs.test.ts` `SC-007 …` — 20 calls at the SC-007 fixture (50 timeline × 240 chars, 20 steps, 50 decisions × 20 evidence), `Server-Timing` and `content-length` asserted; ≤ 3 statements in one `REPEATABLE READ` transaction counted through the `pg` wrapper; manual: `time curl -b "$COOKIE" localhost:3001/api/agent-runs/{id}` |
+| `GET /api/agent-runs/{id}` ≤ 150 ms p95, payload ≤ 48 KB | `apps/api/tests/agent-runs.test.ts` `SC-007 …` — 20 calls at the SC-007 fixtures (latency and ≤ 1 MB ceiling at 50 timeline × 240 chars, 20 steps, 50 decisions × 20 evidence refs; the 48 KB budget at the realistic 50 decisions × 2 evidence refs fixture), `Server-Timing` and `content-length` asserted; ≤ 3 statements in one `REPEATABLE READ` transaction counted through the `pg` wrapper; manual: `time curl -b "$COOKIE" localhost:3001/api/agent-runs/{id}` |
 | `PUT …/decisions` ≤ 200 ms p95 for 50 × 20 | `apps/api/tests/ingest-decisions.test.ts` `SC-007 …` |
 | Initial content ≤ 2 s p95 | `agent-run.spec.ts` `SC-007 …` — 10 navigations with a Playwright trace; manual: DevTools Performance on `/agents/runs/{id}` |
 | Live update ≤ 5 s p95, ≤ 1 s median | `agent-run.spec.ts` `SC-003 …` — time from the step-change `PUT` to the updated `Stepper` text |
