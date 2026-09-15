@@ -19,6 +19,25 @@ import {
   Href,
   buildDashboardSnapshot,
   type DashboardRows,
+  AUDIT_ACTIONS,
+  AnalysisItem,
+  CreateRequirementRequest,
+  JiraWebhookEvent,
+  JiraWebhookResult,
+  REQUIREMENT_STATES,
+  RejectRequirementRequest,
+  Requirement,
+  RequirementAnalysisIngest,
+  RequirementDetail,
+  RequirementIdParams,
+  RequirementIngestResult,
+  RequirementListPage,
+  RequirementListQuery,
+  splitCsv,
+  WORKFLOW_STATES,
+  WorkflowListItem,
+  WorkflowListPage,
+  WorkflowListQuery,
 } from '../src/index';
 
 const T = '2026-09-14T09:00:00Z';
@@ -350,5 +369,485 @@ describe('US3 dashboard schemas (specs/001 data-model.md §19)', () => {
       count: null,
       href: '/reviews',
     });
+  });
+});
+
+describe('US4 requirement schemas (specs/001 data-model.md §23–§27)', () => {
+  const P = '00000000-0000-7000-8000-000000000010';
+  const U = '00000000-0000-7000-8000-000000000001';
+  const R = '00000000-0000-7000-8000-000000000100';
+
+  it('FR-007 CreateRequirementRequest trims title (3..200) and businessObjective (10..4000), defaults acceptanceCriteria to [] and caps it at 20 trimmed lines of 1..1000', () => {
+    const ok = CreateRequirementRequest.parse({
+      projectId: P,
+      title: '  Retry queue  ',
+      businessObjective: '  Recover declined card payments automatically.  ',
+    });
+    expect(ok).toEqual({
+      projectId: P,
+      title: 'Retry queue',
+      businessObjective: 'Recover declined card payments automatically.',
+      acceptanceCriteria: [],
+    });
+    const base = { projectId: P, title: 'Retry queue', businessObjective: 'x'.repeat(10) };
+    expect(CreateRequirementRequest.safeParse({ ...base, title: 'ab' }).success).toBe(false);
+    expect(CreateRequirementRequest.safeParse({ ...base, title: 'x'.repeat(201) }).success).toBe(
+      false,
+    );
+    expect(CreateRequirementRequest.safeParse({ ...base, title: 'a\nb c' }).success).toBe(false);
+    expect(
+      CreateRequirementRequest.safeParse({ ...base, businessObjective: 'too short' }).success,
+    ).toBe(false);
+    expect(
+      CreateRequirementRequest.safeParse({ ...base, businessObjective: 'x'.repeat(4001) }).success,
+    ).toBe(false);
+    expect(CreateRequirementRequest.safeParse({ ...base, projectId: 'payments-api' }).success).toBe(
+      false,
+    );
+    expect(
+      CreateRequirementRequest.parse({ ...base, acceptanceCriteria: ['  Retries twice  '] })
+        .acceptanceCriteria,
+    ).toEqual(['Retries twice']);
+    expect(
+      CreateRequirementRequest.safeParse({ ...base, acceptanceCriteria: ['   '] }).success,
+    ).toBe(false);
+    expect(
+      CreateRequirementRequest.safeParse({ ...base, acceptanceCriteria: ['x'.repeat(1001)] })
+        .success,
+    ).toBe(false);
+    expect(
+      CreateRequirementRequest.safeParse({
+        ...base,
+        acceptanceCriteria: Array.from({ length: 20 }, (_, i) => `AC ${i}`),
+      }).success,
+    ).toBe(true);
+    expect(
+      CreateRequirementRequest.safeParse({
+        ...base,
+        acceptanceCriteria: Array.from({ length: 21 }, (_, i) => `AC ${i}`),
+      }).success,
+    ).toBe(false);
+    expect(CreateRequirementRequest.parse({ ...base, assigneeUserId: U }).assigneeUserId).toBe(U);
+    expect(CreateRequirementRequest.safeParse({ ...base, assigneeUserId: 'me' }).success).toBe(
+      false,
+    );
+  });
+
+  it('FR-007 RequirementListQuery defaults project to all, splits state CSV, accepts assignee me|unassigned|uuid, rejects state=FOO and 9 states, cursor ≤ 200', () => {
+    expect(RequirementListQuery.parse({})).toEqual({ project: 'all' });
+    expect(RequirementListQuery.parse({ state: 'READY, DRAFT' })).toEqual({
+      project: 'all',
+      state: ['READY', 'DRAFT'],
+    });
+    expect(RequirementListQuery.parse({ state: ['READY'] }).state).toEqual(['READY']);
+    expect(RequirementListQuery.parse({ project: P, assignee: 'me' })).toEqual({
+      project: P,
+      assignee: 'me',
+    });
+    expect(RequirementListQuery.parse({ assignee: 'unassigned' }).assignee).toBe('unassigned');
+    expect(RequirementListQuery.parse({ assignee: U }).assignee).toBe(U);
+    expect(RequirementListQuery.safeParse({ assignee: 'ada' }).success).toBe(false);
+    expect(RequirementListQuery.safeParse({ project: 'payments' }).success).toBe(false);
+    expect(RequirementListQuery.safeParse({ state: 'FOO' }).success).toBe(false);
+    expect(RequirementListQuery.safeParse({ state: 'READY,FOO' }).success).toBe(false);
+    expect(
+      RequirementListQuery.safeParse({ state: [...REQUIREMENT_STATES, 'DRAFT'].join(',') }).success,
+    ).toBe(false);
+    expect(RequirementListQuery.safeParse({ state: REQUIREMENT_STATES.join(',') }).success).toBe(
+      true,
+    );
+    expect(RequirementListQuery.safeParse({ cursor: 'x'.repeat(201) }).success).toBe(false);
+    expect('limit' in RequirementListQuery.parse({ limit: 500 } as never)).toBe(false);
+  });
+
+  const requirement = {
+    id: R,
+    externalId: 'req-seed-003',
+    project: { id: P, key: 'payments-api', name: 'Payments API' },
+    title: 'Retry queue for card declines',
+    state: 'NEEDS_CLARIFICATION',
+    source: 'jira',
+    externalRef: {
+      provider: 'jira',
+      key: 'PAY-231',
+      url: 'https://jira.example.invalid/browse/PAY-231',
+      updatedAt: T,
+    },
+    externalFlag: null,
+    externalFlaggedAt: null,
+    assignee: { id: U, name: 'Ada Approver' },
+    createdBy: { id: U, name: 'Ada Approver' },
+    createdAt: T,
+    updatedAt: T,
+    openQuestionCount: 2,
+    workflow: null,
+    href: `/requirements/${R}`,
+  };
+  const item = (i: number, kind = 'acceptance_criterion') => ({
+    id: `00000000-0000-7000-8000-${String(i + 1).padStart(12, '0')}`,
+    kind,
+    position: i + 1,
+    text: `Item ${i + 1}`,
+    aiGenerated: true,
+    source: 'agent:devin',
+  });
+  const detail = {
+    requirement,
+    businessObjective: 'Recover declined card payments automatically.',
+    analysis: {
+      observedAt: T,
+      summary: null,
+      acceptanceCriteria: [item(0)],
+      rules: [item(1, 'rule')],
+      openQuestions: [item(2, 'open_question'), item(3, 'open_question')],
+    },
+    submittedBy: { id: U, name: 'Ada Approver' },
+    submittedAt: T,
+    decidedBy: null,
+    decidedAt: null,
+    decisionReason: null,
+    actions: {
+      canSubmit: true,
+      canApprove: false,
+      canReject: true,
+      submitLabel: 'Resubmit for analysis',
+      reasons: ['Analysis has not finished'],
+    },
+    transitions: [
+      {
+        fromState: 'ANALYZING',
+        toState: 'NEEDS_CLARIFICATION',
+        actorType: 'agent',
+        actorName: 'devin',
+        reason: null,
+        occurredAt: T,
+      },
+    ],
+    audit: [],
+    generatedAt: T,
+  };
+
+  it('FR-009 Requirement requires a lowercase-free jira key, https url, a workflow ref or null, and href; RequirementDetail bounds analysis items (≤50/≤50/≤20), transitions ≤ 50, audit ≤ 20 and needs aiGenerated + source on every item', () => {
+    expect(Requirement.safeParse(requirement).success).toBe(true);
+    expect(
+      Requirement.safeParse({
+        ...requirement,
+        externalRef: { ...requirement.externalRef, key: 'pay-231' },
+      }).success,
+    ).toBe(false);
+    expect(
+      Requirement.safeParse({
+        ...requirement,
+        externalRef: {
+          ...requirement.externalRef,
+          url: 'http://jira.example.invalid/browse/PAY-231',
+        },
+      }).success,
+    ).toBe(false);
+    expect(Requirement.safeParse({ ...requirement, externalFlag: 'closed' }).success).toBe(true);
+    expect(Requirement.safeParse({ ...requirement, externalFlag: 'archived' }).success).toBe(false);
+    expect(Requirement.safeParse({ ...requirement, state: 'PAUSED' }).success).toBe(false);
+    expect(Requirement.safeParse({ ...requirement, source: 'github' }).success).toBe(false);
+    expect(Requirement.safeParse({ ...requirement, openQuestionCount: -1 }).success).toBe(false);
+    expect(Requirement.safeParse({ ...requirement, href: 'requirements/1' }).success).toBe(false);
+    expect(
+      Requirement.safeParse({
+        ...requirement,
+        state: 'IN_IMPLEMENTATION',
+        workflow: {
+          id: U,
+          externalId: 's500-d01',
+          state: 'RUNNING',
+          stage: { index: 4, count: 7, name: 'Implementation' },
+          href: `/workflows/${U}`,
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      Requirement.safeParse({
+        ...requirement,
+        workflow: { id: U, externalId: 's500-d01', state: 'DONE', stage: null, href: '/w' },
+      }).success,
+    ).toBe(false);
+
+    expect(RequirementDetail.safeParse(detail).success).toBe(true);
+    expect(AnalysisItem.safeParse(item(0)).success).toBe(true);
+    expect(AnalysisItem.safeParse({ ...item(0), aiGenerated: undefined }).success).toBe(false);
+    expect(AnalysisItem.safeParse({ ...item(0), source: undefined }).success).toBe(false);
+    expect(AnalysisItem.safeParse({ ...item(0), source: 'user:Ada' }).success).toBe(true);
+    expect(AnalysisItem.safeParse({ ...item(0), kind: 'note' }).success).toBe(false);
+    expect(AnalysisItem.safeParse({ ...item(0), position: 0 }).success).toBe(false);
+    expect(AnalysisItem.safeParse({ ...item(0), position: 51 }).success).toBe(false);
+    const many = (n: number, kind: string) => Array.from({ length: n }, (_, i) => item(i, kind));
+    expect(
+      RequirementDetail.safeParse({
+        ...detail,
+        analysis: { ...detail.analysis, acceptanceCriteria: many(50, 'acceptance_criterion') },
+      }).success,
+    ).toBe(true);
+    expect(
+      RequirementDetail.safeParse({
+        ...detail,
+        analysis: { ...detail.analysis, acceptanceCriteria: many(51, 'acceptance_criterion') },
+      }).success,
+    ).toBe(false);
+    expect(
+      RequirementDetail.safeParse({
+        ...detail,
+        analysis: { ...detail.analysis, rules: many(51, 'rule') },
+      }).success,
+    ).toBe(false);
+    expect(
+      RequirementDetail.safeParse({
+        ...detail,
+        analysis: { ...detail.analysis, openQuestions: many(21, 'open_question') },
+      }).success,
+    ).toBe(false);
+    expect(RequirementDetail.safeParse({ ...detail, analysis: null }).success).toBe(true);
+    expect(
+      RequirementDetail.safeParse({
+        ...detail,
+        transitions: Array.from({ length: 51 }, () => detail.transitions[0]),
+      }).success,
+    ).toBe(false);
+    expect(
+      RequirementDetail.safeParse({
+        ...detail,
+        transitions: [{ ...detail.transitions[0], actorType: 'robot' }],
+      }).success,
+    ).toBe(false);
+    expect(
+      RequirementDetail.safeParse({
+        ...detail,
+        actions: { ...detail.actions, submitLabel: 'Go' },
+      }).success,
+    ).toBe(false);
+    expect(RequirementIdParams.safeParse({ id: R }).success).toBe(true);
+    expect(RequirementIdParams.safeParse({ id: 'req-seed-003' }).success).toBe(false);
+  });
+
+  it('FR-009 RequirementListPage caps items at 50 and requires generatedAt/project/filters/nextCursor/total', () => {
+    const page = {
+      generatedAt: T,
+      project: 'all',
+      filters: { state: ['READY'], assignee: null },
+      items: [requirement],
+      nextCursor: null,
+      total: 1,
+    };
+    expect(RequirementListPage.safeParse(page).success).toBe(true);
+    expect(
+      RequirementListPage.safeParse({
+        ...page,
+        items: Array.from({ length: 50 }, () => requirement),
+      }).success,
+    ).toBe(true);
+    expect(
+      RequirementListPage.safeParse({
+        ...page,
+        items: Array.from({ length: 51 }, () => requirement),
+      }).success,
+    ).toBe(false);
+    expect(RequirementListPage.safeParse({ ...page, total: -1 }).success).toBe(false);
+    expect(RequirementListPage.safeParse({ ...page, nextCursor: 'abc' }).success).toBe(true);
+  });
+
+  it('FR-032 RejectRequirementRequest trims reason 1..500 and rejects blank or 501', () => {
+    expect(RejectRequirementRequest.parse({ reason: ' out of scope ' })).toEqual({
+      reason: 'out of scope',
+    });
+    expect(RejectRequirementRequest.safeParse({ reason: '   ' }).success).toBe(false);
+    expect(RejectRequirementRequest.safeParse({ reason: 'x'.repeat(501) }).success).toBe(false);
+    expect(RejectRequirementRequest.safeParse({}).success).toBe(false);
+  });
+
+  it('FR-003 WorkflowListQuery defaults project to all, requires a uuid requirement, splits state CSV of workflow states (≤ 9), coerces stage 1..7 and rejects stage 0/8', () => {
+    expect(WorkflowListQuery.parse({})).toEqual({ project: 'all' });
+    expect(WorkflowListQuery.parse({ requirement: R }).requirement).toBe(R);
+    expect(WorkflowListQuery.safeParse({ requirement: 'req-seed-005' }).success).toBe(false);
+    expect(WorkflowListQuery.parse({ state: 'RUNNING,BLOCKED' }).state).toEqual([
+      'RUNNING',
+      'BLOCKED',
+    ]);
+    expect(WorkflowListQuery.safeParse({ state: 'RUNNING,DONE' }).success).toBe(false);
+    expect(WorkflowListQuery.safeParse({ state: 'READY' }).success).toBe(false);
+    expect(
+      WorkflowListQuery.safeParse({ state: [...WORKFLOW_STATES, 'RUNNING'].join(',') }).success,
+    ).toBe(false);
+    expect(WorkflowListQuery.parse({ stage: '4' }).stage).toBe(4);
+    expect(WorkflowListQuery.safeParse({ stage: '0' }).success).toBe(false);
+    expect(WorkflowListQuery.safeParse({ stage: '8' }).success).toBe(false);
+    expect(WorkflowListQuery.safeParse({ stage: '2.5' }).success).toBe(false);
+    expect(WorkflowListQuery.safeParse({ cursor: 'x'.repeat(201) }).success).toBe(false);
+  });
+
+  it('FR-003 WorkflowListItem carries the FR-003 shape and WorkflowListPage caps items at 50', () => {
+    const wf = {
+      id: U,
+      externalId: 's500-d01',
+      title: 'Workflow 1',
+      project: { id: P, key: 'payments-api', name: 'Payments API' },
+      state: 'RUNNING',
+      stateObservedAt: T,
+      stage: { index: 4, count: 7, name: 'Implementation' },
+      agent: 'devin',
+      pullRequest: { url: 'https://github.com/acme/api/pull/1', number: 1, state: 'open' },
+      requirement: { id: R, title: 'Retry queue', href: `/requirements/${R}` },
+      startedAt: T,
+      finishedAt: null,
+      href: `/workflows/${U}`,
+    };
+    expect(WorkflowListItem.safeParse(wf).success).toBe(true);
+    expect(
+      WorkflowListItem.safeParse({
+        ...wf,
+        stage: null,
+        agent: null,
+        pullRequest: null,
+        requirement: null,
+        startedAt: null,
+      }).success,
+    ).toBe(true);
+    expect(WorkflowListItem.safeParse({ ...wf, state: 'DONE' }).success).toBe(false);
+    expect(WorkflowListItem.safeParse({ ...wf, href: 'workflows/1' }).success).toBe(false);
+    const page = {
+      generatedAt: T,
+      project: 'all',
+      filters: { requirement: null, state: ['RUNNING'], stage: null },
+      items: [wf],
+      nextCursor: null,
+      total: 1,
+    };
+    expect(WorkflowListPage.safeParse(page).success).toBe(true);
+    expect(
+      WorkflowListPage.safeParse({ ...page, items: Array.from({ length: 51 }, () => wf) }).success,
+    ).toBe(false);
+    expect(
+      WorkflowListPage.safeParse({ ...page, items: Array.from({ length: 50 }, () => wf) }).success,
+    ).toBe(true);
+  });
+
+  it('FR-036 RequirementAnalysisIngest requires agent/observedAt and the three arrays, bounds them at 50/50/20 lines of ≤ 1000, summary ≤ 400 optional', () => {
+    const ok = {
+      agent: 'devin',
+      observedAt: T,
+      acceptanceCriteria: ['Retries twice'],
+      rules: ['Never retry a hard decline'],
+      openQuestions: [],
+    };
+    expect(RequirementAnalysisIngest.parse(ok)).toEqual(ok);
+    expect(RequirementAnalysisIngest.parse({ ...ok, summary: ' ok ' }).summary).toBe('ok');
+    expect(RequirementAnalysisIngest.safeParse({ ...ok, summary: 'x'.repeat(401) }).success).toBe(
+      false,
+    );
+    expect(RequirementAnalysisIngest.safeParse({ ...ok, agent: undefined }).success).toBe(false);
+    expect(RequirementAnalysisIngest.safeParse({ ...ok, observedAt: 'now' }).success).toBe(false);
+    expect(RequirementAnalysisIngest.safeParse({ ...ok, rules: undefined }).success).toBe(false);
+    const n = (k: number) => Array.from({ length: k }, (_, i) => `line ${i}`);
+    expect(RequirementAnalysisIngest.safeParse({ ...ok, acceptanceCriteria: n(50) }).success).toBe(
+      true,
+    );
+    expect(RequirementAnalysisIngest.safeParse({ ...ok, acceptanceCriteria: n(51) }).success).toBe(
+      false,
+    );
+    expect(RequirementAnalysisIngest.safeParse({ ...ok, rules: n(51) }).success).toBe(false);
+    expect(RequirementAnalysisIngest.safeParse({ ...ok, openQuestions: n(20) }).success).toBe(true);
+    expect(RequirementAnalysisIngest.safeParse({ ...ok, openQuestions: n(21) }).success).toBe(
+      false,
+    );
+    expect(RequirementAnalysisIngest.safeParse({ ...ok, rules: ['x'.repeat(1001)] }).success).toBe(
+      false,
+    );
+    expect(RequirementAnalysisIngest.safeParse({ ...ok, rules: ['a\nb'] }).success).toBe(false);
+  });
+
+  it('FR-036 RequirementIngestResult carries outcome accepted|stale and a requirement state', () => {
+    expect(
+      RequirementIngestResult.safeParse({ outcome: 'accepted', id: R, state: 'READY' }).success,
+    ).toBe(true);
+    expect(
+      RequirementIngestResult.safeParse({ outcome: 'stale', id: R, state: 'NEEDS_CLARIFICATION' })
+        .success,
+    ).toBe(true);
+    expect(
+      RequirementIngestResult.safeParse({ outcome: 'accepted', id: R, state: 'RUNNING' }).success,
+    ).toBe(false);
+    expect(RequirementIngestResult.safeParse({ outcome: 'accepted', id: R }).success).toBe(false);
+  });
+
+  it('FR-008 JiraWebhookEvent accepts created/updated/deleted payloads with string or ADF description and unknown fields, rejects a lowercase issue key', () => {
+    const issue = {
+      id: '10001',
+      key: 'PAY-241',
+      self: 'https://jira.example.invalid/rest/api/2/issue/10001',
+      fields: {
+        summary: 'Retry queue',
+        description: { type: 'doc', version: 1, content: [] },
+        updated: '2026-09-14T09:00:00.000+0000',
+        project: { key: 'PAY', name: 'Payments' },
+        status: { name: 'To Do', statusCategory: { key: 'new' } },
+        assignee: { emailAddress: 'approver1@cdevi.demo', displayName: 'Ada' },
+        customfield_10001: 'anything',
+      },
+    };
+    for (const webhookEvent of ['jira:issue_created', 'jira:issue_updated', 'jira:issue_deleted'])
+      expect(
+        JiraWebhookEvent.safeParse({ webhookEvent, timestamp: 1_757_840_400_000, issue }).success,
+      ).toBe(true);
+    expect(
+      JiraWebhookEvent.safeParse({
+        webhookEvent: 'jira:issue_updated',
+        issue: { ...issue, fields: { ...issue.fields, description: 'plain text' } },
+        changelog: { items: [] },
+      }).success,
+    ).toBe(true);
+    expect(
+      JiraWebhookEvent.safeParse({
+        webhookEvent: 'jira:issue_created',
+        issue: { ...issue, fields: { ...issue.fields, description: null, assignee: null } },
+      }).success,
+    ).toBe(true);
+    expect(
+      JiraWebhookEvent.safeParse({
+        webhookEvent: 'jira:issue_created',
+        issue: { ...issue, key: 'pay-241' },
+      }).success,
+    ).toBe(false);
+    expect(
+      JiraWebhookEvent.safeParse({
+        webhookEvent: 'jira:issue_created',
+        issue: { ...issue, fields: { ...issue.fields, project: { name: 'Payments' } } },
+      }).success,
+    ).toBe(false);
+    expect(JiraWebhookEvent.safeParse({ webhookEvent: 'jira:issue_created' }).success).toBe(false);
+    expect(
+      JiraWebhookEvent.safeParse({
+        webhookEvent: 'jira:issue_created',
+        issue: { ...issue, fields: { ...issue.fields, assignee: { emailAddress: 'nope' } } },
+      }).success,
+    ).toBe(false);
+    expect(JiraWebhookResult.safeParse({ outcome: 'flagged', requirementId: R }).success).toBe(
+      true,
+    );
+    expect(JiraWebhookResult.safeParse({ outcome: 'ignored', requirementId: null }).success).toBe(
+      true,
+    );
+    expect(JiraWebhookResult.safeParse({ outcome: 'deleted', requirementId: R }).success).toBe(
+      false,
+    );
+  });
+
+  it('FR-009 AUDIT_ACTIONS gains the five requirement actions', () => {
+    for (const a of [
+      'requirement.submitted',
+      'requirement.approved',
+      'requirement.rejected',
+      'requirement.flagged',
+      'requirement.workflow_created',
+    ])
+      expect(AUDIT_ACTIONS).toContain(a);
+    expect(splitCsv(' a, b ,,c ')).toEqual(['a', 'b', 'c']);
+    expect(splitCsv(['a'])).toEqual(['a']);
+    expect(splitCsv(undefined)).toBeUndefined();
   });
 });
