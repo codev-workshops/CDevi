@@ -145,7 +145,9 @@ test.describe('Agent Run Inspector — Independent Test (specs/001 US5)', () => 
     await expect(header.locator('time[datetime^="2026-"]').first()).toHaveText(
       /^2026-09-1\d \d\d:\d\d UTC \(\d+ [a-z]+ ago\)$/,
     );
-    await expect(header.locator('time[datetime^="PT"]')).toHaveText(/\d+ h|\d+ min \d+ s/);
+    // Elapsed is wall clock minus the fixed seed start (2026-09-12 18:40 UTC), so the
+    // humanDuration form drifts from "N h" to "N d" as the calendar moves on.
+    await expect(header.locator('time[datetime^="PT"]')).toHaveText(/\d+ d|\d+ h|\d+ min \d+ s/);
     await expect(header).toContainText('Review complete; waiting for approval to open the PR.');
     await expect(page.locator('main .cd-saffron')).toHaveCount(0);
 
