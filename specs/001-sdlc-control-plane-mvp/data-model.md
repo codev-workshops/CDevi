@@ -806,3 +806,239 @@ Every `audit_events` row written above has `risk_level = NULL` (§27).
 ## 30. Seed additions (research R44)
 
 `packages/db/src/seed/requirements.ts` exports `buildRequirements(base)`, `EXPECTED_REQUIREMENTS`, `REQUIREMENT_SHOWCASE = { draft: 'req-seed-001', analyzing: 'req-seed-002', needsClarification: 'req-seed-003', ready: 'req-seed-004', approved: 'req-seed-005', inImplementation: 'req-seed-006', completed: 'req-seed-007', rejected: 'req-seed-008', jira: 'req-seed-003' }` and `JIRA_MAPPING`. `seed/index.ts` inserts, after `dashboard-demo` and **before** the final `TRUNCATE inbox_change_log RESTART IDENTITY` (so the `inbox_changed_requirements` rows the inserts produce are discarded and `select count(*) from inbox_change_log` stays 0 — seed.test.ts lines 185/220 unchanged): 1 mapping, 8 requirements (fixed `created_at = base − (9 − n) days`), 28 analysis items (26 AI), the `requirement_transitions` history per row (26 rows: 001 → 1, 002 → 2, 003 → 3, 004 → 3, 005 → 4, 006 → 5 (last row `actor_type = 'system'`, `actor_name = 'workflow'`), 007 → 6 (…→ IN_IMPLEMENTATION → COMPLETED, the last two `system`), 008 → 2 (DRAFT → REJECTED); `EXPECTED_REQUIREMENTS.transitions = 26`), and three `UPDATE workflows SET requirement_id` links (first `QUEUED` S-500 by `external_id` ← 005, `SHOWCASE_WAITING` ← 006, first `COMPLETED` S-500 by `external_id` ← 007). **No `audit_events` rows are seeded** — the seed records history in `requirement_transitions` only, exactly as the US2 seed records `workflow_transitions` and leaves `audit_events` empty; `seed.test.ts` `SC-006 seeding … leaves audit_events empty` (line 270) and the dashboard-demo `count(*) from audit_events = 0` (line 551) stay true as written. The seeded requirements therefore show an empty `audit` array on their detail (the transitions list carries the history); audit rows appear only from runtime actions. No other table changes; `EXPECTED_BUCKETS`, `EXPECTED_SHOWCASE`, `EXPECTED_DASHBOARD` untouched.
+
+---
+
+# Part E — User Story 5 (Agent Run Inspector): §31–§37
+
+> Appended for `feature/US5`. §1–§30 above are unchanged. Source: the approved US5 plan (decisions confirmed 2026-09-15) and research R46–R55. Shapes below are the binding ones for the contracts and database work; the only addition beyond the source plan is the `columnCounts` test edit in §31 Notes (a consequence of `agent_runs.steps`).
+
+## 31. Migration `0006_agent_decisions.sql` (research R46, R48, R53)
+
+```sql
+-- specs/001 US5 (Part E): agent decisions with evidence, structured run progress. RLS and grants follow 0001–0005.
+-- Run as `migrator`.
+
+CREATE TYPE confidence_level AS ENUM ('LOW','MEDIUM','HIGH');
+CREATE TYPE policy_outcome   AS ENUM ('ALLOWED','APPROVAL_REQUIRED','DENIED');
+
+-- §31.1 structured progress (R48): runtime-provided checklist, ≤ 20 steps { label ≤ 120, status }
+ALTER TABLE agent_runs ADD COLUMN steps jsonb NOT NULL DEFAULT '[]'
+  CHECK (jsonb_typeof(steps) = 'array' AND jsonb_array_length(steps) <= 20);
+
+-- §31.2 agent_decisions (R46): one row per decision of one run; evidence refs are leaf jsonb (≤ 20)
+CREATE TABLE agent_decisions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id uuid NOT NULL REFERENCES organizations(id),
+  project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  workflow_id uuid NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+  stage_id uuid NOT NULL REFERENCES workflow_stages(id) ON DELETE CASCADE,
+  agent_run_id uuid NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+  position smallint NOT NULL CHECK (position BETWEEN 1 AND 50),
+  decided_at timestamptz NOT NULL,
+  action text NOT NULL CHECK (char_length(action) BETWEEN 1 AND 200),
+  reason text NOT NULL CHECK (char_length(reason) BETWEEN 1 AND 600),
+  confidence confidence_level NOT NULL,
+  policy_outcome policy_outcome NOT NULL,
+  policy_ref text CHECK (char_length(policy_ref) <= 120),      -- NULL until US8 names policies
+  risk_level risk_level,                                        -- OPTIONAL in US5; mandatory with US8 (R46)
+  evidence jsonb NOT NULL DEFAULT '[]'
+    CHECK (jsonb_typeof(evidence) = 'array' AND jsonb_array_length(evidence) <= 20),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (agent_run_id, position)
+);
+CREATE INDEX agent_decisions_run_idx ON agent_decisions (agent_run_id, position);
+
+-- §31.3 live updates (R53): decision changes ride inbox_changed with the run's workflow_id.
+-- INSERT OR UPDATE OR DELETE because the ingest replaces the set whole (a DELETE-only snapshot must also notify);
+-- the row that fires carries workflow_id itself, so no lookup is needed. Statement-level to emit ONE row per replace.
+CREATE FUNCTION notify_agent_decision_changed() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE v_seq bigint; r record;
+BEGIN
+  FOR r IN
+    SELECT DISTINCT organization_id, project_id, workflow_id FROM new_table
+    UNION SELECT DISTINCT organization_id, project_id, workflow_id FROM old_table
+  LOOP
+    INSERT INTO inbox_change_log (organization_id, project_id, workflow_id, requirement_id)
+      VALUES (r.organization_id, r.project_id, r.workflow_id, NULL) RETURNING seq INTO v_seq;
+    PERFORM pg_notify('inbox_changed', json_build_object('seq', v_seq, 'organizationId', r.organization_id,
+      'projectId', r.project_id, 'workflowId', r.workflow_id, 'requirementId', NULL)::text);
+  END LOOP;
+  RETURN NULL;
+END $$;
+CREATE TRIGGER inbox_changed_agent_decisions_ins AFTER INSERT ON agent_decisions
+  REFERENCING NEW TABLE AS new_table FOR EACH STATEMENT EXECUTE FUNCTION notify_agent_decision_changed();
+CREATE TRIGGER inbox_changed_agent_decisions_upd AFTER UPDATE ON agent_decisions
+  REFERENCING OLD TABLE AS old_table NEW TABLE AS new_table FOR EACH STATEMENT EXECUTE FUNCTION notify_agent_decision_changed();
+CREATE TRIGGER inbox_changed_agent_decisions_del AFTER DELETE ON agent_decisions
+  REFERENCING OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION notify_agent_decision_changed();
+
+-- §31.4 RLS policy (same shape as 0001/0002; ENABLE/DISABLE is owned by the CDEVI_RLS loop in migrate.ts, whose
+-- RLS_TABLES gains 'agent_decisions') and grants — like 0002 PLUS DELETE, because the ingest replaces the set whole
+CREATE POLICY agent_decisions_org_isolation ON agent_decisions
+  USING (organization_id = current_setting('app.organization_id', true)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON agent_decisions TO app_user;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_user;
+```
+
+**Trigger naming.** The source plan names one trigger `inbox_changed_agent_decisions`. Postgres transition tables (`REFERENCING … TABLE`) require one trigger per event, so the migration creates the three statement-level triggers above (`_ins`, `_upd`, `_del`) — all with the `inbox_changed_` prefix so the existing `inbox_changed_%` assertions and the LISTEN client are unaffected. If the implementer prefers the single name, the alternative is one `FOR EACH ROW` trigger `inbox_changed_agent_decisions AFTER INSERT OR UPDATE OR DELETE` using `COALESCE(NEW, OLD)` — correct but emitting up to 100 `inbox_change_log` rows per replace (the SSE debounce absorbs them). Either is acceptable; the tests in T130 assert the prefix list, the `inbox_change_log` row(s) carry the run's `workflow_id`, and exactly one `inbox.changed` SSE event is observed after debounce.
+
+`agent_decisions.evidence[]` element shape (validated by the contract, §32 `EvidenceRef`; the `CHECK` only bounds the array): `{ kind: 'file'|'ticket'|'artifact'|'url'|'pullRequest', label ≤ 200, href?: DecisionLink, locator? ≤ 200, accessible: boolean }`.
+
+`agent_runs.steps[]` element shape (contract §32 `RunStep`): `{ label ≤ 120, status: 'completed'|'running'|'pending'|'failed' }`.
+
+**Existing tests that 0006 changes** (the `db` project applies every migration in `beforeAll`; same pattern as §22 for 0005, edited tests-first in T130): (i) `packages/db/tests/schema.test.ts` — the `inbox_changed_%` trigger list asserted with `toEqual` gains the decision trigger name(s) (`'inbox_changed_agent_decisions_del'`, `'inbox_changed_agent_decisions_ins'`, `'inbox_changed_agent_decisions_upd'` — sorted before `inbox_changed_agent_runs`; or the single `'inbox_changed_agent_decisions'` if the row-level alternative is chosen); (ii) `schema.test.ts` `SC-007 0004 adds no tables …` — the `pg_tables` expectation becomes `[...TABLES_AFTER_0003, ...TABLES_ADDED_BY_0005, ...TABLES_ADDED_BY_0006].sort()` with `TABLES_ADDED_BY_0006 = ['agent_decisions']`; (iii) **in addition to the two the source plan anticipated**, the same test's `columnCounts` map pins `agent_runs: 15`, which `steps` makes **16** — the map entry is updated (the 0004 SQL-text assertions and everything else are untouched). No other US1–US4 test reads the trigger list, `pg_tables` or the column counts. These three edits are the **only** changes to existing assertions in US5.
+
+Mirrored in `packages/db/src/schema.ts`: `confidenceLevel`, `policyOutcome` pg enums; `agentRuns.steps` (`jsonb().notNull().default([])`); `agentDecisions` table with every column above, the unique constraint and `agent_decisions_run_idx`. `packages/db/src/migrate.ts` `RLS_TABLES` gains `agent_decisions`. Rollback: drop the three triggers and `notify_agent_decision_changed()`, the policy, the table, `agent_runs.steps`, the two enums.
+
+## 32. Agent run shapes (`packages/contracts/src/agent-runs.ts`, Zod; `ingest.ts` and `workflow-detail.ts` extended) — research R46–R50, R52
+
+```ts
+// agent-runs.ts
+export const CONFIDENCE_LEVELS = ['LOW', 'MEDIUM', 'HIGH'] as const;
+export const ConfidenceLevel = z.enum(CONFIDENCE_LEVELS);
+export const POLICY_OUTCOMES = ['ALLOWED', 'APPROVAL_REQUIRED', 'DENIED'] as const;
+export const PolicyOutcome = z.enum(POLICY_OUTCOMES);
+export const EVIDENCE_KINDS = ['file', 'ticket', 'artifact', 'url', 'pullRequest'] as const;
+export const EvidenceKind = z.enum(EVIDENCE_KINDS);
+export const RUN_STEP_STATUSES = ['completed', 'running', 'pending', 'failed'] as const;
+export const RunStepStatus = z.enum(RUN_STEP_STATUSES);
+
+export const EvidenceRef = z.object({
+  kind: EvidenceKind,
+  label: line(200),
+  href: DecisionLink.optional(),          // decisions.ts (US2): http(s) URL or app-relative path, ≤ 500
+  locator: line(200).optional(),          // e.g. "src/auth/limiter.ts:42", "PAY-1207", "s500-001-diff"
+  accessible: z.boolean(),                // runtime's statement; false or no href → "access restricted" (R49)
+}).strict();
+
+export const RunStep = z.object({ label: line(120), status: RunStepStatus }).strict();
+
+export const AgentDecision = z.object({
+  id: Uuid,
+  position: z.number().int().min(1).max(50),
+  decidedAt: IsoDateTime,
+  action: line(200),
+  reason: line(600),                      // the agent's stated justification — a claim (DR-03); the ONLY prose field
+  confidence: ConfidenceLevel,
+  policyOutcome: PolicyOutcome,
+  policyRef: line(120).nullable(),
+  riskLevel: RiskLevel.nullable(),        // OPTIONAL in US5 (R46)
+  evidence: z.array(EvidenceRef).max(20),
+});                                        // no reasoning / chainOfThought field exists (FR-018, R50)
+
+export const AgentRunDetail = z.object({
+  id: Uuid,
+  externalId: ExternalId,
+  agent: line(80),
+  model: line(80).nullable(),
+  state: WorkflowState.exclude(['QUEUED']),
+  startedAt: IsoDateTime,
+  finishedAt: IsoDateTime.nullable(),
+  durationMs: z.number().int().min(0),   // runDuration(startedAt, finishedAt, now) computed by the API at read time
+  summary: line(400).nullable(),         // agent claim (Message variant="summary")
+  workflow: z.object({ id: Uuid, externalId: ExternalId, title: line(200) }),
+  stage: z.object({ position: z.number().int().min(1).max(20), name: line(60) }),
+  steps: z.array(RunStep).max(20),
+  timeline: z.array(AgentRunEvent).max(50),   // workflow-detail.ts (US1), ordered by `at` ascending
+  decisions: z.array(AgentDecision).max(50),  // ordered by position ascending
+});
+export const AgentRunIdParams = z.object({ id: Uuid });
+
+// ingest.ts EXTENDED
+export const AgentRunUpsert = z.object({ …existing fields…, steps: z.array(RunStep).max(20).default([]) });  // R48
+export const AgentDecisionIngest = z.object({
+  position: z.number().int().min(1).max(50),
+  decidedAt: IsoDateTime,
+  action: line(200),
+  reason: line(600),
+  confidence: ConfidenceLevel,
+  policyOutcome: PolicyOutcome,
+  policyRef: line(120).nullable().optional(),
+  riskLevel: RiskLevel.nullable().optional(),
+  evidence: z.array(EvidenceRef).max(20).default([]),
+}).strict();                                                    // unknown keys (chainOfThought, reasoning, …) → 400 (R50)
+export const AgentDecisionsIngest = z.object({
+  observedAt: IsoDateTime,                                      // watermark (§36)
+  decisions: z.array(AgentDecisionIngest).max(50),              // positions must be unique → 400 otherwise
+}).strict();
+export const AgentDecisionsIngestResult = z.object({ result: z.enum(['accepted', 'stale']), count: z.number().int().min(0).max(50) });
+
+// workflow-detail.ts EXTENDED (additive — every existing field unchanged)
+export const StageAgentRun = z.object({ id: Uuid, agent: line(80), state: WorkflowState.exclude(['QUEUED']), stagePosition: z.number().int().min(1).max(20) });
+export const WorkflowStageView = z.object({ …existing fields…, agentRuns: z.array(StageAgentRun).max(20).default([]) });  // the source plan's "StageDetail.agentRuns"
+```
+
+Rules: `line(n)` is the existing trimmed non-empty helper in `common.ts`; `Uuid`, `IsoDateTime`, `ExternalId`, `RiskLevel`, `WorkflowState`, `AgentRunEvent`, `DecisionLink` are the existing schemas. `AgentRunDetail` is the OpenAPI component `AgentRunDetail`; `AgentDecisionsIngest` and `AgentDecisionsIngestResult` are registered as components; all exported from `src/index.ts`. No schema in this section has a field for private reasoning, and `.strict()` on the two ingest objects rejects any attempt to add one at the boundary; `AgentRunDetail` is not `.strict()` (a read model — the API constructs it) but has no such field either.
+
+## 33. Routes (research R47, R52, R55)
+
+| Route | Auth | Request | Response | Problems |
+|-------|------|---------|----------|----------|
+| `GET /agent-runs/{id}` | session (`requireUser`), `visibleProjects` | `AgentRunIdParams` | 200 `AgentRunDetail`; `Server-Timing: db;dur=…`, `Cache-Control: no-store` | 400 `validation-failed` (non-uuid id); 401 `unauthenticated`; **404 `not-found`** when the run does not exist **or** belongs to a project the user cannot see (existence is not leaked — no 403 on this route) |
+| `PUT /ingest/agent-runs/{externalId}/decisions` | ingestion principal (`requirePrincipal`) | `AgentDecisionsIngest` (`.strict()`) | 200 `AgentDecisionsIngestResult` `{ result: 'accepted' \| 'stale', count }` | 400 `validation-failed` (schema, > 50 decisions, > 20 evidence refs, duplicate `position`, **any unknown key** — `errors[].pointer` names the key; the request body is never echoed); 401 `unauthenticated`; 403 `forbidden` (principal's project ≠ run's project); 404 `not-found` (unknown `externalId` in the principal's organization); 409 `stale-terminal-run` (run `COMPLETED`/`CANCELLED`/`FAILED` **and** `observedAt` older than the watermark — §36) |
+| `PUT /ingest/agent-runs/{externalId}` (EXTENDED) | ingestion principal | `AgentRunUpsert` + optional `steps` ≤ 20 | unchanged | unchanged (+ 400 when `steps` exceeds bounds) |
+| `GET /workflows/{id}` (EXTENDED, additive) | unchanged | unchanged | `stages[].agentRuns: StageAgentRun[]` ≤ 20 per stage, ordered by `started_at` descending | unchanged |
+
+All Problems are `application/problem+json` with `type`, `title`, `status`, `detail`, `instance` and never carry SQL, stack traces, credentials or the request body. Every route is registered with its Zod schema through `fastify-type-provider-zod`; the OpenAPI fragment (`contracts/openapi.yaml`) is regenerated from `src/openapi.ts` with tag `agent-runs` and title "… (specs/001 US1–US5)".
+
+## 34. Pure rules (`packages/contracts/src/agent-run-model.ts`, zod-free, subpath `@cdevi/contracts/agent-run-model`) — research R48, R49, R51, R54
+
+```ts
+export const STALE_AFTER_MS = 30 * 60 * 1000;
+
+/** finished − started, or now − started while unfinished; never negative. */
+export function runDuration(startedAt: string, finishedAt: string | null, now: Date): number;
+
+/** 'stale' when state ∈ {RUNNING, RETRYING} and (last timeline `at` ?? startedAt) is > STALE_AFTER_MS before now; else 'active'. */
+export function runFreshness(run: Pick<AgentRunDetail, 'state' | 'startedAt' | 'timeline'>, now: Date): 'active' | 'stale';
+
+/** Counts per status; every key present (0 when absent). */
+export function stepsSummary(steps: readonly RunStep[]): { completed: number; running: number; pending: number; failed: number };
+
+/** ref.href when accessible === true and href is present; otherwise null (render "access restricted", never <a>). */
+export function evidenceHref(ref: EvidenceRef): string | null;
+
+export const POLICY_OUTCOME_WORDS: Record<PolicyOutcome, string> = { ALLOWED: 'allowed', APPROVAL_REQUIRED: 'approval required', DENIED: 'denied' };
+export const CONFIDENCE_WORDS: Record<ConfidenceLevel, string> = { LOW: 'low', MEDIUM: 'medium', HIGH: 'high' };
+export const EVIDENCE_KIND_WORDS: Record<EvidenceKind, string> = { file: 'file', ticket: 'ticket', artifact: 'artifact', url: 'link', pullRequest: 'pull request' };
+
+export function agentRunHref(id: string): string;        // `/agents/runs/${id}`
+export function decisionAnchor(position: number): string; // `#decision-${position}`
+```
+
+Rules: the file imports only `type`s from `./agent-runs` (no zod at runtime — the `check:size` budget for the route depends on it); `runFreshness` is the **only** source of the stale indicator (the API does not compute it — R54); `runDuration` is used by the API for `durationMs` and by the web for the 1 s ticker while `finishedAt` is null; the word tables are the **only** source of the confidence/policy/kind words shown in `Pill`s (DR-01 — never typed in TSX). Presentation mapping (web, not in this module): `ALLOWED → Pill variant="done"`, `APPROVAL_REQUIRED → "wait"`, `DENIED → "fail"`; confidence → `"neutral"`; step `completed → Step state="done"`, `running → "current"`, `pending → "todo"`, `failed → "todo"` + `Pill variant="fail"` "failed".
+
+## 35. Transactions and read-model rules (research R52)
+
+| Operation | Isolation | Steps |
+|-----------|-----------|-------|
+| `GET /agent-runs/{id}` | `REPEATABLE READ` (read only) | (1) run + workflow + stage in one join, filtered by `organization_id` and `project_id IN visibleProjects` (0 rows → 404); (2) `SELECT … FROM agent_decisions WHERE agent_run_id = $1 ORDER BY position` (uses `agent_decisions_run_idx`); (3) *optional* nothing — **≤ 3 statements**, enforced by a test that counts statements through the `pg` client wrapper (`SC-007`) |
+| `GET /workflows/{id}` (extended) | unchanged (`REPEATABLE READ`) | + one statement `SELECT id, agent, state, stage_id FROM agent_runs WHERE workflow_id = $1 ORDER BY started_at DESC` grouped per stage in code, ≤ 20 kept per stage |
+
+Bounds enforced at the read boundary (the API truncates nothing — the writes are bounded, so the reads never exceed): `timeline ≤ 50`, `steps ≤ 20`, `decisions ≤ 50`, `evidence ≤ 20` per decision, `agentRuns ≤ 20` per stage. `durationMs = runDuration(startedAt, finishedAt, app.clock.now())` (the fixed clock in tests). The response carries `Server-Timing: db;dur=<ms>` for the whole transaction, asserted ≤ 150 ms p95 over 20 calls at the SC-007 fixture (one run with 50 timeline × 240 chars, 20 steps, 50 decisions × 20 evidence refs) and `content-length ≤ 48 KB` there. Reads write nothing: no `audit_events`, no `workflow_transitions`, no `ingestion_log` (R55).
+
+## 36. Ingestion rules — `PUT /ingest/agent-runs/{externalId}/decisions` (research R47, R50)
+
+One transaction (default isolation), in order:
+
+1. **Principal scope**: resolve the run by `(organization_id = principal.organization_id, external_id)` → 404 when absent; the principal's project scope must include the run's `project_id` → 403 otherwise (`ingestion_log outcome='forbidden'`, as existing routes do).
+2. **Lock**: `SELECT id, state, project_id, workflow_id, stage_id FROM agent_runs WHERE id = $1 FOR UPDATE`.
+3. **Watermark**: the watermark is the `observedAt` of the latest **accepted** `ingestion_log` row for `route = 'PUT /ingest/agent-runs/{externalId}/decisions'` and this `target_external_id` (stored in `detail` as `observedAt=<ISO>`; no new column — the source plan's "watermark vs `ingestion_log`"). `observedAt ≤ watermark` → if the run's `state ∈ {COMPLETED, CANCELLED, FAILED}` → **409 `stale-terminal-run`** (a late snapshot for a finished run is an integration fault worth surfacing); otherwise **200 `{ result: 'stale', count: <existing count> }`** with an `ingestion_log outcome='stale'` row and no change.
+4. **Replace whole**: `DELETE FROM agent_decisions WHERE agent_run_id = $1`; one batch `INSERT … VALUES (…) × n` with `organization_id, project_id, workflow_id, stage_id` copied from the locked run and `position, decided_at, action, reason, confidence, policy_outcome, policy_ref, risk_level, evidence` from the payload (`evidence` stored exactly as validated — `EvidenceRef` is `.strict()`, so nothing unvalidated reaches the row). The statement-level triggers (§31.3) write `inbox_change_log` with the run's `workflow_id` and `pg_notify`.
+5. **Log**: `ingestion_log (principal_id, route, target_external_id, outcome='accepted', detail='observedAt=<ISO> count=<n>')`.
+6. **Respond**: `200 { result: 'accepted', count: n }`.
+
+Validation happens before step 1 (Fastify + Zod): schema errors, `decisions.length > 50`, any `evidence.length > 20`, duplicate `position`, `label`/`reason`/`action` bounds and **any unknown key at either level** → 400 `validation-failed` with `errors[] = { pointer, message }` and **no echo of the offending value or body** (`message` for an unknown key is "Unrecognized key" — the key name appears in `pointer`, the value never). An empty `decisions: []` is a valid snapshot (the run made no decisions yet) and clears the set. `PUT /ingest/agent-runs/{externalId}` (existing) gains `steps` under its existing watermark and stale rules unchanged; a run upsert that omits `steps` keeps the stored value? **No** — `steps` defaults to `[]` in the schema, and the upsert writes the payload as the snapshot (replace-whole, like `timeline`), so a runtime that reports steps must send them on every upsert (documented in AGENTS.md by T151). Budget: ≤ 200 ms p95 for 50 decisions × 20 evidence refs, asserted in `ingest-decisions.test.ts`.
+
+## 37. Seed additions (research R55) — `packages/db/src/seed/agent-runs.ts` (NEW), `seed/index.ts` (EXTENDED)
+
+No new workflows, stages, runs, artifacts, test runs, approvals, clarifications or requirements: `EXPECTED_SHOWCASE` (2/14/13/10/5), `EXPECTED_DASHBOARD` (24 workflows, 18 active, 4 approvals, 2 clarifications, 43 stages, 44 runs, 6 test runs) and every US2/US4 `EXPECTED_*` figure are unchanged and re-asserted.
+
+| Target run | Change |
+|------------|--------|
+| `s500-d05-r1` — the Dashboard showcase **RUNNING** run (`dashboard-demo`, stage 2 "Analysis"; the only seeded RUNNING runs are `s500-d05…d08-r1` and `s500-d11-r1`) | `steps` (6): "Read requirement and linked tickets" `completed`, "Map affected services" `completed`, "Draft impact analysis" `completed`, "Cross-check with policy catalogue" `running`, "Write acceptance criteria" `pending`, "Publish analysis artifact" `pending`. **3 decisions**: (1) `ALLOWED`, `HIGH`, action "Read the payments service repository", reason "Impact analysis needs the current limiter implementation", evidence `file` `src/payments/limiter.ts` (accessible, `href` to the repository file URL) + `ticket` (accessible, `https://jira.acme.example/browse/…`); (2) `APPROVAL_REQUIRED`, `MEDIUM`, `riskLevel: 'MEDIUM'`, action "Plan a schema change to `payment_attempts`", reason "Adds a nullable column; migration requires an owner's approval under the data-change policy", `policyRef: 'data-change/schema'`, evidence `artifact` (accessible, `href` = `/workflows/{workflow.id}#artifact-…` resolved at seed time) + `url` (design doc, accessible); (3) `DENIED`, `HIGH`, action "Fetch production customer records for realistic fixtures", reason "Production PII is not permitted in fixtures; synthetic data will be used instead", `policyRef: 'data-access/pii'`, evidence `url` with `accessible: false` (label "Production data warehouse query", no `href`) — the **restricted** evidence |
+| `s500-001-r8` — **COMPLETED** run on `s500-001` (`payments-api`, stage 6 "Review", summary "Prepared the code diff and PR description.") | **2 decisions**: (1) `ALLOWED`, `HIGH`, action "Generate the diff and PR description from the reviewed changes", reason "All stage-5 test suites passed after the retry", evidence `artifact` (`s500-001-diff`, accessible, app-relative href to the Workflow Detail artifact) + `pullRequest` (accessible, `https://git.cdevi.demo/payments-api/pull/512`); (2) `APPROVAL_REQUIRED`, `MEDIUM`, action "Open the pull request", reason "Opening a PR into main requires human approval for this repository", `policyRef: 'delivery/pr-open'`, evidence `ticket` (accessible) |
+| `s500-clr-01` (clarification showcase, US2) | `links.agentRun` set to `agentRunHref(<uuid of s500-d05-r1>)` by an `UPDATE clarifications SET links = links \|\| jsonb_build_object('agentRun', $1)` after runs are inserted (uuids are generated at insert). **Note for the parent session**: the clarification's own workflow has no seeded run and adding one is forbidden by the "no new runs" rule, so the link deliberately targets the RUNNING showcase run of another workflow — a demo cross-link. If a same-workflow link is preferred, the alternative is one new run on the clarification's workflow, which changes `EXPECTED_SHOWCASE.runs`/`agent_runs` count assertions (not done in US5) |
+
+`EXPECTED_AGENT_DECISIONS = { total: 5, runsWithDecisions: 2, approvalRequired: 2, denied: 1, restrictedEvidence: 1, withRiskLevel: 1 }` exported from `seed/agent-runs.ts` and asserted in `packages/db/tests/seed.test.ts` (`FR-017 seed decisions …`). `seed/index.ts`: `TRUNCATE` list gains `agent_decisions` (before `agent_runs`, or rely on CASCADE); the `agent_runs` INSERT carries `steps` (`'[]'` for every run but `s500-d05-r1`); `agent_decisions` are inserted after runs with `agent_run_id`, `workflow_id`, `stage_id`, `project_id`, `organization_id` resolved from the inserted run. Every seeded `decidedAt` lies between the run's `startedAt` and `finishedAt ?? base` and every timeline stays ≤ 50.

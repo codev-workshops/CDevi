@@ -569,3 +569,94 @@ Added per DESIGN.md §8 in tasks 9d: tokens + component + test (behaviour and `e
 - §4 interaction table: "Requirements" → landed (`GET/POST /api/requirements`, `GET /api/requirements/{id}`, `POST …/submit|approve|reject`); "Jira (inbound)" → `POST /api/integrations/jira/webhook`; "Agent runtime → analysis" → `PUT /api/ingest/requirements/{externalId}/analysis`; "Workflow list" → `GET /api/workflows` (consumed by the Workflow Center later).
 - §6 (query contracts for placeholder screens): `/workflows` now has a live API behind it (`project`, `requirement`, `state`, `stage`, `cursor`); `hasPr`/`intervention` remain to be added by the Workflow Center story.
 - §8 repository layout: `packages/db/migrations/0005_requirements.sql`, `packages/db/src/seed/requirements.ts`, `apps/api/src/services/requirements.ts`, `requirement-analysis.ts`, `jira-webhook.ts`, `workflow-list.ts`, `apps/api/src/routes/requirements.ts`, `integrations.ts`, `apps/web/app/(app)/requirements/`, `packages/design-system/src/components/Pill/RequirementStatePill.tsx`.
+
+---
+
+# Part E — User Story 5 (Agent Run Inspector): R46–R55
+
+> Appended for `feature/US5`. R1–R45 above are unchanged. Source: the approved US5 plan (decisions confirmed 2026-09-15); spec User Story 5, FR-016/017/018, FR-004/034, FR-026, FR-032, FR-036, edge cases "run exceeds duration" and "evidence the user cannot access".
+
+## R46 — Decisions are a new table `agent_decisions`, not more jsonb on `agent_runs`
+
+**Decision**: Migration `0006_agent_decisions.sql` creates `agent_decisions` (`id, organization_id, project_id, workflow_id, stage_id, agent_run_id → agent_runs ON DELETE CASCADE, position smallint 1..50, decided_at, action ≤ 200, reason ≤ 600, confidence confidence_level, policy_outcome policy_outcome, policy_ref ≤ 120 NULL, risk_level risk_level NULL, evidence jsonb ≤ 20, created_at`, `UNIQUE (agent_run_id, position)`, index `agent_decisions_run_idx (agent_run_id, position)`), with RLS policies and grants patterned on 0002 and mirrored in `packages/db/src/schema.ts`. Evidence refs stay jsonb *inside* a decision (≤ 20, bounded by the contract and a `CHECK`). `risk_level` is nullable in US5 and becomes mandatory with US8 (policy evaluation). The `agent_runs.timeline` jsonb (US1) is unchanged.
+
+**Rationale**: FR-017 makes a decision a first-class record with five fields and a list of evidence, ordered and bounded (≤ 50 per run); the read model needs one indexed statement (`WHERE agent_run_id = $1 ORDER BY position`) and the ingest needs to replace the set atomically. A row per decision keeps every column typed (two new enums), keeps position uniqueness in the database, and lets US8 add policy columns without a jsonb rewrite. Evidence refs are leaf data read only with their decision, so jsonb there is bounded and cheap.
+
+**Alternatives considered**: `agent_runs.decisions jsonb` (≈ 60 KB in one row at the bounds, no position uniqueness, the web validating nested arrays, and a change to the US1 `AgentRunUpsert` contract — rejected); a separate `agent_decision_evidence` table (a join for ≤ 20 leaf rows per decision, one more statement in the read — rejected as over-normalisation for US5); reusing `audit_events` (those are *human* actions — DR-03 distinction — rejected).
+
+## R47 — Decisions are delivered by the agent runtime through ingestion, replace-whole
+
+**Decision**: `PUT /api/ingest/agent-runs/{externalId}/decisions` (`requirePrincipal`, principal scoped to the run's project) carries `{ observedAt, decisions[] ≤ 50 }` and **replaces the run's whole decision set**: lock the run (`SELECT … FOR UPDATE`), compare `observedAt` with the stored watermark (the latest `ingestion_log.observed_at` for this run and kind), and if newer `DELETE` all rows then batch `INSERT` the payload; write one `ingestion_log` row; return `{ status: 'accepted' | 'stale' }` — the same watermark protocol as every US1/US4 ingest (R7, R38). Decisions are never created or edited by the API from the browser.
+
+**Rationale**: FR-036 — the runtime is the source of runs and their decisions; the platform records and displays. Replace-whole matches how the runtime knows a run (a full snapshot each report), makes the endpoint idempotent, and avoids per-decision upsert/tombstone logic; the watermark keeps an out-of-order older snapshot from clobbering a newer one.
+
+**Alternatives considered**: `POST …/decisions` appending one decision at a time (ordering and deletion become the platform's problem; retries duplicate — rejected); decisions inside `PUT /ingest/agent-runs/{externalId}` (couples run and decision snapshot cadence, one 60 KB payload per heartbeat — rejected); the API deriving decisions from `timeline[kind='decision']` events (a 240-char message is not a decision record — rejected).
+
+## R48 — Structured progress (AS-3) is a runtime-provided `steps` array on the run
+
+**Decision**: `agent_runs.steps jsonb NOT NULL DEFAULT '[]'` — ≤ 20 `{ label ≤ 120, status: 'completed' | 'running' | 'pending' | 'failed' }` — set by the existing `PUT /ingest/agent-runs/{externalId}` (`AgentRunUpsert.steps`, optional, default `[]`), returned in `AgentRunDetail.steps`, summarised by the pure `stepsSummary(steps)` and rendered as `Stepper`/`Step` (`completed → done`, `running → current`, `pending → todo`, `failed → todo + Pill "failed"`). The screen **never** renders a spinner or "thinking…".
+
+**Rationale**: Acceptance Scenario 3 asks for a checklist of completed/running/pending steps, which only the runtime knows; the timeline is an event log, not a plan. A bounded, typed array is cheap to store and validate, and `Stepper` is the design-system component for exactly this (glossary "structured progress").
+
+**Alternatives considered**: deriving steps from timeline events (guesswork about structure — rejected); a separate `agent_run_steps` table (a join for ≤ 20 rows that change as one snapshot — rejected); a spinner for RUNNING (explicitly forbidden by AS-3 and the design principles — rejected).
+
+## R49 — Evidence references are typed, and inaccessible evidence is text, never a broken link
+
+**Decision**: `EvidenceRef = { kind: 'file' | 'ticket' | 'artifact' | 'url' | 'pullRequest', label ≤ 200, href?: DecisionLink, locator? ≤ 200, accessible: boolean }` (`.strict()`). `evidenceHref(ref)` returns `href` only when `accessible === true` and `href` is present, else `null`; the screen renders a linked label for a non-null href and the label plus the words "access restricted" (no `<a>`) otherwise. `artifact` refs are expected to carry an app-relative `href` to the producing Workflow Detail artifact anchor (`/workflows/{id}#artifact-{externalId}`). Evidence renders as *platform evidence* (`GateList`/`GateCheck` with `source` = kind word + locator), visually distinct from the agent's `reason`.
+
+**Rationale**: FR-017 "evidence references (navigable)" plus the edge case "evidence the user cannot access → access-restricted indicator": the runtime knows what it cited and whether the platform user may follow it; the platform must never render a dead link. Reusing `DecisionLink` (US2) keeps the href allow-list (http(s) or app-relative) in one place. DR-03 keeps the citation distinct from the claim.
+
+**Alternatives considered**: free-text evidence strings (not navigable — rejected); the API resolving accessibility per user at read time (needs per-repo/per-ticket authorisation the MVP does not have — rejected; the flag is the runtime's statement, revisited with US7 PR integration); rendering restricted refs as disabled links (a disabled anchor is not a control and reads as broken — rejected).
+
+## R50 — FR-018 is enforced by the contract, not by trust
+
+**Decision**: `AgentDecisionIngest` and `AgentDecisionsIngest` are `.strict()` Zod objects with **no free-form reasoning field**: the only prose fields are `action ≤ 200` and `reason ≤ 600` (the decision's stated justification — a summary the runtime writes for people, as FR-017 requires). A payload carrying `chainOfThought`, `reasoning`, `thoughts`, `scratchpad` or any other unknown key is a 400 Problem (`errors[].pointer` names the key; the body is not echoed). `AgentRunDetail`/`AgentDecision` have no such field either, so nothing can be stored, returned or rendered. The `AgentRunUpsert` (`summary ≤ 400`, `timeline[].message ≤ 240`) is unchanged and already bounded.
+
+**Rationale**: FR-018 and SC-009 ("no raw model reasoning is displayed") are best guaranteed where data enters: if the schema has no field for it, no layer can leak it. Bounded summaries (200/600) make a pasted transcript fail validation by size as well.
+
+**Alternatives considered**: accepting a `reasoning` field and hiding it in the UI (stored data leaks through exports/logs; violates the principle — rejected); redacting free text heuristically (unreliable — rejected); `.passthrough()` for forward compatibility (forbidden by the same reasoning; new fields land through the contract — rejected).
+
+## R51 — Route shape: `/agents/runs/{id}`; `/agents` stays the section placeholder
+
+**Decision**: The screen is `apps/web/app/(app)/agents/runs/[id]/page.tsx`; `agentRunHref(id) = '/agents/runs/{id}'`; `decisionAnchor(position) = '#decision-{position}'`. `DecisionLinks.agentRun` (US2) points straight at `agentRunHref`. `/agents` remains the `[section]` placeholder ("not built") and `BUILT_SECTIONS` is unchanged — the Next.js catch-all matches one segment, so the nested route coexists. Breadcrumbs read Workflows → {workflow title} → Stage {n} · {name} → Run {agent}.
+
+**Rationale**: The spec's Agent Activity screen (roster, later story) is `/agents`; a run is an entity under it. Landing the deep route now avoids a later move and keeps the Approval Center's `agentRun` links stable. The placeholder semantics for one-segment sections are untouched.
+
+**Alternatives considered**: `/workflows/{id}/runs/{runId}` (ties a run's URL to a workflow route that already has anchors; a run is addressed on its own by Inbox/Approval links — rejected); `/agents/{agent}/runs/{id}` (needs the roster to exist — rejected); building `/agents` now (out of scope).
+
+## R52 — Read model: `GET /api/agent-runs/{id}` in one transaction, plus an additive `agentRuns` per stage on Workflow Detail
+
+**Decision**: `GET /api/agent-runs/{id}` (session, `visibleProjects`) returns `AgentRunDetail` — `{ id, externalId, agent, model, state, startedAt, finishedAt, durationMs, summary, workflow: { id, externalId, title }, stage: { position, name }, steps ≤ 20, timeline ≤ 50, decisions ≤ 50 }` — from **one `REPEATABLE READ` transaction with ≤ 3 statements** (run + workflow + stage join; decisions ordered by position; nothing else). 404 for unknown *or* invisible ids. `GET /api/workflows/{id}` gains `stages[].agentRuns: [{ id, agent, state, stagePosition }]` (≤ 20 per stage, additive; one extra statement at most) so Workflow Detail lists "Inspect run" per run.
+
+**Rationale**: FR-016 and the Independent Test open a run and see everything at once; one transaction gives a consistent snapshot (run state and decisions from the same instant), and ≤ 3 statements keeps the 150 ms p95 budget. The additive extension is the drill-down entry (AS-1 "from a workflow stage") without a new list route.
+
+**Alternatives considered**: a separate `GET /api/agent-runs/{id}/decisions` (two round trips, two snapshots — rejected); embedding full runs in Workflow Detail (payload growth on the busiest screen — rejected); `GET /api/agent-runs?workflowId=` list route (nothing in US5 needs a list beyond the stage — deferred to the Agent Activity story).
+
+## R53 — Live updates ride `inbox_changed`; `agent_decisions` gets its own NOTIFY trigger
+
+**Decision**: `0006` adds `notify_agent_decision_changed()` and trigger `inbox_changed_agent_decisions` (`AFTER INSERT OR UPDATE OR DELETE`) that writes `inbox_change_log (organization_id, project_id, workflow_id)` with the decision row's `workflow_id` and `pg_notify('inbox_changed', …)`. Run changes already notify through `inbox_changed_agent_runs`. The screen subscribes to the existing SSE stream filtered by `workflowId` and refetches `GET /api/agent-runs/{id}` with the existing 300 ms debounce.
+
+**Rationale**: FR-004/FR-034/SC-003 — timeline, steps and decisions must update within 5 s without reload; the decisions ingest writes only `agent_decisions`, which without its own trigger would be silent. Reusing the channel, the LISTEN client and the SSE endpoint costs one trigger and zero new plumbing.
+
+**Alternatives considered**: bumping `agent_runs.updated_at` from the ingest to fire the existing trigger (implicit coupling, spurious timestamps — rejected); a dedicated `agent_run_changed` channel (a second LISTEN client and SSE endpoint — rejected); polling every 5 s (SC-003 is met but contradicts the SSE architecture — rejected).
+
+## R54 — Stale-run indicator is a pure rule, shown as a notice, never a state change
+
+**Decision**: `runFreshness(run, now): 'active' | 'stale'` in `@cdevi/contracts/agent-run-model`: `stale` when `state ∈ { RUNNING, RETRYING }` and the last timeline `at` (or `startedAt` when the timeline is empty) is more than `STALE_AFTER_MS = 30 min` before `now`; otherwise `active`. The screen shows `Notice tone="info"` "No activity for {n} min — the runtime has not reported progress; the workflow's state is unchanged." The run's `state` and the `StatePill` are untouched.
+
+**Rationale**: Edge case "run exceeds duration/budget → nothing may appear to run indefinitely": the user must see that a running run has gone quiet; but states are the orchestrator's account (US1 R3) and the platform must not fabricate a transition. A pure rule is testable at 29/30/31 min with a fixed clock and needs no scheduler.
+
+**Alternatives considered**: a database job marking runs FAILED after a timeout (invents a transition and desyncs from the workflow — rejected); putting the threshold in the API response (the same rule then lives in two places — rejected); no indicator (violates the edge case — rejected).
+
+## R55 — Every role reads; nothing mutates; no saffron and no audit rows
+
+**Decision**: `GET /api/agent-runs/{id}` requires only a session and project visibility — `viewer`, `engineer`, `approver` and `admin` see the same read model (FR-032: everyone may read; only the two ingest routes write, under an ingestion principal). The screen has **no `Button variant="saffron"`** in any state (DR-02 — nothing needs a person; `APPROVAL_REQUIRED` is a word in a `Pill`, the action lives in the Approval Center), **no human action** at all, and therefore writes **no `audit_events` rows** and no `workflow_transitions` (US1 audit invariants unchanged). Seed additions (§37) touch two existing runs only, so every `EXPECTED_*` figure from US1–US4 is unchanged.
+
+**Rationale**: US5 is inspection: "evidence over explanation" is served by making the run legible, not by acting on it. Role gating exists for actions (US1 R5, US2 R14) and there are none here; a saffron control would be a false "person needed" signal.
+
+**Alternatives considered**: a "Retry"/"Cancel" action on the run screen (belongs to Workflow Detail's failure panel, US1 — rejected as duplication); hiding decisions from `viewer` (the spec grants viewers read access everywhere — rejected); auditing reads (not an audit event in this system — rejected).
+
+## Architecture document updates required (Part E)
+
+- §4 interaction table: "Agent runs" → landed (`GET /api/agent-runs/{id}`; `PUT /api/ingest/agent-runs/{externalId}/decisions`; `PUT /api/ingest/agent-runs/{externalId}` now carries `steps`); "Workflow Detail" → `stages[].agentRuns`.
+- §8 repository layout: `packages/db/migrations/0006_agent_decisions.sql`, `packages/contracts/src/agent-runs.ts`, `packages/contracts/src/agent-run-model.ts`, `apps/api/src/services/agent-runs.ts`, `apps/api/src/routes/agent-runs.ts`, `apps/web/app/(app)/agents/runs/[id]/`.

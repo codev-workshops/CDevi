@@ -1,4 +1,4 @@
-# Implementation Plan: SDLC Control Plane MVP — User Stories 1 (Workflow Detail), 2 (Approval Center) and 3 (Dashboard)
+# Implementation Plan: SDLC Control Plane MVP — User Stories 1 (Workflow Detail), 2 (Approval Center), 3 (Dashboard), 4 (Requirements) and 5 (Agent Run Inspector)
 
 **Branch**: `feature/US1` (Part A, landed) · `feature/US2` (Part B, landed) · `feature/US3` (Part C) | **Date**: 2026-09-14 (A, B) · 2026-09-15 (C) | **Spec**: [spec.md](spec.md) — User Stories 1, 2 and 3
 
@@ -620,5 +620,168 @@ Re-evaluated after Phase 1 (research R31–R45, data-model §22–§30, contract
 | II | tasks.md Phase 9 lists the failing test before each implementation task in every layer (9a–9e); exactly-once approve, one-transaction creation, ingest idempotency, signature verification and the BLOCKED edge case are tests; the Independent Test is one Playwright spec; seed invariants of US1–US3 are asserted unchanged. **PASS** |
 | III | Every region in ui-requirements.md §2–§4 names a component; the one missing pattern is added to the package first (9d, DESIGN.md §8); DR-02 justified per screen and per state in §7; defined states in §5; axe + keyboard contract. **PASS** |
 | IV | Eleven budgets with methods; lists ≤ 50 with cursors, analysis items ≤ 120, audit ≤ 20; one transaction per operation; indexes proven by `EXPLAIN`. **PASS** |
+
+**Gate result (post-design)**: PASS.
+
+---
+
+# Part E — User Story 5 (Agent Run Inspector)
+
+**Branch**: `feature/US5` (integration branch from `develop`; sub-branches `feature/US5-specs`, contracts+database, API/web PR into `feature/US5`; `feature/US5` PRs into `develop`) | **Date**: 2026-09-15 | **Spec**: [spec.md](spec.md) — User Story 5 (Inspect an agent run and its decisions, P2), FR-016 (run header + timestamped timeline), FR-017 (decisions with action, reason, evidence, confidence, policy outcome, navigable evidence), FR-018 (no raw chain-of-thought), plus FR-004/FR-034 (live updates), FR-026 (HIGH/CRITICAL prominence when a decision carries a risk level), FR-032 (roles — read-only for every role), FR-036 (the runtime delivers runs and decisions). Success criteria SC-003, SC-007, SC-009, SC-010. Edge cases: "run exceeds duration/budget → RETRYING/FAILED, nothing running indefinitely" (stale-run indicator) and "evidence the user cannot access → access-restricted indicator, not a broken link". Other stories remain out of scope — the agent roster (`/agents` stays the `[section]` placeholder), policy *evaluation* (US8; `policyOutcome` is reported by the runtime), per-test outcomes (Testing story) — approved scope decisions in research.md Part E (R46–R55).
+
+**Input**: research.md R46–R55, data-model.md §31–§37, contracts/ui-agent-run.md, quickstart.md §6, tasks.md Phases 11–12. Source plan: the approved `us5-plan.md` (decisions confirmed 2026-09-15).
+
+## Summary
+
+Add the **Agent Run Inspector** at `/agents/runs/{id}` — the drill-down from a Workflow Detail stage into the run that executed it: a `KeyValue` header (agent, workflow, stage, model, started, duration — live-ticking while running — status as a `StatePill`), the agent's `summary` as a `Message variant="summary"` (a claim, not evidence), **structured progress** as a `Stepper` fed by a runtime-provided `steps` array (never a spinner — AS-3), the timestamped **timeline** as a `ToolLog`, and the **decisions** list — one `DecisionCard tone="neutral"` per decision showing action, reason (summary ≤ 600 chars), confidence and policy outcome as words in `Pill`s, a `RiskBadge` when the runtime reported a risk level, and typed **evidence references** rendered as platform evidence (`GateList`/`GateCheck` with `source`) that open the referenced file, ticket, artifact, URL or PR — or read "access restricted" with no link when `accessible: false` or no `href` (edge case). Behind it, migration **`0006_agent_decisions.sql`** (data-model §31): enums `confidence_level`, `policy_outcome`; `agent_runs.steps jsonb NOT NULL DEFAULT '[]'`; the new table **`agent_decisions`** (≤ 50 per run, `UNIQUE (agent_run_id, position)`, evidence jsonb ≤ 20, optional `risk_level`) with RLS/grants like 0002 and its own NOTIFY trigger `inbox_changed_agent_decisions` writing `inbox_change_log` with the run's `workflow_id` so decision changes ride the existing `inbox_changed` → SSE path (FR-034). **Decisions are produced by the agent runtime, not the API** (R47): `PUT /api/ingest/agent-runs/{externalId}/decisions` replaces the run's decision set whole under the usual `observedAt` watermark (`accepted` | `stale`), writes an `ingestion_log` row, and its `.strict()` schema has **no free-form reasoning field** — FR-018 is enforced by the contract (R50): a payload carrying `chainOfThought` or `reasoning` is a 400. The read model `GET /api/agent-runs/{id}` (session, visible projects, read-only for every role incl. viewer — FR-032) returns header + steps + timeline + decisions in one `REPEATABLE READ` transaction with ≤ 3 statements; `GET /api/workflows/{id}` gains `agentRuns: [{ id, agent, state, stagePosition }]` per stage (additive) so Workflow Detail can offer **"Inspect run"** per stage run (AS-1 entry point). A pure `runFreshness(run, now)` flags a `RUNNING`/`RETRYING` run with no activity for > 30 min as `stale`, shown as `Notice tone="info"` — an indicator, not a state change (R54). **No saffron button anywhere on the screen** (nothing to act on) and **no audit rows** (no human mutates anything — R55).
+
+## Technical Context
+
+**Language/Version**: unchanged (TypeScript 5.9 strict, Node 26, React 19.2, ES modules)
+
+**Primary Dependencies**: unchanged — nothing is added to any `package.json` except the new zod-free subpath `@cdevi/contracts/agent-run-model` (`exports` entry, like `/dashboard-model`). Design system stays at **1.4.0** unless Phase 11d confirms the candidate gap (below); if it does, a minor bump to 1.5.0 per DESIGN.md §8 before any app consumption
+
+**Storage**: PostgreSQL 17. `0006_agent_decisions.sql` (data-model §31): enums `confidence_level ('LOW','MEDIUM','HIGH')`, `policy_outcome ('ALLOWED','APPROVAL_REQUIRED','DENIED')`; `ALTER TABLE agent_runs ADD COLUMN steps jsonb NOT NULL DEFAULT '[]'` (≤ 20 `{ label ≤ 120, status: completed|running|pending|failed }`, bounded by the contract and by `CHECK (jsonb_array_length(steps) <= 20)`); table `agent_decisions` (`id, organization_id, project_id, workflow_id, stage_id, agent_run_id → agent_runs ON DELETE CASCADE, position 1..50, decided_at, action ≤ 200, reason ≤ 600, confidence, policy_outcome, policy_ref ≤ 120 NULL, risk_level risk_level NULL, evidence jsonb ≤ 20, created_at, UNIQUE (agent_run_id, position)`); index `agent_decisions_run_idx (agent_run_id, position)`; RLS policy `agent_decisions_org_isolation` and grants like 0002 (`SELECT, INSERT, UPDATE` **plus `DELETE`** — 0002 grants no DELETE, but the decisions ingest replaces the set whole); NOTIFY trigger `inbox_changed_agent_decisions` → `notify_agent_decision_changed()` writing `inbox_change_log (organization_id, project_id, workflow_id)` with the run's `workflow_id` and `pg_notify('inbox_changed', …)`; mirrored in `packages/db/src/schema.ts`; `RLS_TABLES += 'agent_decisions'`. **Existing assertions this migration changes** (`packages/db/tests/schema.test.ts`, same edit pattern as 0005 — data-model §31 Notes): the `inbox_changed_%` trigger list (+ `inbox_changed_agent_decisions`), the `pg_tables` list (`TABLES_ADDED_BY_0006 = ['agent_decisions']`), **and** the `columnCounts` map (`agent_runs: 15 → 16` because of `steps`) — three, not the two the source plan anticipated; edited tests-first in T126
+
+**Routes** (data-model §33; all Problems `application/problem+json`): `GET /agent-runs/{id}` (session, `preHandler: app.requireUser`, `visibleProjects`; 404 when unknown or invisible); `PUT /ingest/agent-runs/{externalId}/decisions` (`app.requirePrincipal`, scoped to the run's project); `GET /workflows/{id}` EXTENDED additively with `stages[].agentRuns` (≤ 20 per stage). `PUT /ingest/agent-runs/{externalId}` EXTENDED: optional `steps`. `contracts/openapi.yaml` is regenerated in Phase 11a (T125) from `src/openapi.ts` (title "… (specs/001 US1–US5)") by the contracts sub-branch only — the specs sub-branch documents it and never regenerates it
+
+**Testing**: Vitest — `contracts` (Zod schemas incl. `.strict()` rejection of `chainOfThought`/`reasoning`/any unknown key, bounds 50/20/20/120/200/600; pure `agent-run-model`: `runDuration`, `runFreshness` at 29/30/31 min and for every state, `stepsSummary`, `evidenceHref`, words, hrefs; OpenAPI snapshot), `db` (0006 objects, enums, `steps` default, RLS policy, grants, cascade delete, `UNIQUE (agent_run_id, position)`, evidence bound, NOTIFY trigger writes `inbox_change_log` with the run's `workflow_id`; seed decisions and `EXPECTED_AGENT_DECISIONS`; S-500 / dashboard-demo / requirements invariants unchanged; the three `schema.test.ts` assertions updated for 0006), `api` (integration on real Postgres, fixed clock: header fields and `durationMs`, decisions ordered by position with evidence/confidence/policy, viewer can read, invisible project 404, one transaction ≤ 3 statements, `Server-Timing` p95 ≤ 150 ms at the SC-007 fixture; ingest accepted/stale/replace-whole, 400 on 51 decisions / 21 evidence refs / unknown key without body echo, 401/403/404, 409 on an older payload for a terminal run, `ingestion_log` row, NOTIFY observed on the SSE stream via `stream.test.ts` helpers; `GET /workflows/{id}` `agentRuns` per stage), `web` (component + axe in every ui-agent-run.md §5 state; **zero** `.cd-saffron` in every state; FR-018 — a fixture with a `reasoning` field fails the type check and never renders at runtime; restricted evidence renders text, not `<a>`; `Stepper` never a spinner; stale notice; refetch on `inbox.changed` for the run's `workflowId`; Workflow Detail "Inspect run" links). Playwright `apps/web/tests/e2e/agent-run.spec.ts` = the Independent Test (quickstart §6.3: ingest a run with timeline + steps + 3 decisions → open from Workflow Detail → header/decisions/evidence → restricted indicator → ingest a step change → `Stepper` updates ≤ 5 s without reload → keyboard walk, page axe, initial content ≤ 2 s). Test names start with the FR/SC id; red → green order in tasks.md Phase 11
+
+**Target Platform / Project Type**: unchanged (web app in the existing monorepo). CI `.github/workflows/ci.yml` is **not edited** — no new secret, env or service. The `[section]` catch-all matches one segment, so `app/(app)/agents/runs/[id]/page.tsx` coexists with the `/agents` placeholder without touching `BUILT_SECTIONS` semantics (`/agents` is still "not built"; the nested route is)
+
+**Performance Goals** (Principle IV; workload = SC-007 organization (500 workflows) with runs carrying 50 timeline events, 20 steps and 50 decisions × 20 evidence refs; measured on CI `ubuntu-latest` with the Postgres service; and the seeded database for e2e):
+- Run screen initial content (header + first decision visible) ≤ 2 s p95 (SC-007) — Playwright trace over 10 runs in `agent-run.spec.ts`; server first paint carries the full read model
+- `GET /api/agent-runs/{id}` ≤ 150 ms p95 at the bounded maximum — `Server-Timing` asserted over 20 calls in `apps/api/tests/agent-runs.test.ts`; one `REPEATABLE READ` transaction, ≤ 3 statements (run + workflow + stage join; decisions by position; nothing else), index `agent_decisions_run_idx`
+- Payload ≤ 48 KB at the bounded maximum (50 timeline × 240 + 20 steps × 120 + 50 decisions × (600 + 200 + 20 × ~250)) — `content-length` asserted
+- Ingest decisions `PUT` ≤ 200 ms p95 for 50 decisions × 20 evidence refs — one transaction: lock, watermark, `DELETE` + one batch `INSERT`, `ingestion_log`
+- `GET /api/workflows/{id}` stays within its Part A budget with `agentRuns` added (≤ 20 per stage, one extra statement at most; asserted in the existing `workflows.test.ts` `Server-Timing` test)
+- `inbox.changed` → refetched screen rendered ≤ 5 s p95, ≤ 1 s median (SC-003, FR-034) — `agent-run.spec.ts` measures the `Stepper` after an ingested step change; debounce 300 ms
+- Duration ticker while running: one `setInterval` at 1 s updating a single `KeyValue` cell; re-render ≤ 16 ms (component test with fake timers)
+- Route JS ≤ 200 KB gzip (`check:size`; browser imports only `@cdevi/contracts/agent-run-model`, `/vocabulary`, `/read-model`)
+- Seed growth: `steps` on one existing run, 5 decisions on two existing runs, 0 new workflows/runs — no change to any Inbox, Approval Center, Dashboard or Requirements figure (R55, data-model §37)
+
+**Constraints**: **zero** `Button variant="saffron"` on `/agents/runs/{id}` in every state (nothing needs a person here — ui-agent-run.md §7); every run state a word in `StatePill`, confidence and policy outcome words in `Pill` (never colour alone); `RiskBadge` shown whenever `riskLevel` is non-null, HIGH/CRITICAL prominent (FR-026); the agent's `summary` and every decision `reason` render inside agent-claim components (`Message`, `DecisionCard`) and evidence refs inside `GateCheck` with `source` (DR-03); **no raw reasoning anywhere** — the contract has no field for it (FR-018, SC-009); structured progress is a `Stepper`, never a spinner or "thinking…" (AS-3); restricted evidence is text, never a broken `<a>`; WCAG 2.2 AA; Problems without internals or body echo; `.env` never committed
+
+**Scale/Scope**: 1 screen + 1 drill-down extension, 2 routes + 1 additive extension + 1 ingest extension, 1 migration with 1 table + 1 column + 2 enums, 0–1 design-system component, 8 pure functions/constants, ≈ 80 tests
+
+## Constitution Check
+
+| Principle | Check | Result |
+|-----------|-------|--------|
+| I — Specification and contracts first | `AgentRunDetail`, `AgentDecision`, `EvidenceRef`, `RunStep`, `AgentDecisionsIngest` (`.strict()`) Zod schemas + pure `agent-run-model` in `@cdevi/contracts` → OpenAPI fragment (snapshot-tested) → API validation → web types; ui-agent-run.md written before code; `0006_agent_decisions.sql` hand-written and mirrored in `schema.ts` | PASS |
+| II — Tests before behaviour | Every task in tasks.md Phase 11 has a failing test first (11a–11e); pure rules tested without a DB; live suites identified (`db`, `api`, e2e); replace-whole, watermark, one-transaction and FR-018 strictness are tests; fixed clock for `runFreshness`/`runDuration`; existing US1–US4 invariants re-asserted | PASS |
+| III — Design system, defined states, accessibility | Every region maps to an existing 1.4.0 component (below); the two candidate gaps (restricted-evidence row; `Step` has no `failed` state) are resolved with existing components or added per DESIGN.md §8 before consumption; §5 of the screen contract defines loading / populated / in-progress live / empty decisions / error / restricted evidence / stale run; axe in component tests and Playwright; keyboard/focus contract §6; saffron = none justified in §7 | PASS |
+| IV — Performance budgets | Nine numeric budgets with measurement methods above; every list bounded (timeline 50, steps 20, decisions 50, evidence 20, runs per stage 20); one transaction ≤ 3 statements for the read; index proven by `EXPLAIN` in a test | PASS |
+| Security (constitution §Security) | Session auth + `visibleProjects` on the read (404, never 403, for invisible runs — existence is not leaked); ingestion principal scoped to the run's project; `.strict()` rejects unknown keys so no private reasoning can be stored or echoed; evidence `href` validated as `DecisionLink` (http(s) or app-relative), external links `rel="noopener noreferrer"`; Problems carry no SQL/stack/body; nothing mutating from the browser | PASS |
+
+**Gate result (pre-design)**: PASS — no violations to justify.
+
+## Project Structure
+
+### Documentation (this feature)
+
+```
+specs/001-sdlc-control-plane-mvp/
+├── plan.md              # Part A (US1) + Part B (US2) + Part C (US3) + Part D (US4) + Part E (US5, this section)
+├── research.md          # R1–R10 (US1) + R11–R20 (US2) + R21–R30 (US3) + R31–R45 (US4) + R46–R55 (US5)
+├── data-model.md        # §1–9 (US1) + §10–17 (US2) + §18–21 (US3) + §22–30 (US4) + §31–37 (US5)
+├── quickstart.md        # §2 US1 + §3 US2 + §4 US3 + §5 US4 + §6 US5
+├── tasks.md             # Phases 1–4 (US1) + 5–6 (US2) + 7–8 (US3) + 9–10 (US4) + 11–12 (US5)
+└── contracts/
+    ├── openapi.yaml               # generated fragment: US1–US4 routes + the two US5 routes and the WorkflowDetail extension (regenerated by T125 on the contracts sub-branch, not by the specs sub-branch)
+    ├── ui-workflow-detail-screen.md
+    ├── ui-approval-center.md
+    ├── decision-rules.md
+    ├── ui-dashboard.md
+    ├── ui-requirements.md
+    └── ui-agent-run.md            # US5 screen + Workflow Detail drill-down (NEW)
+```
+
+### Source Code (repository root) — NEW vs EXTENDED
+
+```
+packages/contracts/
+├── src/agent-runs.ts            # NEW: ConfidenceLevel, PolicyOutcome, EvidenceKind, EvidenceRef, RunStepStatus, RunStep, AgentDecision, AgentRunDetail, AgentRunIdParams (Zod)
+├── src/ingest.ts                # EXTENDED: AgentRunUpsert.steps (optional, ≤ 20), AgentDecisionIngest, AgentDecisionsIngest (.strict()), AgentDecisionsIngestResult
+├── src/workflow-detail.ts       # EXTENDED (additive): StageAgentRun, WorkflowStageView.agentRuns (≤ 20) — the source plan's "StageDetail.agentRuns"
+├── src/agent-run-model.ts       # NEW (zod-free): runDuration, runFreshness, STALE_AFTER_MS, stepsSummary, evidenceHref, POLICY_OUTCOME_WORDS, CONFIDENCE_WORDS, agentRunHref, decisionAnchor
+├── src/index.ts                 # EXTENDED: export * from './agent-runs', './agent-run-model'
+├── src/openapi.ts               # EXTENDED: two paths + schemas (title "… (specs/001 US1–US5)", tag agent-runs)
+├── package.json                 # EXTENDED: exports["./agent-run-model"]
+└── tests/agent-run-model.test.ts (NEW), tests/schemas.test.ts (EXTENDED), tests/openapi.test.ts (EXTENDED), tests/workflow-detail.test.ts (EXTENDED: agentRuns)
+
+packages/design-system/                                   # ONLY if Phase 11d confirms the gap (T138); otherwise UNCHANGED at 1.4.0
+├── css/components.css                                    # EXTENDED: .cd-step--failed (or none)
+├── src/components/Agent/Agent.tsx                        # EXTENDED: StepState += 'failed' (word "failed" rendered, never colour alone)
+└── src/components/Agent/Agent.test.tsx, gallery/entries.tsx, tests/visual/entries.ts, DESIGN.md §3, CHANGELOG.md, package.json (1.5.0)
+
+packages/db/
+├── migrations/0006_agent_decisions.sql   # NEW (data-model §31)
+├── src/schema.ts                         # EXTENDED: confidenceLevel, policyOutcome enums; agentRuns.steps; agentDecisions table + index
+├── src/migrate.ts                        # EXTENDED: RLS_TABLES += agent_decisions
+├── src/seed/agent-runs.ts                # NEW: SeedRunSteps/SeedDecision shapes; steps + 3 decisions for the RUNNING showcase run s500-d05-r1, 2 decisions for the COMPLETED payments-api run s500-001-r8; EXPECTED_AGENT_DECISIONS
+├── src/seed/index.ts                     # EXTENDED: TRUNCATE list += agent_decisions; INSERT agent_runs … steps; INSERT agent_decisions after runs; UPDATE clarifications s500-clr-01 links.agentRun
+└── tests/schema.test.ts (EXTENDED: 0006; three list/count assertions updated), tests/seed.test.ts (EXTENDED: decisions; US1–US4 totals unchanged)
+
+apps/api/
+├── src/services/agent-runs.ts          # NEW: agentRunDetail(db, user, id) — visibility → one REPEATABLE READ txn ≤ 3 statements
+├── src/services/ingestion.ts           # EXTENDED: upsertAgentRun persists steps; ingestAgentDecisions(externalId, body)
+├── src/services/workflow-detail.ts     # EXTENDED: agentRuns per stage (one statement, ≤ 20 per stage)
+├── src/routes/agent-runs.ts            # NEW: GET /agent-runs/:id (requireUser)
+├── src/routes/ingest.ts                # EXTENDED: PUT /ingest/agent-runs/:externalId/decisions (requirePrincipal)
+├── src/app.ts                          # EXTENDED: register agentRunsRoutes; schemas in swagger components
+└── tests/agent-runs.test.ts, tests/ingest-decisions.test.ts (NEW); tests/workflows.test.ts (EXTENDED: agentRuns); tests/helpers.ts (EXTENDED: seedSc007Org grows one run with 50 decisions × 20 evidence)
+
+apps/web/
+├── app/(app)/agents/runs/[id]/page.tsx           # NEW: server — apiFetch('/api/agent-runs/{id}') → <AgentRunScreen initial me />; any error → §5.5 not-available notice
+├── app/(app)/agents/runs/[id]/AgentRunScreen.tsx # NEW: client — header, Stepper, Tabs (Timeline | Decisions), SSE refetch, duration ticker, #decision-n anchors
+├── app/(app)/workflows/[id]/WorkflowDetailScreen.tsx # EXTENDED: "Inspect run" link(s) per stage run (agentRunHref) — Step detail + Current stage card
+├── lib/session.ts                                # EXTENDED: getAgentRunDetail(id) (cached like getRequirementDetail)
+├── lib/navigation.ts                             # UNCHANGED semantics: /agents stays a placeholder; the nested route is real (comment only)
+├── lib/ds.ts                                     # EXTENDED: re-export Tabs/Tab, ToolLog/ToolLine, Stepper/Step, GateList/GateCheck, DecisionCard where not yet re-exported
+├── tests/fixtures/agent-run.ts                   # NEW: typed AgentRunDetail fixtures per §5 state
+├── tests/fixtures/workflow-detail.ts             # EXTENDED: stages[].agentRuns
+├── tests/components/agent-run.test.tsx           # NEW; tests/components/workflow-detail.test.tsx EXTENDED (Inspect run)
+└── tests/e2e/agent-run.spec.ts                   # NEW; tests/e2e/helpers.ts EXTENDED: ingestAgentRun(), ingestAgentDecisions()
+
+docs/architecture.md   # EXTENDED: §4 Agent runs landed, §8 layout
+AGENTS.md              # EXTENDED: US5 routes in "Backend and web app work"; agent-run-model subpath; FR-018 contract rule
+.github/workflows/ci.yml  # UNCHANGED
+```
+
+**Structure Decision**: the existing monorepo; no new package, no new workspace script. Decisions are a table (R46) because they are a bounded list with per-item evidence that the read model orders and the ingest replaces; the timeline stays jsonb (US1 contract unchanged). The screen lives under `app/(app)/agents/runs/[id]/` so the future agent roster (`/agents`) nests it without a move.
+
+## Design System Compliance
+
+- **Components used** (1.4.0): `Topbar`, `Crumbs`, `PageMeta`, `KeyValue`, `StatePill`, `RiskBadge`, `Pill`, `Mono`, `Message` (`variant="summary"`), `Stepper`/`Step`, `ToolLog`/`ToolLine`, `Tabs`/`Tab`, `DecisionCard` (`tone="neutral"`), `GateList`/`GateCheck` (with `source`), `Card`, `Notice`, `PanelBlock`, `Button variant="ghost"` (back link only).
+- **Region → component**: run header → `KeyValue` (Agent / Workflow (link) / Stage / Model / Started / Duration / Status); run state → `StatePill` (word from `stateToPill`); structured progress → `Stepper label="Progress"` with one `Step` per `steps[]` (`completed` → `done`, `running` → `current` with `aria-current="step"`, `pending` → `todo`, `failed` → `todo` + `Pill variant="fail"` "failed" in `detail`) — never a spinner; timeline → `ToolLog` with one `ToolLine` per event (`kind` word as text: `tool` → `read`, `decision` → `write`, `note` → `dim`, `error` → `error`; timestamp as `<time>`); each decision → `DecisionCard tone="neutral"` (`title` = action, `description` = reason, `badge` = `Pill` policy-outcome word + `Pill` confidence word + `RiskBadge` when present, `actions` = none); evidence → `GateList` → `GateCheck state="ok"` (accessible, linked label) / `state="pending"` (restricted — label + "access restricted", no link) with `source` = kind word + locator; run summary → `Message who="{agent} · summary" variant="summary"` ("not evidence"); stale run / not available → `Notice tone="info"` / `Notice tone="error"`; Timeline | Decisions → `Tabs`; Workflows → workflow → stage → run → `Crumbs`.
+- **Components proposed**: none by default. **Candidate gaps to confirm in 11d (T138)**: (a) the source plan's `EvidenceRef`/`RestrictedLink` row (label + locator + "access restricted") — default resolution without a package change: `GateCheck state="pending"` (accessible state "not yet checked") with `source` = kind word + locator and the label text followed by "access restricted"; (b) `StepState` is `done | current | todo` — a `failed` step needs a visible word; default resolution: `state="todo"` plus `Pill variant="fail"` "failed" in `detail` (DR-01 — the word carries the state). If review finds either insufficient, add the pattern per DESIGN.md §8 (CSS → component + test → gallery → DESIGN.md §3 row → CHANGELOG 1.5.0) **before** the screen consumes it.
+- **Saffron rule (DR-02)**: **none** — nothing on this screen needs a person; every state of every region renders zero `.cd-saffron` (asserted per §5 state). Policy outcome `APPROVAL_REQUIRED` is a *word in a `Pill`* here, not a call to action — the action lives in the Approval Center, which the Inbox already surfaces in saffron. The Workflow Detail drill-down link "Inspect run" is a plain link, not a button.
+- **Vocabulary mapping**: run state via `StatePill` (`stateToPill`); confidence words `low / medium / high` and policy words `allowed / approval required / denied` from `CONFIDENCE_WORDS`/`POLICY_OUTCOME_WORDS` (`@cdevi/contracts/agent-run-model`) in `Pill` (`allowed` → `done`, `approval required` → `wait`, `denied` → `fail`; confidence always `neutral`); risk via `RiskBadge` (`riskToVariant`) when the decision carries one — HIGH/CRITICAL therefore visually prominent (FR-026); step status words via `Step` state + `Pill`; evidence kind words `file / ticket / artifact / url / pull request`.
+- **Claims vs evidence (DR-03)**: run `summary` and decision `reason`/`action` are the agent's account → `Message`/`DecisionCard`; evidence refs are platform-navigable facts → `GateCheck` with `source`; timeline events are tool activity → `ToolLog` (labelled "Agent activity"). Nothing agent-authored is rendered in `KeyValue`; nothing platform-derived is rendered in `Message`.
+- **States**: contract §5 — loading / populated / in-progress live (Stepper + ticking duration + `Pill` "live") / empty decisions / error (not available) / restricted evidence / stale run — each with a component and copy; no disabled state (no controls).
+- **Accessibility verification**: component axe in every §5 state; Playwright page axe; keyboard contract §6 (Tab order: back link → crumbs → workflow link → tabs → tab panel content → evidence links; `Tabs` arrow-key navigation; `#decision-n` anchors focusable with `tabIndex={-1}`; `<time dateTime>` everywhere); names asserted per §8.
+- **UI performance budgets**: see Performance Goals.
+
+## Complexity Tracking
+
+| Item | Why it is needed | Simpler alternative rejected because |
+|------|------------------|--------------------------------------|
+| New table `agent_decisions` (R46) | ≤ 50 decisions × ≤ 20 evidence refs per run must be ordered, bounded and replaced whole by the ingest; `UNIQUE (agent_run_id, position)` and `agent_decisions_run_idx` make the read model one indexed statement | A `decisions` jsonb on `agent_runs` would put ~60 KB in one row, defeat position uniqueness and force the web to validate nested arrays; it also changes the US1 `AgentRunUpsert` contract |
+| Second NOTIFY trigger `inbox_changed_agent_decisions` (R53) | FR-034: decisions arriving must reach the open run screen without reload; the ingest writes `agent_decisions` without touching `agent_runs` (no `agent_runs` UPDATE → no existing NOTIFY) | Bumping `agent_runs.updated_at` from the ingest to piggy-back the existing trigger is an implicit coupling and a spurious `updated_at`; a second channel would duplicate the LISTEN client and SSE endpoint |
+| `agent_runs.steps` column (R48) | AS-3 requires a structured checklist of completed/running/pending steps; the timeline is an event log, not a checklist | Deriving steps from timeline `kind` values guesses at structure the runtime already knows; a spinner is forbidden by the spec |
+| Stale-run indicator as a pure rule (R54) | Edge case "nothing running indefinitely": the user must see that a `RUNNING` run has gone quiet; states stay the orchestrator's account | Changing the run state from the read side would fabricate a transition the runtime never reported and desync with the workflow |
+| Third `schema.test.ts` edit (`columnCounts` agent_runs 15 → 16) | 0004's assertion pins the column count of `agent_runs`, which `steps` changes; the source plan anticipated two edits (trigger list, tables list) | Storing steps inside `timeline` to avoid the column would violate R48 and the US1 `timeline` contract |
+
+## Post-Design Constitution Re-check
+
+Re-evaluated after Phase 1 (research R46–R55, data-model §31–§37, contracts/ui-agent-run.md, quickstart §6):
+
+| Principle | Re-check |
+|-----------|----------|
+| I | One source: Zod + pure `agent-run-model` → OpenAPI fragment (snapshot test) → API → web. Freshness, duration, steps summary, evidence href, words and hrefs are pure functions with tests; the SQL only stores and lists. Migration mirrored in `schema.ts`. FR-018 is a contract property (`.strict()`, no reasoning field), tested at contract, API and web layers. **PASS** |
+| II | tasks.md Phase 11 lists the failing test before each implementation task in every layer (11a–11e); replace-whole, watermark, terminal-run 409, one-transaction read, restricted-evidence rendering and the stale indicator are tests; the Independent Test is one Playwright spec; seed invariants of US1–US4 are asserted unchanged. **PASS** |
+| III | Every region in ui-agent-run.md §2–§3 names a 1.4.0 component; each candidate gap has a no-change default and a DESIGN.md §8 path if confirmed (11d, before consumption); DR-02 = none, justified in §7; defined states in §5; axe + keyboard contract. **PASS** |
+| IV | Nine budgets with methods; timeline ≤ 50, steps ≤ 20, decisions ≤ 50, evidence ≤ 20, runs per stage ≤ 20; one `REPEATABLE READ` transaction with ≤ 3 statements for the read; index proven by `EXPLAIN`. **PASS** |
 
 **Gate result (post-design)**: PASS.
