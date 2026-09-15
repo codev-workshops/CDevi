@@ -14,6 +14,11 @@ changes bump the minor version; renames or removals bump the major version and c
   workflow states, so `StatePill` stays typed on `WorkflowState`. Reuses the existing `.cd-pill` variant classes; no
   new CSS. Gallery entry `RequirementStatePill`, DESIGN.md §3/§4/§5 rows.
 
+### Fixed
+
+- `Button` no longer drops an explicit `aria-disabled` on `<button>` (it was overwritten by the `loading` flag), so an
+  action a role/state does not allow can stay focusable with `aria-describedby` pointing at the reason.
+
 ## 1.3.0 — 2026-09-14
 
 ### Added

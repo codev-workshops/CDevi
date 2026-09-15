@@ -79,7 +79,7 @@ export const Button = forwardRef<HTMLButtonElement | HTMLAnchorElement, ButtonPr
         {...button}
         type={type}
         disabled={disabled}
-        aria-disabled={loading || undefined}
+        aria-disabled={loading || button['aria-disabled'] || undefined}
         aria-busy={loading || undefined}
         className={classes}
       >
