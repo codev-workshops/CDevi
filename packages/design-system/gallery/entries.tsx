@@ -38,7 +38,9 @@ import {
   Panel,
   PanelBlock,
   Pill,
+  REQUIREMENT_STATES,
   RISK_LEVELS,
+  RequirementStatePill,
   RiskBadge,
   RuntimeGlyph,
   Segmented,
@@ -397,6 +399,22 @@ export const entries: GalleryEntry[] = [
       <>
         {WORKFLOW_STATES.map((s) => (
           <StatePill key={s} state={s} />
+        ))}
+      </>
+    ),
+  },
+  {
+    name: 'RequirementStatePill',
+    title: 'Requirement states',
+    description:
+      'All eight specs/001 requirement lifecycle states (FR-009) through the normative mapping. Requirement states are not workflow states: NEEDS_CLARIFICATION is the only "needs you" state, ANALYZING and IN_IMPLEMENTATION pulse.',
+    usage: `<RequirementStatePill state="NEEDS_CLARIFICATION" />\n<RequirementStatePill state="READY" />\n// mapping: requirementStateToPill[state] → { variant, word, pulse }`,
+    a11y: 'Word from the mapping is the accessible name; data-state carries the enum for tests and analytics.',
+    row: true,
+    render: () => (
+      <>
+        {REQUIREMENT_STATES.map((s) => (
+          <RequirementStatePill key={s} state={s} />
         ))}
       </>
     ),

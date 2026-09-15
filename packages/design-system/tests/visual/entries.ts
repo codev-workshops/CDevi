@@ -4,6 +4,7 @@ export const ENTRY_NAMES = [
   'Button',
   'Pill',
   'StatePill',
+  'RequirementStatePill',
   'RiskBadge',
   'Inline',
   'List',
