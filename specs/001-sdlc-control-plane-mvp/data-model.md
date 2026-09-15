@@ -1047,3 +1047,359 @@ No new workflows, stages, runs, artifacts, test runs, approvals, clarifications 
 | `s500-clr-01` (clarification showcase, US2) | `links.agentRun` set to `agentRunHref(<uuid of s500-d05-r1>)` by an `UPDATE clarifications SET links = links \|\| jsonb_build_object('agentRun', $1)` after runs are inserted (uuids are generated at insert). **Note for the parent session**: the clarification's own workflow has no seeded run and adding one is forbidden by the "no new runs" rule, so the link deliberately targets the RUNNING showcase run of another workflow — a demo cross-link. If a same-workflow link is preferred, the alternative is one new run on the clarification's workflow, which changes `EXPECTED_SHOWCASE.runs`/`agent_runs` count assertions (not done in US5) |
 
 `EXPECTED_AGENT_DECISIONS = { total: 5, runsWithDecisions: 2, approvalRequired: 2, denied: 1, restrictedEvidence: 1, withRiskLevel: 1 }` exported from `seed/agent-runs.ts` and asserted in `packages/db/tests/seed.test.ts` (`FR-017 seed decisions …`). `seed/index.ts`: `TRUNCATE` list gains `agent_decisions` (before `agent_runs`, or rely on CASCADE); the `agent_runs` INSERT carries `steps` (`'[]'` for every run but `s500-d05-r1`); `agent_decisions` are inserted after runs with `agent_run_id`, `workflow_id`, `stage_id`, `project_id`, `organization_id` resolved from the inserted run. Every seeded `decidedAt` lies between the run's `startedAt` and `finishedAt ?? base` and every timeline stays ≤ 50.
+
+# Part F — User Story 6 (PR Review Center & fix loop): §38–§44
+
+> Appended for `feature/US6`. §1–§37 above are unchanged. Source: the approved US6 plan (Q1–Q6 decided 2026-09-15 — plan.md Part F) and research R56–R65. Shapes below are the binding ones for the contracts, database, API and web work; `packages/db/migrations/0007_reviews.sql` becomes the source of truth once it lands and this section mirrors it.
+
+## 38. Vocabulary — enums (research R58, R60)
+
+| Enum | Values | Words (`@cdevi/contracts/review-model`) | Pill |
+|------|--------|------------------------------------------|------|
+| `review_lane` | `correctness`, `security`, `dependencies`, `edge_cases`, `testing`, `architecture`, `general` — **this order is the display order** (`REVIEW_LANES`) | `LANE_WORDS`: correctness · security · dependencies · edge cases · testing · architecture · general | `Pill variant="neutral"` on a finding; the lane row itself is a `GateCheck` |
+| `lane_status` | `PASS`, `WARN`, `FAIL` | pass · warn · fail | `GateCheck state`: `ok` · `warn` · `fail` (`pending` = "not yet reviewed" before the first review) |
+| `review_status` | `RUNNING`, `COMPLETE`, `FAILED` | `REVIEW_STATUS_WORDS`: review running · ai review complete · review failed | `run` · `done` · `fail` |
+| `finding_severity` | `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `INFO` | `SEVERITY_WORDS`: lower-case | design system `severityToPill`: `blocked` · `fail` · `wait` · `neutral` · `neutral` |
+| `finding_blocking` | `BLOCKING`, `NON_BLOCKING`, `SUGGESTION` | `BLOCKING_WORDS`: blocking · non-blocking · suggestion; `blockingToDesignSystem`: `NON_BLOCKING → 'NON-BLOCKING'` (the design system's `FindingBlocking` spelling) | design system `blockingToPill`: `needs-you` · `neutral` · `neutral` |
+| `finding_state` | `OPEN`, `FIX_REQUESTED`, `FIXED`, `DISMISSED`, `ISSUE_REQUESTED` | `FINDING_STATE_WORDS`: open · fix requested · fixed · dismissed · issue requested | `wait` · `run` · `done` · `neutral` · `neutral` |
+| `review_cycle_state` | `RUNNING`, `COMPLETED`, `FAILED`, `CANCELLED` (the `workflow_state` subset a cycle can be in) | `CYCLE_STATE_WORDS`: running · completed · failed · cancelled | `run` · `done` · `fail` · `neutral` |
+| `pull_request_status` | `OPEN`, `MERGED`, `CLOSED` | open · merged · closed | `neutral` · `done` · `neutral` |
+
+Audit vocabulary (`AUDIT_ACTIONS`, `@cdevi/contracts/approval-center`, EXTENDED — §27 list gains): `finding.dismissed`, `finding.fix_requested`, `finding.issue_requested` (`target_type = 'review_finding'`).
+
+## 39. Migration `0007_reviews.sql` (research R57, R58, R62, R64)
+
+```sql
+-- specs/001 US6 (data-model §38–§44): pull requests, AI reviews with seven lanes, individual findings and review
+-- cycles (FR-020, FR-021, FR-022). Reviews and cycle progress are delivered by the runtime (PUT /api/ingest/pull-requests/…);
+-- humans act on findings through POST /api/reviews/{prId}/findings/{findingId}/{dismiss,fix,issue}. ready_for_merge is
+-- derived in the read model (research R60) and deliberately has no column. RLS and grants follow 0001–0006: policies are
+-- written here, ENABLE/DISABLE is owned by the CDEVI_RLS loop in migrate.ts (RLS_TABLES gains the four tables).
+
+-- vocabulary (§38)
+CREATE TYPE review_lane AS ENUM ('correctness','security','dependencies','edge_cases','testing','architecture','general');
+CREATE TYPE lane_status AS ENUM ('PASS','WARN','FAIL');
+CREATE TYPE review_status AS ENUM ('RUNNING','COMPLETE','FAILED');
+CREATE TYPE finding_severity AS ENUM ('CRITICAL','HIGH','MEDIUM','LOW','INFO');
+CREATE TYPE finding_blocking AS ENUM ('BLOCKING','NON_BLOCKING','SUGGESTION');
+CREATE TYPE finding_state AS ENUM ('OPEN','FIX_REQUESTED','FIXED','DISMISSED','ISSUE_REQUESTED');
+CREATE TYPE review_cycle_state AS ENUM ('RUNNING','COMPLETED','FAILED','CANCELLED');
+CREATE TYPE pull_request_status AS ENUM ('OPEN','MERGED','CLOSED');
+
+-- one pull request per workflow in the MVP (R63); requirement and Review-stage links are nullable (R57)
+CREATE TABLE pull_requests (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id uuid NOT NULL REFERENCES organizations(id),
+  project_id uuid NOT NULL REFERENCES projects(id),
+  workflow_id uuid NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+  requirement_id uuid REFERENCES requirements(id) ON DELETE SET NULL,
+  review_stage_id uuid REFERENCES workflow_stages(id) ON DELETE SET NULL,
+  external_id text NOT NULL,
+  number integer NOT NULL CHECK (number > 0),
+  title text NOT NULL CHECK (char_length(title) <= 200),
+  href text NOT NULL CHECK (char_length(href) <= 400),
+  status pull_request_status NOT NULL DEFAULT 'OPEN',
+  observed_at timestamptz NOT NULL,                       -- PR upsert watermark (§43)
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT pull_requests_org_external_key UNIQUE (organization_id, external_id),
+  CONSTRAINT pull_requests_workflow_key UNIQUE (workflow_id)
+);
+CREATE INDEX pull_requests_org_updated_idx ON pull_requests (organization_id, updated_at DESC, id DESC);   -- keyset list (R63)
+CREATE INDEX pull_requests_project_idx ON pull_requests (project_id, updated_at DESC);
+
+-- one review per PR and cycle number; the latest cycle_number is the one the Review Center shows (R58)
+CREATE TABLE reviews (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id uuid NOT NULL REFERENCES organizations(id),
+  project_id uuid NOT NULL REFERENCES projects(id),
+  workflow_id uuid NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+  pull_request_id uuid NOT NULL REFERENCES pull_requests(id) ON DELETE CASCADE,
+  agent_run_id uuid REFERENCES agent_runs(id) ON DELETE SET NULL,
+  external_id text NOT NULL,
+  cycle_number smallint NOT NULL CHECK (cycle_number BETWEEN 1 AND 100),
+  status review_status NOT NULL,
+  lanes jsonb NOT NULL CHECK (jsonb_typeof(lanes) = 'array' AND jsonb_array_length(lanes) = 7),  -- 7 × { lane, status, summary ≤ 240 }
+  observed_at timestamptz NOT NULL,                       -- review snapshot watermark (§43)
+  started_at timestamptz NOT NULL,
+  finished_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT reviews_pr_cycle_key UNIQUE (pull_request_id, cycle_number)
+);
+CREATE INDEX reviews_pr_cycle_idx ON reviews (pull_request_id, cycle_number DESC);
+
+-- individual findings: ≤ 50 per review, stable external_id across snapshots, five-state machine (§41)
+CREATE TABLE review_findings (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id uuid NOT NULL REFERENCES organizations(id),
+  project_id uuid NOT NULL REFERENCES projects(id),
+  workflow_id uuid NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+  review_id uuid NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+  external_id text NOT NULL,
+  position smallint NOT NULL CHECK (position BETWEEN 1 AND 50),
+  lane review_lane NOT NULL,
+  severity finding_severity NOT NULL,
+  blocking finding_blocking NOT NULL,
+  title text NOT NULL CHECK (char_length(title) <= 200),
+  description text NOT NULL CHECK (char_length(description) <= 600),
+  impact text CHECK (char_length(impact) <= 400),
+  evidence jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(evidence) = 'array' AND jsonb_array_length(evidence) <= 20),  -- EvidenceRef[] (R62)
+  recommended_fix text CHECK (char_length(recommended_fix) <= 400),
+  state finding_state NOT NULL DEFAULT 'OPEN',
+  state_changed_at timestamptz NOT NULL DEFAULT now(),
+  dismissed_reason text CHECK (char_length(dismissed_reason) <= 240),
+  dismissed_by text CHECK (char_length(dismissed_by) <= 120),
+  dismissed_by_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  dismissed_at timestamptz,
+  fix_cycle_id uuid REFERENCES review_cycles(id) ON DELETE SET NULL,   -- forward reference: created after review_cycles below (ALTER … ADD CONSTRAINT) or order the DDL accordingly
+  fix_requested_by text CHECK (char_length(fix_requested_by) <= 120),
+  fix_requested_at timestamptz,
+  issue_requested_by text CHECK (char_length(issue_requested_by) <= 120),
+  issue_requested_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT review_findings_review_external_key UNIQUE (review_id, external_id),
+  CONSTRAINT review_findings_review_position_key UNIQUE (review_id, position),
+  CONSTRAINT review_findings_dismissed_check CHECK (state <> 'DISMISSED' OR (dismissed_reason IS NOT NULL AND dismissed_at IS NOT NULL))
+);
+CREATE INDEX review_findings_review_idx ON review_findings (review_id, position);
+CREATE INDEX review_findings_blocking_open_idx ON review_findings (review_id) WHERE blocking = 'BLOCKING' AND state IN ('OPEN','FIX_REQUESTED');  -- FR-022 count (R60)
+
+-- review cycles: the fix loop's history, reported by the runtime, created by Apply Fix (R56)
+CREATE TABLE review_cycles (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id uuid NOT NULL REFERENCES organizations(id),
+  project_id uuid NOT NULL REFERENCES projects(id),
+  workflow_id uuid NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+  pull_request_id uuid NOT NULL REFERENCES pull_requests(id) ON DELETE CASCADE,
+  agent_run_id uuid REFERENCES agent_runs(id) ON DELETE SET NULL,
+  cycle_number smallint NOT NULL CHECK (cycle_number BETWEEN 1 AND 100),
+  findings_count smallint NOT NULL CHECK (findings_count BETWEEN 0 AND 50),
+  fixed_count smallint NOT NULL CHECK (fixed_count >= 0),
+  remaining_count smallint NOT NULL CHECK (remaining_count >= 0),
+  iteration smallint NOT NULL,
+  max_iterations smallint NOT NULL DEFAULT 5 CHECK (max_iterations BETWEEN 1 AND 20),
+  state review_cycle_state NOT NULL,
+  requested_by_type text NOT NULL CHECK (requested_by_type IN ('user','agent','system')),
+  requested_by_id text,
+  requested_by_name text NOT NULL CHECK (char_length(requested_by_name) <= 120),
+  observed_at timestamptz NOT NULL,                       -- cycle report watermark (§43); = started_at when created by Apply Fix
+  started_at timestamptz NOT NULL,
+  finished_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT review_cycles_pr_cycle_key UNIQUE (pull_request_id, cycle_number),
+  CONSTRAINT review_cycles_counts_check CHECK (fixed_count + remaining_count <= findings_count),
+  CONSTRAINT review_cycles_iteration_check CHECK (iteration BETWEEN 1 AND max_iterations)
+);
+CREATE INDEX review_cycles_pr_idx ON review_cycles (pull_request_id, cycle_number DESC);
+CREATE UNIQUE INDEX review_cycles_one_running_idx ON review_cycles (pull_request_id) WHERE state = 'RUNNING';   -- at most one RUNNING cycle per PR (R56/R59)
+
+-- updated_at, RLS (policies <table>_org_isolation on all four, pattern of 0002), grants for app_user:
+--   pull_requests, reviews, review_cycles: SELECT, INSERT, UPDATE;  review_findings: SELECT, INSERT, UPDATE, DELETE (absent findings are removed by the review ingest — R65)
+-- live updates (FR-034): statement-level triggers, one inbox_change_log row + one pg_notify('inbox_changed') per distinct workflow per statement,
+-- de-duplicated per transaction exactly like notify_agent_decision_changed() (0006):
+--   inbox_changed_pull_requests           AFTER INSERT OR UPDATE ON pull_requests   REFERENCING NEW TABLE AS inserted
+--   inbox_changed_reviews                 AFTER INSERT OR UPDATE ON reviews         REFERENCING NEW TABLE AS inserted
+--   inbox_changed_review_findings         AFTER INSERT OR UPDATE ON review_findings REFERENCING NEW TABLE AS inserted
+--   inbox_changed_review_findings_deleted AFTER DELETE ON review_findings           REFERENCING OLD TABLE AS deleted
+--   inbox_changed_review_cycles           AFTER INSERT OR UPDATE ON review_cycles   REFERENCING NEW TABLE AS inserted
+-- (Postgres allows one event per transition-table trigger, so INSERT and UPDATE are two CREATE TRIGGER statements sharing the name prefix
+--  where needed — the schema test lists the resulting tgname set.)
+```
+
+**Notes**: `fix_cycle_id` references `review_cycles`, which is created after `review_findings` — the migration either creates `review_cycles` first (it has no dependency on findings) or adds the constraint with `ALTER TABLE … ADD CONSTRAINT review_findings_fix_cycle_fkey` after both tables; the landed file decides and this section is updated to mirror it. `workflow_id` is denormalised onto all four tables so the NOTIFY function has it without a join (as `agent_decisions` does) and so RLS/visibility filters need no extra join. Mirrored in `packages/db/src/schema.ts` (`pullRequests`, `reviews`, `reviewFindings`, `reviewCycles`; eight `pgEnum`s); `RLS_TABLES` gains the four tables. **Existing assertions this migration changes** (`packages/db/tests/schema.test.ts`): the `inbox_changed_%` trigger list and the `pg_tables` list (`TABLES_ADDED_BY_0007`); `columnCounts` is unchanged because no pinned table gains a column.
+
+## 40. Review shapes (`packages/contracts/src/reviews.ts`, Zod; `ingest.ts` and `workflow-detail.ts` extended) — research R56, R60–R63, R65
+
+```ts
+export const ReviewLane = z.enum(REVIEW_LANES);                 // ordered as §38
+export const LaneStatus = z.enum(['PASS','WARN','FAIL']);
+export const ReviewStatus = z.enum(['RUNNING','COMPLETE','FAILED']);
+export const FindingSeverity = z.enum(['CRITICAL','HIGH','MEDIUM','LOW','INFO']);
+export const FindingBlocking = z.enum(['BLOCKING','NON_BLOCKING','SUGGESTION']);
+export const FindingState = z.enum(['OPEN','FIX_REQUESTED','FIXED','DISMISSED','ISSUE_REQUESTED']);
+export const ReviewCycleState = z.enum(['RUNNING','COMPLETED','FAILED','CANCELLED']);
+export const PullRequestStatus = z.enum(['OPEN','MERGED','CLOSED']);
+
+export const LaneResult = z.object({ lane: ReviewLane, status: LaneStatus, summary: line(240).nullable() }).strict();
+/** Read-model lane: the runtime's status plus the cross-check flag (R65). */
+export const LaneView = LaneResult.extend({ disputed: z.boolean(), findingsSay: LaneStatus.nullable() }).strict();
+
+export const ReviewFinding = z.object({
+  id: Uuid, externalId: ExternalId, position: z.number().int().min(1).max(50),
+  lane: ReviewLane, severity: FindingSeverity, blocking: FindingBlocking,
+  title: line(200), description: z.string().max(600), impact: z.string().max(400).nullable(),
+  evidence: z.array(EvidenceRef).max(20),                        // reused from agent-runs.ts (R62)
+  recommendedFix: z.string().max(400).nullable(),
+  state: FindingState, stateChangedAt: IsoDate,
+  dismissal: z.object({ reason: line(240), by: z.string(), at: IsoDate }).strict().nullable(),
+  fixRequest: z.object({ cycleNumber: z.number().int().min(1), by: z.string(), at: IsoDate }).strict().nullable(),
+  issueRequest: z.object({ by: z.string(), at: IsoDate }).strict().nullable(),
+}).strict();
+
+export const ReviewCycle = z.object({
+  id: Uuid, cycleNumber: z.number().int().min(1).max(100),
+  findingsCount: z.number().int().min(0).max(50), fixedCount: z.number().int().min(0), remainingCount: z.number().int().min(0),
+  iteration: z.number().int().min(1), maxIterations: z.number().int().min(1).max(20),
+  state: ReviewCycleState,
+  requestedBy: z.object({ type: z.enum(['user','agent','system']), name: z.string() }).strict(),
+  agentRunId: Uuid.nullable(),                                    // → agentRunHref() when present
+  startedAt: IsoDate, finishedAt: IsoDate.nullable(), observedAt: IsoDate,
+}).strict();
+
+export const ReviewSummary = z.object({
+  id: Uuid, externalId: ExternalId, cycleNumber: z.number().int(), status: ReviewStatus,
+  lanes: z.array(LaneView).length(7), agentRunId: Uuid.nullable(),
+  startedAt: IsoDate, finishedAt: IsoDate.nullable(), observedAt: IsoDate,
+}).strict();
+
+export const PullRequestReviewView = z.object({
+  pullRequest: z.object({
+    id: Uuid, externalId: ExternalId, number: z.number().int().min(1), title: line(200), href: HttpsUrl, status: PullRequestStatus,
+    workflow: z.object({ id: Uuid, externalId: ExternalId, title: z.string() }).strict(),
+    requirement: z.object({ id: Uuid, key: z.string(), title: z.string() }).strict().nullable(),   // href = /requirements/{id}
+    reviewStage: z.object({ id: Uuid, position: z.number().int(), name: z.string(), state: WorkflowState }).strict().nullable(),
+  }).strict(),
+  review: ReviewSummary.nullable(),                               // null before the first review snapshot
+  findings: z.array(ReviewFinding).max(50),                       // the latest review's findings, by position
+  cycles: z.array(ReviewCycle).max(20),                           // newest first
+  readyForMerge: z.boolean(),                                     // derived (R60), never stored
+  blockingOpenCount: z.number().int().min(0).max(50),
+  counts: z.object({ open: count, fixRequested: count, fixed: count, dismissed: count, issueRequested: count }).strict(),
+  me: z.object({ canAct: z.boolean(), reason: z.string().nullable() }).strict(),   // viewer → { false, "Only engineers, approvers and administrators can act on findings" }
+  generatedAt: IsoDate,
+}).strict();
+
+export const ReviewListItem = z.object({
+  pullRequestId: Uuid, number: z.number().int(), title: line(200), href: HttpsUrl, status: PullRequestStatus,
+  workflow: z.object({ id: Uuid, externalId: ExternalId, title: z.string() }).strict(),
+  requirement: z.object({ id: Uuid, key: z.string(), title: z.string() }).strict().nullable(),
+  reviewStatus: ReviewStatus.nullable(),
+  lanes: z.array(z.object({ lane: ReviewLane, status: LaneStatus }).strict()).max(7),   // [] before the first review
+  blockingOpenCount: z.number().int().min(0), readyForMerge: z.boolean(), updatedAt: IsoDate,
+}).strict();
+export const ReviewListQuery = z.object({ project: ProjectKey.optional(), status: ReviewStatus.optional(), cursor: z.string().max(200).optional() }).strict();
+export const ReviewListPage = z.object({ items: z.array(ReviewListItem).max(50), nextCursor: z.string().nullable(), generatedAt: IsoDate }).strict();
+
+export const ReviewIdParams = z.object({ pullRequestId: Uuid }).strict();
+export const FindingParams = ReviewIdParams.extend({ findingId: Uuid }).strict();
+export const DismissFindingBody = z.object({ reason: line(240) }).strict();          // required, non-empty (line() trims and rejects '')
+export const ApplyFixBody = z.object({}).strict();
+export const CreateIssueBody = z.object({}).strict();
+export const FindingActionResult = z.object({ finding: ReviewFinding, cycle: ReviewCycle.nullable(), readyForMerge: z.boolean(), blockingOpenCount: z.number().int() }).strict();
+
+// ingest.ts (EXTENDED) — every object .strict(); no field for reasoning exists (FR-018/SC-009, R65)
+export const PullRequestUpsert = z.object({
+  observedAt: IsoDate, workflowExternalId: ExternalId, number: z.number().int().min(1), title: line(200), href: HttpsUrl,
+  status: PullRequestStatus.default('OPEN'), requirementExternalId: ExternalId.nullable().optional(), reviewStagePosition: z.number().int().min(1).max(20).nullable().optional(),
+}).strict();
+export const FindingIngest = z.object({
+  externalId: ExternalId, lane: ReviewLane, severity: FindingSeverity, blocking: FindingBlocking,
+  title: line(200), description: z.string().min(1).max(600), impact: z.string().max(400).nullable().optional(),
+  evidence: z.array(EvidenceRef).max(20).default([]), recommendedFix: z.string().max(400).nullable().optional(),
+  status: z.enum(['open','fixed']),
+}).strict();
+export const ReviewIngest = z.object({
+  observedAt: IsoDate, externalId: ExternalId, status: ReviewStatus, startedAt: IsoDate, finishedAt: IsoDate.nullable().optional(),
+  agentRunExternalId: ExternalId.nullable().optional(),
+  lanes: z.array(LaneResult).length(7),                           // superRefine: each of the seven lanes exactly once
+  findings: z.array(FindingIngest).max(50),                       // superRefine: externalId unique
+}).strict();
+export const ReviewCycleIngest = z.object({
+  observedAt: IsoDate, iteration: z.number().int().min(1), maxIterations: z.number().int().min(1).max(20).optional(),
+  findingsCount: z.number().int().min(0).max(50), fixedCount: z.number().int().min(0), remainingCount: z.number().int().min(0),
+  state: ReviewCycleState, startedAt: IsoDate.optional(), finishedAt: IsoDate.nullable().optional(), agentRunExternalId: ExternalId.nullable().optional(),
+}).strict();                                                      // superRefine: fixedCount + remainingCount ≤ findingsCount; iteration ≤ maxIterations
+export const CycleParams = ExternalIdParams.extend({ cycle: z.coerce.number().int().min(1).max(100) });   // and { n } for /cycles/{n}
+export const ReviewIngestResult = z.object({ result: z.enum(['accepted','stale']), findings: z.object({ inserted: count, updated: count, deleted: count, fixed: count }).strict() }).strict();
+export const ReviewCycleIngestResult = z.object({ result: z.enum(['accepted','stale']), cycleNumber: z.number().int(), stageSynced: z.boolean() }).strict();
+
+// workflow-detail.ts (EXTENDED, additive)
+export const WorkflowPullRequest = z.object({
+  id: Uuid, number: z.number().int(), title: line(200), href: HttpsUrl, status: PullRequestStatus,
+  reviewStatus: ReviewStatus.nullable(), blockingOpenCount: z.number().int().min(0), readyForMerge: z.boolean(),
+}).strict();
+// WorkflowDetail.pullRequest: WorkflowPullRequest.nullable() — default null so existing fixtures stay valid
+```
+
+`IsoDate`, `Uuid`, `ExternalId`, `line`, `count`, `ProjectKey`, `HttpsUrl` (https-only URL ≤ 400) and `DecisionLink` are the existing `common.ts` primitives (`HttpsUrl` is added there if absent). `EvidenceRef` is imported from `agent-runs.ts`, not redefined.
+
+## 41. State machines (research R56, R59, R61, R65)
+
+**Finding** (`review_findings.state`; every transition sets `state_changed_at`):
+
+| From | To | Actor | Trigger | Side effects |
+|------|----|-------|---------|--------------|
+| — | `OPEN` | runtime | review ingest inserts a new `external_id` | — |
+| `OPEN` | `DISMISSED` | human (engineer/approver/admin) | `POST …/dismiss { reason }` | `dismissed_*` set; `audit_events finding.dismissed { reason }`; NOTIFY |
+| `OPEN` | `FIX_REQUESTED` | human | `POST …/fix` | `fix_cycle_id`, `fix_requested_*`; cycle created or attached (R56); Review stage → RUNNING when a cycle is created and `review_stage_id` is set (R57a); `audit_events finding.fix_requested { cycleNumber, iteration }`; NOTIFY |
+| `OPEN` | `ISSUE_REQUESTED` | human | `POST …/issue` | `issue_requested_*`; `audit_events finding.issue_requested { title, lane, severity }`; NOTIFY; **no outbound call** (R61) |
+| `OPEN`, `FIX_REQUESTED` | `FIXED` | runtime | review ingest reports `status: 'fixed'` | — (`ingestion_log` only) |
+| `FIXED` | `OPEN` | runtime | review ingest reports `status: 'open'` again (regression) | — |
+| `DISMISSED`, `ISSUE_REQUESTED` | (unchanged) | runtime | any snapshot | content updated, state preserved (R65) |
+| any | (row deleted) | runtime | `external_id` absent from the snapshot | `inbox_changed_review_findings_deleted` NOTIFY |
+| `FIX_REQUESTED`, `FIXED`, `DISMISSED`, `ISSUE_REQUESTED` | — | human | any action | **409 `finding-already-actioned`** with `extensions { state, actedAt, actedBy }` and the recorded outcome in `detail` (R59) |
+
+Pure rule: `nextFindingState(current: FindingState, reported: 'open' | 'fixed'): FindingState` (`@cdevi/contracts/review-model`) implements the runtime rows; `humanTransition(current, action: 'dismiss' | 'fix' | 'issue'): FindingState | null` returns `null` when not `OPEN` (the API maps `null` to 409).
+
+**Review cycle** (`review_cycles.state`):
+
+| From | To | Actor | Trigger | Review stage (R57, only if `review_stage_id` set and this is the latest cycle) |
+|------|----|-------|---------|-----------------------------------------------------------------------------|
+| — | `RUNNING` | human via Apply Fix (no RUNNING cycle exists) | `POST …/fix` | → `RUNNING`, reason "Fix requested by {actor} on finding #{position}", `workflow_transitions` row with `user_id` |
+| `RUNNING` | `RUNNING` | runtime | `PUT …/cycles/{n}` (counts/iteration progress) | → `RUNNING`, reason "Review cycle #n running — iteration i of m" iff `observedAt > state_observed_at` |
+| `RUNNING` | `COMPLETED` | runtime | `PUT …/cycles/{n} { state: COMPLETED }` | → `COMPLETED`, reason "Review cycle #n completed — r findings remaining" iff newer |
+| `RUNNING` | `FAILED` | runtime | `{ state: FAILED }` | → `FAILED`, `error_summary` "Review cycle #n failed" iff newer |
+| `RUNNING` | `CANCELLED` | runtime | `{ state: CANCELLED }` | → `CANCELLED` iff newer |
+| terminal | any | runtime | older or equal `observedAt` | nothing (`{ result: 'stale' }`); a **newer** report for a terminal cycle is accepted (the runtime may correct counts) but the stage is only re-synced if the cycle is still the latest |
+| — | `RUNNING` | runtime | `PUT …/cycles/{n}` for an unknown `n` | the cycle row is created (`requested_by_type = 'agent'`) — the runtime may start a cycle on its own (e.g. an automatic re-review) |
+
+`review_cycles_one_running_idx` guarantees at most one `RUNNING` cycle per PR; a runtime report that would create a second RUNNING cycle while another is RUNNING is 409 `cycle-conflict`. Pure rule: `cycleFromFixRequest(cycles, openFindings, actor, now): ReviewCycle` computes `cycleNumber = max + 1`, `iteration = (latest.iteration ?? 0) + 1` capped at `maxIterations` (when the cap is reached the API answers 409 `max-iterations-reached` and the UI explains "Iteration limit reached — escalate" — the runtime may raise `maxIterations` through the cycle ingest), `findingsCount = openFindings`, `fixedCount = 0`, `remainingCount = openFindings`.
+
+## 42. Routes and read-model rules (research R59, R60, R63, R64)
+
+| Route | Auth | Request | Response | Problems |
+|-------|------|---------|----------|----------|
+| `GET /reviews` | session (`requireUser`), `visibleProjects` | `ReviewListQuery` | 200 `ReviewListPage` (50 items; `nextCursor`); `Server-Timing`, `Cache-Control: no-store` | 400 `validation-failed` (bad cursor/status); 401 |
+| `GET /reviews/{pullRequestId}` | session, `visibleProjects` | `ReviewIdParams` | 200 `PullRequestReviewView` | 400 (non-uuid); 401; **404 `not-found`** when unknown **or** invisible (no 403 — existence is not leaked) |
+| `POST /reviews/{pullRequestId}/findings/{findingId}/dismiss` | session + role ∈ {engineer, approver, administrator} + CSRF origin | `DismissFindingBody` | 200 `FindingActionResult` (`cycle: null`) | 400 (missing/empty/too-long reason); 401; **403 `forbidden`** (viewer — `detail` "Only engineers, approvers and administrators can act on findings"); 404 (unknown/invisible PR or finding, or finding not in the PR's latest review); **409 `finding-already-actioned`** |
+| `POST …/fix` | same | `ApplyFixBody` | 200 `FindingActionResult` (`cycle` = created or attached) | as above + 409 `max-iterations-reached` |
+| `POST …/issue` | same | `CreateIssueBody` | 200 `FindingActionResult` (`cycle: null`) | as above |
+| `PUT /ingest/pull-requests/{externalId}` | ingestion principal (`requirePrincipal`, scope includes the workflow's project) | `PullRequestUpsert` | 200 `IngestResult` `{ result: 'accepted' \| 'stale' }` | 400 (schema, unknown key — no echo); 401; 403 (scope); 404 (unknown `workflowExternalId`, `requirementExternalId` or stage position); 409 `workflow-has-pull-request` (another PR already linked to that workflow) |
+| `PUT /ingest/pull-requests/{externalId}/reviews/{cycle}` | ingestion principal | `ReviewIngest` | 200 `ReviewIngestResult` | 400 (schema, ≠ 7 lanes, duplicate lane, > 50 findings, duplicate finding `externalId`, > 20 evidence, **any unknown key**); 401; 403; 404 (unknown PR) |
+| `PUT /ingest/pull-requests/{externalId}/cycles/{n}` | ingestion principal | `ReviewCycleIngest` | 200 `ReviewCycleIngestResult` | 400; 401; 403; 404; 409 `cycle-conflict` |
+| `GET /workflows/{id}` (EXTENDED, additive) | unchanged | unchanged | `pullRequest: WorkflowPullRequest \| null` | unchanged |
+
+**Read model** (`apps/api/src/services/review-center.ts`), one `REPEATABLE READ` transaction, ≤ 5 statements: (1) PR + workflow + requirement + Review stage (`LEFT JOIN`s) filtered by `visibleProjects` → 404 when no row; (2) latest review (`ORDER BY cycle_number DESC LIMIT 1`); (3) its findings `ORDER BY position` (≤ 50); (4) cycles `ORDER BY cycle_number DESC LIMIT 20`; (5) nothing else — `readyForMerge`, `blockingOpenCount`, `counts`, `lanes[].disputed/findingsSay` (`laneCrossCheck`) and `me.canAct` are computed in TypeScript from (1)–(4). `GET /reviews`: one statement over `pull_requests` with `LEFT JOIN LATERAL` (latest review: status + lanes) and a `COUNT(*) FILTER` over `review_findings_blocking_open_idx` for the blocking count, `WHERE project_id = ANY($visible) [AND project = $p] [AND latest.status = $s] AND (updated_at, id) < ($cursorUpdatedAt, $cursorId) ORDER BY updated_at DESC, id DESC LIMIT 51` (the 51st row only decides `nextCursor`). Payload ceiling: `PullRequestReviewView` at the schema maximum ≈ 1.2 MB, asserted ≤ 1.5 MB; realistic fixture ≤ 64 KB.
+
+**Actions** (`apps/api/src/services/finding-actions.ts`), one transaction each (default isolation): role check (403) → `SELECT … FOR UPDATE OF f` joined to the PR's latest review (404 when the finding belongs to an older review or an invisible PR) → `humanTransition` (`null` → 409 with the recorded outcome) → for `fix`: `SELECT … FROM review_cycles WHERE pull_request_id = $1 AND state = 'RUNNING' FOR UPDATE`; none → `pg_advisory_xact_lock(hashtext($1))`, re-check, `INSERT` the cycle from `cycleFromFixRequest` (409 `max-iterations-reached` when capped), Review stage write + `workflow_transitions` (R57a) → finding `UPDATE` → `audit_events` `INSERT` → the triggers write `inbox_change_log`/NOTIFY → respond with the re-read finding, the cycle and the recomputed `readyForMerge`/`blockingOpenCount`.
+
+## 43. Ingestion rules — watermarks and reconciliation (research R57, R65)
+
+Every US6 ingest runs in one transaction: principal scope (404 unknown PR/workflow in the principal's organization; 403 when the principal's project scope excludes the PR's project, `ingestion_log outcome='forbidden'`), then `SELECT … FROM pull_requests WHERE organization_id = $org AND external_id = $ext FOR UPDATE` (the **PR row** is the lock for all three routes, so a PR's reviews, cycles and its own upsert serialise), then the route's watermark:
+
+| Route | Watermark column | Stale rule | Writes on accept |
+|-------|------------------|------------|------------------|
+| `PUT …/pull-requests/{externalId}` | `pull_requests.observed_at` | `observedAt ≤ stored` → `{ result: 'stale' }`, nothing written but `ingestion_log` | upsert `pull_requests` (`INSERT … ON CONFLICT (organization_id, external_id) DO UPDATE`); `requirement_id` resolved from `requirementExternalId` (404 when unknown; `null` clears), `review_stage_id` from `reviewStagePosition` (404 when the workflow has no such stage; `null` clears); linking a second PR to a workflow → 409 |
+| `PUT …/reviews/{cycle}` | `reviews.observed_at` of the row `(pull_request_id, cycle_number = cycle)` (`NULL` = no row → always accepted) | `observedAt ≤ stored` → `{ result: 'stale', findings: { 0,0,0,0 } }` | upsert `reviews` (status, lanes, times, `agent_run_id` from `agentRunExternalId`, `observed_at`); reconcile findings by `external_id` (§41: `DELETE` absent → `INSERT` new as `OPEN` → `UPDATE` existing: content + `position` + `nextFindingState`); `ingestion_log (route, target_external_id, outcome, detail='observedAt=… cycle=… +i ~u -d fixed=f')`. The statement-level triggers notify once per statement (three statements at most → de-duplicated to one frame per transaction by the transaction-local setting, as 0006 does) |
+| `PUT …/cycles/{n}` | `review_cycles.observed_at` of `(pull_request_id, cycle_number = n)` | `observedAt ≤ stored` → `{ result: 'stale', cycleNumber: n, stageSynced: false }` | upsert `review_cycles` (counts, iteration, `max_iterations` when given, state, times, `agent_run_id`); if `n` is the PR's highest cycle number and `review_stage_id` is set and `observedAt > workflow_stages.state_observed_at` → stage write + `workflow_transitions` row (R57b), `stageSynced: true`; creating a second RUNNING cycle → 409 `cycle-conflict` |
+
+Validation happens before step 1 (Fastify + Zod): every ingest body is `.strict()` at every level — an unknown key at any level → 400 `validation-failed` with `errors[] = { pointer, message: 'Unrecognized key' }` and **no echo of the offending value or body**; `lanes` must be exactly the seven lanes once each; `findings[].externalId` unique; bounds per §40. A review snapshot with `findings: []` is valid (all clear): every finding of that review is deleted, the deletion notifies, `readyForMerge` becomes `true`. Human actions and ingests never race silently: the PR row lock serialises them, and a human action on a finding the snapshot just deleted answers 404.
+
+## 44. Seed additions (research R64) — `packages/db/src/seed/reviews.ts` (NEW), `seed/index.ts` (EXTENDED)
+
+No new workflows, stages, runs, artifacts, test runs, approvals, clarifications or requirements: `EXPECTED_SHOWCASE`, `EXPECTED_DASHBOARD`, `EXPECTED_AGENT_DECISIONS` and every US2/US4 `EXPECTED_*` figure are unchanged and re-asserted. `workflows.pull_request_ref` of `s500-001` is **not** changed (the Review Center reads `pull_requests`).
+
+| Row | Content |
+|-----|---------|
+| `pull_requests` `s500-pr-1821` | workflow `s500-001` ("Add rate limiting to /api/auth", `payments-api`, stage 6 "Review" is `WAITING_FOR_HUMAN`), `requirement_id` = the requirement whose `linkedWorkflow` is `SHOWCASE_WAITING` (the `IN_IMPLEMENTATION` one seeded by `requirements.ts`), `review_stage_id` = stage 6, `number 1821`, `title "PAY-1391 Refund processing"`, `href https://git.cdevi.demo/payments-api/pull/1821`, `status OPEN`, `observed_at = base − 10 min` |
+| `reviews` cycle 1 (`s500-rev-1821-1`, COMPLETE, `base − 6 h`) | 7 lanes: security FAIL, correctness FAIL, edge_cases WARN, testing WARN, dependencies PASS, architecture PASS, general WARN; 12 findings (all now `FIXED` except 4 carried forward — historical; the Review Center shows only the latest review) |
+| `reviews` cycle 2 (`s500-rev-1821-2`, COMPLETE, `base − 3 h`) | security FAIL, edge_cases FAIL, testing WARN, others PASS; 9 findings, of which 2 were `DISMISSED` by Engineer 1 with reasons — 7 were open when cycle #3 started (its `findings_count`) |
+| `reviews` cycle 3 (`s500-rev-1821-3`, **latest**, COMPLETE, `agent_run_id` = `s500-001-r8`, `base − 40 min`) | lanes in display order: correctness **WARN** "One unchecked null path in RefundService", security **FAIL** "Authorization gap on the refund endpoint", dependencies **PASS** "No new dependencies", edge_cases **FAIL** "Partial refunds above the captured amount are not rejected", testing **WARN** "Refund paths lack negative tests", architecture **PASS** "Follows the payments module boundaries", general **WARN** "Minor naming inconsistencies". **7 findings** (`external_id` `s500-f-1821-3-{position}`), one per lane, `position` = lane order: (1) correctness MEDIUM / NON_BLOCKING `OPEN` "Null `originalPayment` not handled in `RefundService.refund()`", evidence `file` `RefundService.java:112` (accessible); (2) **security CRITICAL / BLOCKING `OPEN`** "Refund endpoint does not verify authorization against the original payment owner" — impact "A user may potentially refund another user's payment.", evidence `file` `RefundController.java:84` (accessible, repo permalink) + `url` "Threat model — refunds" with `accessible: false` and no `href` (the **restricted** row), recommended fix "Validate payment ownership before processing."; (3) dependencies LOW / SUGGESTION `OPEN` "Pin `payments-sdk` to the tested minor"; (4) **edge_cases HIGH / BLOCKING `OPEN`** "Partial refund amount is not bounded by the captured amount", evidence `file` `RefundService.java:140` + `ticket` `PAY-1391` (accessible, Jira browse URL); (5) testing MEDIUM / NON_BLOCKING `OPEN` "No negative test for refunds after the 90-day window"; (6) architecture LOW / SUGGESTION `OPEN` "Move `RefundPolicy` next to the other payment policies"; (7) general INFO / SUGGESTION `OPEN` "Inconsistent naming: `refundAmt` vs `refundAmount`". Descriptions ≤ 600, no field named anything like reasoning |
+| `review_cycles` #1 (COMPLETED, iteration 1 of 5, `base − 5 h` → `base − 4 h`) | 12 / 8 / 4, `requested_by` user "Engineer 1" |
+| `review_cycles` #2 (COMPLETED, iteration 2 of 5, `base − 2.5 h` → `base − 2 h`) | 9 / 6 / 3, user "Engineer 1" |
+| `review_cycles` #3 (COMPLETED, iteration 3 of 5, `base − 90 min` → `base − 50 min`, `agent_run_id` = `s500-001-r7`) | **7 / 6 / 1** (UI spec §22), user "Approver 1" — the cycle whose output review #3 above reviewed; its one remaining finding is the CRITICAL security finding carried into review #3 |
+
+Derived seed facts (asserted in `packages/db/tests/seed.test.ts` `FR-020 seed reviews …`, `FR-022 seed blocking …`): `EXPECTED_REVIEWS = { pullRequests: 1, reviews: 3, latestFindings: 7, latestBlockingOpen: 2, cycles: 3, runningCycles: 0, restrictedEvidence: 1 }`; `readyForMerge(latest) === false`; `blockingNoticeText(2) === 'Not ready for merge approval — 2 blocking findings open'`; `laneCrossCheck(review3.lanes, findings)` is empty (the seeded lanes agree with the findings — the disputed state is exercised by an API test fixture, not the seed); `review_cycles_one_running_idx` holds. `seed/index.ts`: `TRUNCATE` list gains the four tables (before `workflows`, or rely on CASCADE); rows are inserted after workflows, stages, agent runs and requirements so `workflow_id`, `review_stage_id`, `agent_run_id` and `requirement_id` resolve from inserted uuids. Every seeded timestamp lies within the workflow's `started_at … base` window.
