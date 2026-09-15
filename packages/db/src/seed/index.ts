@@ -241,8 +241,8 @@ async function insertShowcase(
       counts.runs++;
       const stageId = stageIds.get(run.stagePosition);
       const rr = await client.query<{ id: string }>(
-        `INSERT INTO agent_runs (organization_id, project_id, workflow_id, stage_id, external_id, agent, model, state, started_at, finished_at, summary, timeline, steps)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb) RETURNING id`,
+        `INSERT INTO agent_runs (organization_id, project_id, workflow_id, stage_id, external_id, agent, model, state, started_at, finished_at, summary, timeline, steps, decisions_observed_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb,$14) RETURNING id`,
         [
           org,
           ref.projectId,
@@ -257,6 +257,9 @@ async function insertShowcase(
           run.summary,
           JSON.stringify(run.timeline),
           JSON.stringify(run.steps),
+          run.decisions.length
+            ? new Date(Math.max(...run.decisions.map((d) => d.decidedAt.getTime())))
+            : null,
         ],
       );
       const runId = rr.rows[0]!.id;
