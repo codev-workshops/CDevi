@@ -1,6 +1,7 @@
 'use client';
 
 import type { ArtifactType, Role, WorkflowAction, WorkflowDetail } from '@cdevi/contracts';
+import { agentRunHref } from '@cdevi/contracts/agent-run-model';
 import {
   ActionBar,
   Button,
@@ -77,6 +78,28 @@ function When({ at, now }: { at: string; now: Date }) {
 
 const stageLabel = (s: { position: number; name: string } | null | undefined) =>
   s ? `${s.position}. ${s.name}` : null;
+
+type StageRuns = WorkflowDetail['stages'][number]['agentRuns'];
+
+/** US5 drill-down (ui-agent-run.md §4): one plain link per run, newest first, each followed by its state word. */
+function InspectRuns({ runs, leadingSep = true }: { runs: StageRuns; leadingSep?: boolean }) {
+  return (
+    <>
+      {runs.map((r, i) => (
+        <Fragment key={r.id}>
+          {leadingSep || i > 0 ? <Sep /> : null}
+          <a
+            href={agentRunHref(r.id)}
+            aria-label={`Inspect run ${i + 1} of ${runs.length} by ${r.agent}, ${stateToPill[r.state].word}`}
+          >
+            Inspect run{runs.length > 1 ? ` · ${r.agent}` : ''}
+          </a>{' '}
+          <StatePill state={r.state} />
+        </Fragment>
+      ))}
+    </>
+  );
+}
 
 /** Workflow Detail (contracts/ui-workflow-detail-screen.md §2). Everything shown comes from one `WorkflowDetail`. */
 export function WorkflowDetailScreen({ initial, userRole }: WorkflowDetailScreenProps) {
@@ -193,6 +216,8 @@ export function WorkflowDetailScreen({ initial, userRole }: WorkflowDetailScreen
       ? 'Viewers cannot retry, escalate or cancel workflows.'
       : 'Only engineers and administrators can retry or cancel.';
   const attentionWord = attention ? stateToPill[attention.state].word : null;
+  const currentRuns: StageRuns =
+    stages.find((s) => s.id === currentStage?.stage.id)?.agentRuns ?? [];
 
   const currentItems: KeyValueItem[] = currentStage
     ? [
@@ -209,6 +234,17 @@ export function WorkflowDetailScreen({ initial, userRole }: WorkflowDetailScreen
         {
           term: 'Next stage',
           detail: stageLabel(detail.nextStage) ?? 'None — workflow complete',
+        },
+        {
+          term: 'Run',
+          detail:
+            currentRuns.length === 0 ? (
+              'No run recorded'
+            ) : (
+              <span>
+                <InspectRuns runs={currentRuns} leadingSep={false} />
+              </span>
+            ),
         },
       ]
     : [];
@@ -388,6 +424,7 @@ export function WorkflowDetailScreen({ initial, userRole }: WorkflowDetailScreen
                     {humanDuration(s.elapsedMs)}
                   </>
                 ) : null}
+                <InspectRuns runs={s.agentRuns} />
               </span>
             }
           />

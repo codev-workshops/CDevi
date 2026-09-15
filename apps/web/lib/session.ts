@@ -1,5 +1,6 @@
 import 'server-only';
 import type {
+  AgentRunDetail,
   ApprovalCenterSnapshot,
   DashboardSnapshot,
   InboxSnapshot,
@@ -82,6 +83,13 @@ export const getRequirementList = cache(
 /** One requirement detail per id per request (specs/001 US4 scenarios 1, 3, 4). */
 export const getRequirementDetail = cache(async (id: string): Promise<RequirementDetail> => {
   return apiFetch<RequirementDetail>(`/api/requirements/${encodeURIComponent(id)}`, {
+    cookie: await cookieHeader(),
+  });
+});
+
+/** One agent run detail per id per request (specs/001 US5, ui-agent-run.md §1). */
+export const getAgentRunDetail = cache(async (id: string): Promise<AgentRunDetail> => {
+  return apiFetch<AgentRunDetail>(`/api/agent-runs/${encodeURIComponent(id)}`, {
     cookie: await cookieHeader(),
   });
 });

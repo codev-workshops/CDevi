@@ -2,7 +2,7 @@ import { screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import type { Me } from '@cdevi/contracts';
 import { AppFrame } from '../../app/(app)/AppFrame';
-import { NAV_ITEMS } from '../../lib/navigation';
+import { NAV_ITEMS, PLACEHOLDER_SECTIONS } from '../../lib/navigation';
 import { expectNoViolations, renderApp } from '../a11y';
 import { __nav } from '../mocks/next-navigation';
 
@@ -70,6 +70,22 @@ describe('App shell (FR-001, FR-003, FR-030, ui-inbox-screen.md §1)', () => {
       </AppFrame>,
     );
     expect(screen.getByRole('complementary', { name: 'Details' })).toHaveTextContent('side');
+  });
+
+  it('FR-032 /agents remains a placeholder section and /agents/runs/{id} is not a nav item but highlights Agents', () => {
+    expect(PLACEHOLDER_SECTIONS.agents).toBe('Agents');
+    expect(NAV_ITEMS.some((n) => n.href.startsWith('/agents/'))).toBe(false);
+    __nav.pathname = '/agents/runs/00000000-0000-7000-8000-000000000009';
+    renderApp(
+      <AppFrame me={me} needsYouCount={0}>
+        <p>content</p>
+      </AppFrame>,
+    );
+    const nav = screen.getByRole('navigation');
+    const current = within(nav).getAllByRole('link').filter((l) => l.getAttribute('aria-current'));
+    expect(current).toHaveLength(1);
+    expect(current[0]).toHaveTextContent('Agents');
+    expect(current[0]).toHaveAttribute('href', '/agents');
   });
 
   it('is accessible', async () => {
