@@ -1,11 +1,5 @@
 import { createPool } from '@cdevi/db';
-import {
-  expect,
-  test,
-  type APIRequestContext,
-  type Locator,
-  type Page,
-} from '@playwright/test';
+import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import { E2E } from '../../playwright.config';
 import { API, expectAxeClean, signIn } from './helpers';
 
@@ -126,7 +120,9 @@ const problemHeaders = (h: Record<string, string>) =>
 const findingLi = (page: Page, position: number) => page.locator(`#finding-${position}`);
 /** The `<dd>` that follows the `<dt>` `term` inside `scope`'s KeyValue list. */
 const kv = (scope: Locator, term: string) =>
-  scope.locator('dt', { hasText: new RegExp(`^${term}$`) }).locator('xpath=following-sibling::dd[1]');
+  scope
+    .locator('dt', { hasText: new RegExp(`^${term}$`) })
+    .locator('xpath=following-sibling::dd[1]');
 const reviewStagePill = (page: Page) =>
   page.getByRole('list', { name: 'Stage pipeline' }).locator('#stage-6 .cd-pill[data-state]');
 const readinessNotice = (page: Page) =>
@@ -207,14 +203,12 @@ test.describe('US6 Review Center and fix loop', () => {
     await expect(
       header.getByRole('link', { name: 'Open pull request #1821 on GitHub (opens in a new tab)' }),
     ).toHaveAttribute('href', 'https://github.com/acme/payments-api/pull/1821');
-    await expect(header.getByRole('link', { name: 'Ledger export for month-end close' })).toHaveAttribute(
-      'href',
-      /^\/requirements\/[0-9a-f-]{36}$/,
-    );
-    await expect(header.getByRole('link', { name: 'Add rate limiting to /api/auth' })).toHaveAttribute(
-      'href',
-      `/workflows/${ids.workflowId}`,
-    );
+    await expect(
+      header.getByRole('link', { name: 'Ledger export for month-end close' }),
+    ).toHaveAttribute('href', /^\/requirements\/[0-9a-f-]{36}$/);
+    await expect(
+      header.getByRole('link', { name: 'Add rate limiting to /api/auth' }),
+    ).toHaveAttribute('href', `/workflows/${ids.workflowId}`);
     await expect(header).toContainText('Review cycle #3');
     await expect(page.getByRole('link', { name: 'Back to workflow' })).toHaveAttribute(
       'href',
@@ -238,7 +232,9 @@ test.describe('US6 Review Center and fix loop', () => {
       'true',
     );
     await expect(page.getByRole('tab', { name: 'Cycles (3)' })).toBeVisible();
-    await expect(page.getByRole('list', { name: 'Findings' }).locator(':scope > li')).toHaveCount(7);
+    await expect(page.getByRole('list', { name: 'Findings' }).locator(':scope > li')).toHaveCount(
+      7,
+    );
 
     // The security finding: severity and blocking class as words, impact, locator, recommended fix.
     const security = findingLi(page, 2);
@@ -352,7 +348,9 @@ test.describe('US6 Review Center and fix loop', () => {
     await signIn(page, 'viewer1@cdevi.demo');
     await page.goto(`/reviews/${ids.prId}`);
     await expect(page.getByRole('heading', { level: 1 })).toHaveText(`PR #1821 — ${PR_TITLE}`);
-    await expect(page.getByRole('list', { name: 'Findings' }).locator(':scope > li')).toHaveCount(7);
+    await expect(page.getByRole('list', { name: 'Findings' }).locator(':scope > li')).toHaveCount(
+      7,
+    );
     const explanation = page.locator('.cd-help').filter({ hasText: VIEWER_EXPLANATION });
     await expect(explanation).toBeVisible();
     const explanationId = await explanation.getAttribute('id');
@@ -625,7 +623,9 @@ test.describe('US6 Review Center and fix loop', () => {
     await expect(findingLi(page, 4).locator('.cd-acts .cd-pill')).toHaveText('fixed');
     await expect(findingLi(page, 5).locator('.cd-acts .cd-pill')).toHaveText('dismissed');
     const lanes = page.getByRole('group', { name: 'Review lanes' }).locator('.cd-check');
-    await expect(lanes.nth(1)).toContainText('Pass · review agent · Ownership check added in cycle 4');
+    await expect(lanes.nth(1)).toContainText(
+      'Pass · review agent · Ownership check added in cycle 4',
+    );
     await expect(page.getByRole('region', { name: 'Pull request' })).toContainText(
       'Review cycle #4',
     );
