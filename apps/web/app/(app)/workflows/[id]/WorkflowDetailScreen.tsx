@@ -2,6 +2,7 @@
 
 import type { ArtifactType, Role, WorkflowAction, WorkflowDetail } from '@cdevi/contracts';
 import { agentRunHref } from '@cdevi/contracts/agent-run-model';
+import { reviewStatusWord } from '@cdevi/contracts/review-model';
 import {
   ActionBar,
   Button,
@@ -135,7 +136,10 @@ export function WorkflowDetailScreen({ initial, userRole }: WorkflowDetailScreen
   const escalateId = useId();
   const h1Ref = useRef<HTMLSpanElement | null>(null);
 
-  const { workflow, stages, currentStage, progress, activity, artifacts, testRuns } = detail;
+  const pullRequestHeadingId = useId();
+
+  const { workflow, stages, currentStage, progress, activity, artifacts, testRuns, pullRequest } =
+    detail;
   const { attention, failure, actions } = detail;
   const now = new Date(detail.generatedAt);
   const id = workflow.id;
@@ -289,8 +293,66 @@ export function WorkflowDetailScreen({ initial, userRole }: WorkflowDetailScreen
           ? `Stage ${workflow.stage.index} of ${workflow.stage.count}${workflow.stage.name ? ` · ${workflow.stage.name}` : ''}`
           : null}
         {workflow.elapsedMs !== null ? `Elapsed ${humanDuration(workflow.elapsedMs)}` : null}
-        {workflow.pullRequestRef ? <Mono>{workflow.pullRequestRef}</Mono> : null}
+        {!pullRequest && workflow.pullRequestRef ? <Mono>{workflow.pullRequestRef}</Mono> : null}
       </PageMeta>
+
+      {pullRequest ? (
+        <Card as="section" aria-labelledby={pullRequestHeadingId}>
+          <h2 id={pullRequestHeadingId}>Pull request</h2>
+          <KeyValue
+            items={[
+              {
+                term: 'Pull request',
+                detail: (
+                  <a
+                    href={pullRequest.href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label={`Open pull request #${pullRequest.number} on GitHub (opens in a new tab)`}
+                  >
+                    #{pullRequest.number} {pullRequest.title}
+                  </a>
+                ),
+              },
+              {
+                term: 'AI review',
+                detail: pullRequest.reviewStatus ? (
+                  <Pill
+                    variant={
+                      pullRequest.reviewStatus === 'FAILED'
+                        ? 'fail'
+                        : pullRequest.reviewStatus === 'RUNNING'
+                          ? 'run'
+                          : 'done'
+                    }
+                  >
+                    {reviewStatusWord(pullRequest.reviewStatus)}
+                  </Pill>
+                ) : (
+                  <Pill variant="neutral">no review yet</Pill>
+                ),
+              },
+              {
+                term: 'Merge readiness',
+                detail: pullRequest.readyForMerge ? (
+                  <>
+                    <Pill variant="done">ready</Pill> Ready for merge approval
+                  </>
+                ) : (
+                  <>
+                    <Pill variant="blocked">not ready</Pill> Not ready for merge approval —{' '}
+                    {pullRequest.blockingOpenCount} blocking{' '}
+                    {pullRequest.blockingOpenCount === 1 ? 'finding' : 'findings'} open
+                  </>
+                ),
+              },
+            ]}
+          />
+          <Button variant="ghost" href={pullRequest.reviewHref}>
+            Open review
+          </Button>
+        </Card>
+      ) : null}
 
       <Card>
         <Meter label="Progress" value={progress.completed} max={progress.total} />

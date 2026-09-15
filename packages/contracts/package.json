@@ -14,7 +14,8 @@
     "./dashboard-model": "./src/dashboard-model.ts",
     "./vocabulary": "./src/vocabulary.ts",
     "./requirement-rules": "./src/requirement-rules.ts",
-    "./agent-run-model": "./src/agent-run-model.ts"
+    "./agent-run-model": "./src/agent-run-model.ts",
+    "./review-model": "./src/review-model.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",

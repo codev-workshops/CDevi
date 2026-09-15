@@ -23,7 +23,16 @@ import {
   JIRA_MAPPING,
   REQUIREMENT_SHOWCASE,
 } from '../src/seed/requirements';
+import { buildReviewSeed, EXPECTED_REVIEW_SEED } from '../src/seed/reviews';
 import { seed, SeedRefusedError } from '../src/seed/index';
+import {
+  blockingOpenCount,
+  LaneResult,
+  laneStatusFromFindings,
+  readyForMerge,
+  REVIEW_LANES,
+  ReviewIngest,
+} from '@cdevi/contracts';
 
 const BASE = new Date('2026-09-14T09:00:00Z');
 const DAY = 86_400_000;
@@ -1128,6 +1137,298 @@ describe('S-500 agent decisions showcase (specs/001 US5, data-model.md §37)', (
       expect(clr.links.agentRun).toBe(`/agents/runs/${active.id}`);
       expect(Object.keys(clr.links)).toHaveLength(5);
       expect(await n(`select count(*) c from inbox_change_log`)).toBe(0);
+    });
+  });
+});
+
+describe('US6 review seed (specs/001 US6; plan "Data model — 0007_reviews.sql")', () => {
+  it('FR-020 is deterministic: PR #1821 pr-1821 on s500-001 with one COMPLETE cycle-3 review, 7 lane results (security FAIL, correctness WARN, others PASS) and 7 findings find-1821-1…7, one per lane in lane order', () => {
+    const a = buildReviewSeed(BASE);
+    expect(JSON.stringify(a)).toBe(JSON.stringify(buildReviewSeed(BASE)));
+    expect(a.pullRequest).toMatchObject({
+      externalId: 'pr-1821',
+      workflow: SHOWCASE_WAITING,
+      number: 1821,
+      title: 'PAY-1391 Refund processing',
+      status: 'OPEN',
+    });
+    expect(a.pullRequest.href).toMatch(/^https:\/\/.*\/pull\/1821$/);
+    expect(a.review).toMatchObject({
+      externalId: 'rev-1821-3',
+      cycleNumber: 3,
+      status: 'COMPLETE',
+    });
+    expect(a.review.agentRun).toBe('s500-001-r7');
+    expect(a.review.lanes.map((l) => l.lane)).toEqual([...REVIEW_LANES]);
+    expect(Object.fromEntries(a.review.lanes.map((l) => [l.lane, l.status]))).toEqual(
+      EXPECTED_REVIEW_SEED.lanes,
+    );
+    for (const l of a.review.lanes) expect(LaneResult.safeParse(l).success, l.lane).toBe(true);
+    const f = a.review.findings;
+    expect(f.map((x) => x.externalId)).toEqual([...EXPECTED_REVIEW_SEED.findings]);
+    expect(f.map((x) => x.position)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(f.map((x) => x.lane)).toEqual([...REVIEW_LANES]);
+  });
+
+  it('FR-021 the security finding find-1821-2 is CRITICAL / BLOCKING / OPEN with the UI spec §21 title, impact, RefundController.java:84 evidence and fix', () => {
+    const f = buildReviewSeed(BASE).review.findings.find(
+      (x) => x.externalId === EXPECTED_REVIEW_SEED.securityFinding,
+    )!;
+    expect(f).toMatchObject({
+      lane: 'security',
+      severity: 'CRITICAL',
+      blocking: 'BLOCKING',
+      state: 'OPEN',
+      title: 'Refund endpoint does not verify authorization against the original payment owner',
+      impact: "A user may potentially refund another user's payment.",
+      recommendedFix: 'Validate payment ownership before processing.',
+    });
+    expect(f.evidence).toHaveLength(2);
+    expect(f.evidence[1]).toMatchObject({ kind: 'url', accessible: false });
+    expect(f.evidence[1]!.href).toBeUndefined();
+    expect(f.evidence[0]).toMatchObject({
+      kind: 'file',
+      locator: 'RefundController.java:84',
+      accessible: true,
+    });
+    expect(f.evidence[0]!.href).toMatch(/^https:\/\//);
+  });
+
+  it('FR-021 FR-022 findings exercise every row rendering: one HIGH/BLOCKING edge_cases finding (FIXED in cycle 3), a non-blocking correctness finding (lane WARN), one restricted-evidence finding, one DISMISSED with reason ≤ 240 by a demo engineer, the rest OPEN non-blocking / suggestion; readyForMerge is false with exactly 1 blocking finding open', () => {
+    const { review } = buildReviewSeed(BASE);
+    const f = review.findings;
+    const by = (id: string) => f.find((x) => x.externalId === id)!;
+    expect(by(EXPECTED_REVIEW_SEED.fixedFinding)).toMatchObject({
+      lane: 'edge_cases',
+      severity: 'HIGH',
+      blocking: 'BLOCKING',
+      state: 'FIXED',
+      fixCycle: 3,
+    });
+    const restricted = by(EXPECTED_REVIEW_SEED.restrictedEvidenceFinding);
+    expect(restricted.evidence.some((e) => e.accessible === false && !e.href)).toBe(true);
+    const dismissed = by(EXPECTED_REVIEW_SEED.dismissedFinding);
+    expect(dismissed.state).toBe('DISMISSED');
+    expect(dismissed.dismissedBy).toBe('engineer1@cdevi.demo');
+    expect(dismissed.dismissedAt).toBeInstanceOf(Date);
+    expect(dismissed.dismissedReason!.length).toBeLessThanOrEqual(240);
+    const byState: Record<string, number> = {};
+    for (const x of f) byState[x.state] = (byState[x.state] ?? 0) + 1;
+    expect(byState).toEqual(EXPECTED_REVIEW_SEED.byState);
+    for (const x of f.filter(
+      (x) => x.state === 'OPEN' && x.externalId !== EXPECTED_REVIEW_SEED.securityFinding,
+    ))
+      expect(x.blocking, x.externalId).not.toBe('BLOCKING');
+    expect(f.map((x) => x.severity)).toEqual([
+      'MEDIUM',
+      'CRITICAL',
+      'LOW',
+      'HIGH',
+      'MEDIUM',
+      'LOW',
+      'INFO',
+    ]);
+    expect(by('find-1821-1')).toMatchObject({
+      lane: 'correctness',
+      blocking: 'NON_BLOCKING',
+      state: 'OPEN',
+    });
+    for (const l of review.lanes) expect(laneStatusFromFindings(l.lane, f), l.lane).toBe(l.status);
+    expect(blockingOpenCount(f)).toBe(EXPECTED_REVIEW_SEED.blockingOpenCount);
+    expect(readyForMerge(f)).toBe(EXPECTED_REVIEW_SEED.readyForMerge);
+    for (const x of f) {
+      expect(x.title.length).toBeLessThanOrEqual(200);
+      expect(x.description.length).toBeLessThanOrEqual(2000);
+      expect(x.impact.length).toBeLessThanOrEqual(1000);
+      expect(x.recommendedFix.length).toBeLessThanOrEqual(1000);
+      expect(x.evidence.length).toBeLessThanOrEqual(10);
+    }
+    for (const x of f) {
+      if (x.state !== 'DISMISSED') {
+        expect(x.dismissedBy).toBeNull();
+        expect(x.dismissedReason).toBeNull();
+        expect(x.dismissedAt).toBeNull();
+      }
+      if (x.state !== 'FIXED') expect(x.fixCycle).toBeNull();
+    }
+  });
+
+  it('FR-036 the review is what the runtime would PUT: it round-trips through ReviewIngest (strict, 7 lanes, ≤ 50 findings, no reasoning field)', () => {
+    const { review } = buildReviewSeed(BASE);
+    const body = {
+      externalId: review.externalId,
+      status: review.status,
+      lanes: review.lanes,
+      findings: review.findings.map((f) => ({
+        externalId: f.externalId,
+        position: f.position,
+        lane: f.lane,
+        severity: f.severity,
+        blocking: f.blocking,
+        title: f.title,
+        description: f.description,
+        impact: f.impact,
+        evidence: f.evidence,
+        recommendedFix: f.recommendedFix,
+        status: f.state === 'FIXED' ? 'fixed' : 'open',
+      })),
+      startedAt: review.startedAt.toISOString(),
+      finishedAt: review.finishedAt!.toISOString(),
+      agentRunExternalId: review.agentRun,
+      observedAt: review.observedAt.toISOString(),
+    };
+    const parsed = ReviewIngest.safeParse(body);
+    expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+  });
+
+  it('AS-4 review cycles #1–#3 are COMPLETED history: #3 has 7 findings / 6 fixed / 1 remaining, iteration 3 of 5, and every cycle satisfies fixed + remaining ≤ findings and is timed inside the Review Agent run', () => {
+    const { cycles, review } = buildReviewSeed(BASE);
+    expect(cycles.map((c) => c.cycleNumber)).toEqual([1, 2, 3]);
+    expect(cycles.every((c) => c.state === 'COMPLETED')).toBe(true);
+    expect(cycles.at(-1)).toMatchObject(EXPECTED_REVIEW_SEED.latestCycle);
+    expect(cycles.map((c) => [c.findingsCount, c.fixedCount, c.remainingCount])).toEqual([
+      [12, 8, 4],
+      [9, 6, 3],
+      [7, 6, 1],
+    ]);
+    expect(cycles.at(-1)!.agentRun).toBe('s500-001-r7');
+    for (const c of cycles) {
+      expect(c.fixedCount + c.remainingCount, `cycle ${c.cycleNumber}`).toBeLessThanOrEqual(
+        c.findingsCount,
+      );
+      expect(c.iteration).toBe(c.cycleNumber);
+      expect(c.iteration).toBeLessThanOrEqual(c.maxIterations);
+      expect(c.finishedAt!.getTime()).toBeGreaterThan(c.startedAt.getTime());
+      expect(c.observedAt).toEqual(c.finishedAt);
+    }
+    for (let i = 1; i < cycles.length; i++)
+      expect(cycles[i]!.startedAt.getTime()).toBeGreaterThanOrEqual(
+        cycles[i - 1]!.finishedAt!.getTime(),
+      );
+    expect(review.startedAt).toEqual(cycles.at(-1)!.startedAt);
+    expect(review.finishedAt).toEqual(cycles.at(-1)!.finishedAt);
+    const run = buildS500(BASE)
+      .showcase.find((s) => s.externalId === SHOWCASE_WAITING)!
+      .runs.find((r) => r.externalId === 's500-001-r7')!;
+    expect(cycles[0]!.startedAt).toEqual(run.startedAt);
+    expect(review.finishedAt!.getTime()).toBeLessThanOrEqual(BASE.getTime());
+  });
+
+  describe.skipIf(Boolean(process.env['CDEVI_SKIP_DB_TESTS']))('written to the database', () => {
+    const pool = new pg.Pool({ connectionString: process.env['DATABASE_MIGRATOR_URL'] });
+    afterAll(() => pool.end());
+
+    it('FR-020 FR-021 AS-4 seeding writes 1 pull request, 1 review, 7 findings and 3 cycles on s500-001 in payments-api with the expected states, links and watermarks, without touching Dashboard figures', async () => {
+      const r = await seed({
+        base: BASE,
+        password: 'cdevi-demo-test-pass',
+        ingestToken: 'cdvi_test_token',
+        log: () => {},
+      });
+      expect(r.counts.reviews).toEqual({
+        pullRequests: 1,
+        reviews: 1,
+        findings: EXPECTED_REVIEW_SEED.findings.length,
+        byState: EXPECTED_REVIEW_SEED.byState,
+        cycles: EXPECTED_REVIEW_SEED.cycles,
+      });
+      const n = async (sql: string, params: unknown[] = []) =>
+        Number((await pool.query(sql, params)).rows[0].c);
+      const pr = (
+        await pool.query(
+          `select pr.id, pr.number, pr.title, pr.status, pr.requirement_id, pr.observed_at, w.external_id workflow, p.key project, w.requirement_id workflow_requirement
+             from pull_requests pr join workflows w on w.id = pr.workflow_id join projects p on p.id = pr.project_id
+            where pr.external_id = $1`,
+          [EXPECTED_REVIEW_SEED.pullRequest.externalId],
+        )
+      ).rows[0]!;
+      expect(pr).toMatchObject({
+        number: 1821,
+        title: 'PAY-1391 Refund processing',
+        status: 'OPEN',
+        workflow: SHOWCASE_WAITING,
+        project: 'payments-api',
+      });
+      expect(pr.requirement_id).toBe(pr.workflow_requirement);
+      expect(pr.requirement_id).not.toBeNull();
+      expect(await n('select count(*) c from pull_requests')).toBe(1);
+      expect(await n('select count(*) c from reviews')).toBe(1);
+      const review = (
+        await pool.query(
+          `select r.id, r.cycle_number, r.status, r.lanes, r.finished_at, r.observed_at, a.external_id run
+             from reviews r left join agent_runs a on a.id = r.agent_run_id where r.pull_request_id = $1`,
+          [pr.id],
+        )
+      ).rows[0]!;
+      expect(review).toMatchObject({ cycle_number: 3, status: 'COMPLETE', run: 's500-001-r7' });
+      expect(review.lanes).toHaveLength(7);
+      expect(review.observed_at).toEqual(review.finished_at);
+      expect(pr.observed_at).toEqual(review.finished_at);
+      const findings = (
+        await pool.query(
+          `select f.external_id, f.position, f.lane, f.state, f.blocking, f.evidence, f.dismissed_reason, f.dismissed_at, u.email dismissed_by, c.cycle_number fix_cycle, f.updated_at
+             from review_findings f left join users u on u.id = f.dismissed_by_user_id left join review_cycles c on c.id = f.fix_cycle_id
+            where f.review_id = $1 and f.pull_request_id = $2 order by f.position`,
+          [review.id, pr.id],
+        )
+      ).rows;
+      expect(findings.map((f) => f.external_id)).toEqual([...EXPECTED_REVIEW_SEED.findings]);
+      expect(findings.map((f) => f.lane)).toEqual([...REVIEW_LANES]);
+      const byState: Record<string, number> = {};
+      for (const f of findings) byState[f.state] = (byState[f.state] ?? 0) + 1;
+      expect(byState).toEqual(EXPECTED_REVIEW_SEED.byState);
+      expect(
+        findings.find((f) => f.external_id === EXPECTED_REVIEW_SEED.fixedFinding),
+      ).toMatchObject({
+        state: 'FIXED',
+        fix_cycle: 3,
+      });
+      expect(
+        findings.find((f) => f.external_id === EXPECTED_REVIEW_SEED.dismissedFinding),
+      ).toMatchObject({
+        state: 'DISMISSED',
+        dismissed_by: 'engineer1@cdevi.demo',
+      });
+      expect(
+        findings.find((f) => f.external_id === EXPECTED_REVIEW_SEED.dismissedFinding)!.dismissed_at,
+      ).toBeInstanceOf(Date);
+      // readyForMerge is derived: the partial index predicate counts exactly one blocking finding open
+      expect(
+        await n(
+          `select count(*) c from review_findings where pull_request_id = $1 and blocking = 'BLOCKING' and state in ('OPEN','FIX_REQUESTED')`,
+          [pr.id],
+        ),
+      ).toBe(EXPECTED_REVIEW_SEED.blockingOpenCount);
+      expect(
+        await n(
+          `select count(*) c from review_findings f, jsonb_array_elements(f.evidence) e where (e->>'accessible')::boolean = false`,
+        ),
+      ).toBe(1);
+      const cycles = (
+        await pool.query(
+          `select cycle_number, findings_count, fixed_count, remaining_count, iteration, max_iterations, state, requested_by_agent, requested_by_user_id
+             from review_cycles where pull_request_id = $1 order by cycle_number`,
+          [pr.id],
+        )
+      ).rows;
+      expect(cycles.map((c) => c.cycle_number)).toEqual([1, 2, 3]);
+      expect(cycles.every((c) => c.state === 'COMPLETED' && c.requested_by_user_id === null)).toBe(
+        true,
+      );
+      expect(cycles.at(-1)).toMatchObject({
+        findings_count: 7,
+        fixed_count: 6,
+        remaining_count: 1,
+        iteration: 3,
+        max_iterations: 5,
+        requested_by_agent: 'Review Agent',
+      });
+      // Ingestion never audits and the seed's own writes are not live changes.
+      expect(await n(`select count(*) c from audit_events where action like 'finding.%'`)).toBe(0);
+      expect(await n(`select count(*) c from inbox_change_log`)).toBe(0);
+      // Dashboard figures are unchanged by the review seed.
+      expect(r.counts.dashboard.workflows).toBe(EXPECTED_DASHBOARD.workflows);
+      expect(r.counts.agentDecisions).toBe(EXPECTED_AGENT_DECISIONS.decisions);
     });
   });
 });

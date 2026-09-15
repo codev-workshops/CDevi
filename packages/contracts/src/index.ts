@@ -37,6 +37,46 @@ export {
   type RunStepLike,
   type StepsSummary,
 } from './agent-run-model';
+export * from './reviews';
+// review-model also declares zod-free twins of the review enums; the Zod versions in ./reviews win at
+// the package root, so re-export the pure rules by name.
+export {
+  REVIEW_LANES,
+  REVIEW_LANE_WORDS,
+  LANE_STATUSES,
+  REVIEW_STATUSES,
+  FINDING_SEVERITIES,
+  FINDING_BLOCKING_CLASSES,
+  FINDING_STATES,
+  REVIEW_CYCLE_STATES,
+  REVIEWS_PAGE_SIZE,
+  laneWord,
+  laneStatusWord,
+  reviewStatusWord,
+  findingStateWord,
+  cycleStateWord,
+  severityPill,
+  blockingPill,
+  toDesignBlocking,
+  isFindingOpen,
+  blockingOpenCount,
+  readyForMerge,
+  mergeReadinessNotice,
+  laneStatusFromFindings,
+  cycleProgress,
+  iterationWord,
+  canActOnFinding,
+  canActOnFindingState,
+  reviewHref,
+  encodeReviewCursor,
+  decodeReviewCursor,
+  type PillWords,
+  type DesignBlocking,
+  type FindingLike,
+  type CycleLike,
+  type ReviewActorRole,
+  type ReviewCursor,
+} from './review-model';
 // requirement-rules also declares zod-free twins of `RequirementState` / `RequirementActions`;
 // the Zod versions in ./requirements win at the package root, so re-export by name.
 export {

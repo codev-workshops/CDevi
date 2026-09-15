@@ -59,7 +59,7 @@ type Doc = {
 const us1 = () => buildWorkflowDetailOpenApi() as unknown as Doc;
 const ref = (name: string) => ({ $ref: `#/components/schemas/${name}` });
 
-describe('specs/001 US1–US5 contracts/openapi.yaml snapshot', () => {
+describe('specs/001 US1–US6 contracts/openapi.yaml snapshot', () => {
   it('FR-001 equals the fragment generated from the Zod schemas', () => {
     const committed = parse(readFileSync(US1_YAML, 'utf8'));
     expect(committed).toEqual(JSON.parse(JSON.stringify(buildWorkflowDetailOpenApi())));
@@ -89,6 +89,14 @@ describe('specs/001 US1–US5 contracts/openapi.yaml snapshot', () => {
       '/ingest/requirements/{externalId}/analysis',
       '/agent-runs/{id}',
       '/integrations/jira/webhook',
+      '/reviews',
+      '/reviews/{pullRequestId}',
+      '/reviews/{pullRequestId}/findings/{findingId}/dismiss',
+      '/reviews/{pullRequestId}/findings/{findingId}/fix',
+      '/reviews/{pullRequestId}/findings/{findingId}/issue',
+      '/ingest/pull-requests/{externalId}',
+      '/ingest/pull-requests/{externalId}/reviews/{cycle}',
+      '/ingest/pull-requests/{externalId}/cycles/{cycle}',
     ]);
   });
 
@@ -128,10 +136,10 @@ describe('specs/001 US1–US5 contracts/openapi.yaml snapshot', () => {
     });
   });
 
-  it('FR-016 FR-017 registers every US5 component schema, the strict ingest schemas forbid additional properties and the title names US1–US5', () => {
+  it('FR-016 FR-017 registers every US5 component schema, the strict ingest schemas forbid additional properties and the title names US1–US6', () => {
     const doc = us1();
     expect(doc.info.title).toBe(
-      'CDevi API — Workflow Detail, Approval Center, Dashboard, Requirements and Agent Runs (specs/001 US1–US5)',
+      'CDevi API — Workflow Detail, Approval Center, Dashboard, Requirements, Agent Runs and Pull Request Reviews (specs/001 US1–US6)',
     );
     for (const name of [
       'StageAgentRunRef',
@@ -160,7 +168,7 @@ describe('specs/001 US1–US5 contracts/openapi.yaml snapshot', () => {
 
   it('FR-007 FR-025 documents GET /requirements with project (default all), state, assignee and cursor and returns RequirementListPage', () => {
     const doc = us1();
-    expect(doc.info.title).toMatch(/specs\/001 US1–US5\)$/);
+    expect(doc.info.title).toMatch(/specs\/001 US1–US6\)$/);
     expect(doc.tags.map((t) => t.name)).toEqual(
       expect.arrayContaining(['requirements', 'integrations', 'workflows']),
     );
@@ -388,5 +396,176 @@ describe('specs/001 US1–US5 contracts/openapi.yaml snapshot', () => {
     expect(full.tags.map((t) => t.name)).toContain('agent-runs');
     expect(full.components.schemas).toHaveProperty('AgentRunDetail');
     expect(full.components.schemas).toHaveProperty('AgentDecisionsIngest');
+    expect(paths).toContain('/reviews/{pullRequestId}');
+    expect(paths).toContain('/ingest/pull-requests/{externalId}/reviews/{cycle}');
+    expect(full.tags.map((t) => t.name)).toContain('reviews');
+    expect(full.components.schemas).toHaveProperty('PullRequestReviewView');
+    expect(full.components.schemas).toHaveProperty('ReviewIngest');
+  });
+
+  it('FR-020 FR-025 FR-032 documents GET /reviews (project default all, state, cursor → ReviewListResponse) and GET /reviews/{pullRequestId} → PullRequestReviewView, session cookie, tagged reviews', () => {
+    const doc = us1();
+    expect(doc.tags.map((t) => t.name)).toContain('reviews');
+    const list = doc.paths['/reviews']!['get']!;
+    expect(list.tags).toEqual(['reviews']);
+    expect(list.security).toEqual([{ sessionCookie: [] }]);
+    expect(list.parameters).toEqual([
+      expect.objectContaining({ name: 'project', in: 'query', required: false }),
+      expect.objectContaining({ name: 'state', in: 'query', required: false }),
+      expect.objectContaining({ name: 'cursor', in: 'query', required: false }),
+    ]);
+    expect(Object.keys(list.responses)).toEqual(['200', '400', '401']);
+    expect(list.responses['200']).toMatchObject({
+      content: { 'application/json': { schema: ref('ReviewListResponse') } },
+    });
+    const get = doc.paths['/reviews/{pullRequestId}']!['get']!;
+    expect(get).toMatchObject({
+      tags: ['reviews'],
+      security: [{ sessionCookie: [] }],
+      parameters: [expect.objectContaining({ name: 'pullRequestId', in: 'path', required: true })],
+      responses: {
+        '200': { content: { 'application/json': { schema: ref('PullRequestReviewView') } } },
+      },
+    });
+    expect(get.requestBody).toBeUndefined();
+    expect(Object.keys(get.responses)).toEqual(['200', '401', '404']);
+  });
+
+  it('FR-021 FR-032 documents POST dismiss (DismissFindingBody) / fix (ApplyFixBody) / issue (CreateIssueBody) → 200 FindingActionResult and 400/401/403/404/409 problems', () => {
+    const doc = us1();
+    const bodies = { dismiss: 'DismissFindingBody', fix: 'ApplyFixBody', issue: 'CreateIssueBody' };
+    for (const [action, body] of Object.entries(bodies)) {
+      const post = doc.paths[`/reviews/{pullRequestId}/findings/{findingId}/${action}`]!['post']!;
+      expect(post.tags, action).toEqual(['reviews']);
+      expect(post.security, action).toEqual([{ sessionCookie: [] }]);
+      expect(post.parameters, action).toEqual([
+        expect.objectContaining({ name: 'pullRequestId', in: 'path', required: true }),
+        expect.objectContaining({ name: 'findingId', in: 'path', required: true }),
+      ]);
+      expect(post.requestBody, action).toMatchObject({
+        content: { 'application/json': { schema: ref(body) } },
+      });
+      expect(Object.keys(post.responses), action).toEqual([
+        '200',
+        '400',
+        '401',
+        '403',
+        '404',
+        '409',
+      ]);
+      expect(post.responses['200'], action).toMatchObject({
+        content: { 'application/json': { schema: ref('FindingActionResult') } },
+      });
+      for (const code of ['400', '401', '403', '404', '409'])
+        expect(post.responses[code], `${action} ${code}`).toMatchObject({
+          content: { 'application/problem+json': { schema: ref('Problem') } },
+        });
+    }
+  });
+
+  it('FR-036 documents the three pull-request ingest routes with the bearer ingestion token, strict bodies → IngestResult and the standard 400/401/403/404 (+409 for reviews and cycles)', () => {
+    const doc = us1();
+    const pr = doc.paths['/ingest/pull-requests/{externalId}']!['put']!;
+    expect(pr.tags).toEqual(['ingest']);
+    expect(pr.security).toEqual([{ ingestionToken: [] }]);
+    expect(pr.parameters).toEqual([
+      expect.objectContaining({ name: 'externalId', in: 'path', required: true }),
+    ]);
+    expect(pr.requestBody).toMatchObject({
+      content: { 'application/json': { schema: ref('PullRequestIngest') } },
+    });
+    expect(Object.keys(pr.responses)).toEqual(['200', '400', '401', '403', '404']);
+    expect(pr.responses['200']).toMatchObject({
+      content: { 'application/json': { schema: ref('IngestResult') } },
+    });
+    for (const [path, body] of [
+      ['/ingest/pull-requests/{externalId}/reviews/{cycle}', 'ReviewIngest'],
+      ['/ingest/pull-requests/{externalId}/cycles/{cycle}', 'ReviewCycleIngest'],
+    ] as const) {
+      const put = doc.paths[path]!['put']!;
+      expect(put.tags, path).toEqual(['ingest']);
+      expect(put.security, path).toEqual([{ ingestionToken: [] }]);
+      expect(put.parameters, path).toEqual([
+        expect.objectContaining({ name: 'externalId', in: 'path', required: true }),
+        expect.objectContaining({
+          name: 'cycle',
+          in: 'path',
+          required: true,
+          schema: { type: 'integer', minimum: 1 },
+        }),
+      ]);
+      expect(put.requestBody, path).toMatchObject({
+        content: { 'application/json': { schema: ref(body) } },
+      });
+      expect(Object.keys(put.responses), path).toEqual(['200', '400', '401', '403', '404', '409']);
+      expect(put.responses['200'], path).toMatchObject({
+        content: { 'application/json': { schema: ref('IngestResult') } },
+      });
+    }
+  });
+
+  it('FR-018 FR-020 FR-022 registers every US6 component schema, the strict bodies forbid additional properties and WorkflowDetail carries pullRequest', () => {
+    const doc = us1();
+    for (const name of [
+      'ReviewLane',
+      'LaneStatus',
+      'ReviewStatus',
+      'FindingSeverity',
+      'FindingBlocking',
+      'FindingState',
+      'ReviewCycleState',
+      'PullRequestStatus',
+      'LaneResult',
+      'ReviewFindingView',
+      'ReviewCycleView',
+      'PullRequestReviewView',
+      'ReviewListItem',
+      'ReviewListResponse',
+      'ReviewListQuery',
+      'DismissFindingBody',
+      'ApplyFixBody',
+      'CreateIssueBody',
+      'FindingActionResult',
+      'WorkflowPullRequestView',
+      'PullRequestIngest',
+      'ReviewFindingIngest',
+      'ReviewIngest',
+      'ReviewCycleIngest',
+    ])
+      expect(doc.components.schemas, name).toHaveProperty(name);
+    const strict = (name: string) =>
+      (doc.components.schemas[name] as { additionalProperties?: unknown }).additionalProperties;
+    for (const name of [
+      'DismissFindingBody',
+      'ApplyFixBody',
+      'CreateIssueBody',
+      'PullRequestIngest',
+      'ReviewFindingIngest',
+      'ReviewIngest',
+      'ReviewCycleIngest',
+      'LaneResult',
+    ])
+      expect(strict(name), name).toBe(false);
+    for (const name of [
+      'ReviewIngest',
+      'ReviewFindingIngest',
+      'ReviewCycleIngest',
+      'PullRequestIngest',
+    ]) {
+      const props = Object.keys(
+        (doc.components.schemas[name] as { properties: Record<string, unknown> }).properties,
+      );
+      for (const key of ['reasoning', 'chainOfThought', 'rationale', 'thoughts'])
+        expect(props, `${name}.${key}`).not.toContain(key);
+    }
+    const detail = doc.components.schemas['WorkflowDetail'] as {
+      properties: Record<string, unknown>;
+      required: string[];
+    };
+    expect(detail.properties).toHaveProperty('pullRequest');
+    expect(detail.required).not.toContain('pullRequest');
+    expect(
+      (detail.properties['workflow'] as { properties: Record<string, unknown> }).properties,
+    ).toHaveProperty('pullRequestRef');
   });
 });

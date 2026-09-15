@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WorkflowDetailScreen } from '../../app/(app)/workflows/[id]/WorkflowDetailScreen';
 import { expectNoViolations, renderApp } from '../a11y';
+import { fetchMock, installLiveMocks, jsonResponse, sources } from '../live';
 import {
   blockedDetail,
   completedDetail,
@@ -11,35 +12,10 @@ import {
   emptyDetail,
   failedDetail,
 } from '../fixtures/workflow-detail';
-
-type Listener = (ev: { data: string }) => void;
-const sources: FakeSource[] = [];
-class FakeSource {
-  listeners = new Map<string, Listener[]>();
-  constructor() {
-    sources.push(this);
-  }
-  addEventListener(type: string, fn: Listener) {
-    this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn]);
-  }
-  emit(type: string, data: string) {
-    for (const fn of this.listeners.get(type) ?? []) fn({ data });
-  }
-  close() {}
-}
-
-const fetchMock = vi.fn();
-const jsonResponse = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': status >= 400 ? 'application/problem+json' : 'application/json' },
-  });
+import { PR_ID, workflowPullRequest } from '../fixtures/reviews';
 
 beforeEach(() => {
-  fetchMock.mockReset();
-  sources.length = 0;
-  vi.stubGlobal('fetch', fetchMock);
-  vi.stubGlobal('EventSource', FakeSource);
+  installLiveMocks();
 });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -372,5 +348,44 @@ describe('Workflow Detail (specs/001 US1)', () => {
     expect(screen.getByText('No activity yet.')).toBeInTheDocument();
     expect(screen.getByText('No artifacts yet.')).toBeInTheDocument();
     expect(screen.getByText('No stages recorded yet.')).toBeInTheDocument();
+  });
+
+  it('FR-020 Workflow Detail links to the review', async () => {
+    const d = detail({ pullRequest: workflowPullRequest() });
+    const { container } = renderApp(<WorkflowDetailScreen initial={d} userRole="engineer" />);
+    const card = screen.getByRole('region', { name: 'Pull request' });
+    expect(card).toHaveTextContent('#1821 PAY-1391 Refund processing');
+    expect(within(card).getByText('AI review complete')).toHaveClass('cd-pill');
+    expect(within(card).getByRole('link', { name: 'Open review' })).toHaveAttribute(
+      'href',
+      `/reviews/${PR_ID}`,
+    );
+    expect(within(card).getByRole('link', { name: /Open pull request/ })).toHaveAttribute(
+      'href',
+      d.pullRequest!.href,
+    );
+    // FR-022 marker on Workflow Detail, never hidden.
+    expect(card).toHaveTextContent('Not ready for merge approval — 1 blocking finding open');
+    expect(within(card).getByText('not ready')).toHaveClass('cd-pill');
+    expect(card.querySelector('.cd-saffron')).toBeNull();
+    await expectNoViolations(container);
+  });
+
+  it('FR-022 Workflow Detail shows the ready marker when the pull request has no blocking findings', () => {
+    const d = detail({
+      pullRequest: workflowPullRequest({ readyForMerge: true, blockingOpenCount: 0 }),
+    });
+    renderApp(<WorkflowDetailScreen initial={d} userRole="engineer" />);
+    const card = screen.getByRole('region', { name: 'Pull request' });
+    expect(card).toHaveTextContent('Ready for merge approval');
+    expect(within(card).queryByText(/Not ready/)).toBeNull();
+  });
+
+  it('FR-020 Workflow Detail keeps the pullRequestRef fallback when pullRequest is null', () => {
+    const d = detail();
+    expect(d.pullRequest).toBeNull();
+    renderApp(<WorkflowDetailScreen initial={d} userRole="engineer" />);
+    expect(screen.queryByRole('region', { name: 'Pull request' })).toBeNull();
+    expect(screen.getByText(d.workflow.pullRequestRef!)).toBeInTheDocument();
   });
 });
