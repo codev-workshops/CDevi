@@ -28,6 +28,20 @@ function workflowLinks<T extends { workflow?: string | undefined }>(
     : links;
 }
 
+/** Evidence `href`s authored as `/workflows/<externalId>[#anchor]` resolve to the workflow row id the same way. */
+function evidenceLinks<T extends { href?: string | null | undefined }>(
+  evidence: readonly T[],
+  externalId: string,
+  workflowId: string,
+): T[] {
+  const prefix = `/workflows/${externalId}`;
+  return evidence.map((e) =>
+    e.href && (e.href === prefix || e.href.startsWith(`${prefix}#`))
+      ? { ...e, href: `/workflows/${workflowId}${e.href.slice(prefix.length)}` }
+      : e,
+  );
+}
+
 export interface SeedOptions {
   connectionString?: string | undefined;
   base?: Date | undefined;
@@ -283,7 +297,7 @@ async function insertShowcase(
             d.policyOutcome,
             d.policyRef,
             d.riskLevel,
-            JSON.stringify(d.evidence),
+            JSON.stringify(evidenceLinks(d.evidence, sc.externalId, ref.id)),
           ],
         );
       }
