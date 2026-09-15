@@ -59,13 +59,17 @@ const changed = (workflowId: string) =>
 const findingsTab = () => screen.getByRole('tab', { name: /^Findings \(\d+\)$/ });
 const cyclesTab = () => screen.getByRole('tab', { name: /^Cycles \(\d+\)$/ });
 const finding = (position: number) => document.getElementById(`finding-${position}`)!;
+const findingRows = () =>
+  Array.from(screen.getByRole('list', { name: 'Findings' }).children).filter(
+    (el) => el.tagName === 'LI',
+  );
 const saffron = (c: Element) => c.querySelectorAll('.cd-saffron').length;
 const lastCall = () => fetchMock.mock.calls.at(-1) as [string, RequestInit];
 
 describe('PR Review Center (specs/001 US6)', () => {
   it('FR-020 Review Center renders PR id, requirement, status and 7 lane results', () => {
     const view = reviewView();
-    renderApp(<ReviewCenterScreen initial={view} role="engineer" now={NOW} />);
+    renderApp(<ReviewCenterScreen initial={view} userRole="engineer" now={NOW} />);
 
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
@@ -86,14 +90,15 @@ describe('PR Review Center (specs/001 US6)', () => {
       'href',
       `/workflows/${WORKFLOW_ID}`,
     );
-    expect(within(header).getByRole('link', { name: /#1821 on GitHub|Open pull request/ })).toHaveAttribute(
-      'href',
-      view.pullRequest.href,
-    );
+    expect(
+      within(header).getByRole('link', { name: /#1821 on GitHub|Open pull request/ }),
+    ).toHaveAttribute('href', view.pullRequest.href);
     expect(header).toHaveTextContent('Review cycle #3');
     expect(header.querySelector(`time[datetime="${view.latestReview!.startedAt}"]`)).not.toBeNull();
-    expect(header.querySelector(`time[datetime="${view.latestReview!.finishedAt}"]`)).not.toBeNull();
-    expect(screen.getAllByText('complete').length).toBeGreaterThan(0);
+    expect(
+      header.querySelector(`time[datetime="${view.latestReview!.finishedAt}"]`),
+    ).not.toBeNull();
+    expect(screen.getAllByText('AI review complete').length).toBeGreaterThan(0);
 
     const lanes = screen.getByRole('group', { name: 'Review lanes' });
     const checks = Array.from(lanes.querySelectorAll('.cd-check'));
@@ -109,10 +114,10 @@ describe('PR Review Center (specs/001 US6)', () => {
   });
 
   it('FR-020 finding shows severity, blocking, lane, impact, evidence locator and recommended fix', () => {
-    renderApp(<ReviewCenterScreen initial={reviewView()} role="engineer" now={NOW} />);
+    renderApp(<ReviewCenterScreen initial={reviewView()} userRole="engineer" now={NOW} />);
     expect(findingsTab()).toHaveAttribute('aria-selected', 'true');
-    const list = screen.getByRole('list', { name: 'Findings' });
-    expect(within(list).getAllByRole('listitem')).toHaveLength(7);
+    // Direct children only: each finding's evidence is a nested list of its own.
+    expect(findingRows()).toHaveLength(7);
 
     const f2 = finding(2);
     expect(f2).toHaveTextContent('critical');
@@ -137,7 +142,7 @@ describe('PR Review Center (specs/001 US6)', () => {
   });
 
   it('evidence with accessible:false renders access restricted text', () => {
-    renderApp(<ReviewCenterScreen initial={reviewView()} role="engineer" now={NOW} />);
+    renderApp(<ReviewCenterScreen initial={reviewView()} userRole="engineer" now={NOW} />);
     const f2 = finding(2);
     expect(f2).toHaveTextContent('Threat model — refunds');
     expect(f2).toHaveTextContent('access restricted');
@@ -145,7 +150,7 @@ describe('PR Review Center (specs/001 US6)', () => {
   });
 
   it('FR-022 blocking notice is rendered when readyForMerge is false and never hidden', async () => {
-    renderApp(<ReviewCenterScreen initial={reviewView()} role="engineer" now={NOW} />);
+    renderApp(<ReviewCenterScreen initial={reviewView()} userRole="engineer" now={NOW} />);
     const notice = screen.getByRole('alert');
     expect(notice).toHaveTextContent('Not ready for merge approval — 1 blocking finding open');
     expect(notice).toHaveTextContent('not ready');
@@ -157,13 +162,13 @@ describe('PR Review Center (specs/001 US6)', () => {
   });
 
   it('FR-022 ready notice is shown when there are no blocking findings open', () => {
-    renderApp(<ReviewCenterScreen initial={readyView()} role="engineer" now={NOW} />);
+    renderApp(<ReviewCenterScreen initial={readyView()} userRole="engineer" now={NOW} />);
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.getByText(/Ready for merge approval — no blocking findings open/)).toBeVisible();
   });
 
   it('FR-021 Dismiss requires a reason before submitting', async () => {
-    renderApp(<ReviewCenterScreen initial={reviewView()} role="engineer" now={NOW} />);
+    renderApp(<ReviewCenterScreen initial={reviewView()} userRole="engineer" now={NOW} />);
     const f2 = finding(2);
     await userEvent.click(within(f2).getByRole('button', { name: 'Dismiss' }));
     const reason = within(f2).getByLabelText('Reason');
@@ -192,7 +197,7 @@ describe('PR Review Center (specs/001 US6)', () => {
   });
 
   it('FR-021 Dismiss Cancel closes the form without a request', async () => {
-    renderApp(<ReviewCenterScreen initial={reviewView()} role="engineer" now={NOW} />);
+    renderApp(<ReviewCenterScreen initial={reviewView()} userRole="engineer" now={NOW} />);
     const f1 = finding(1);
     await userEvent.click(within(f1).getByRole('button', { name: 'Dismiss' }));
     expect(within(f1).getByLabelText('Reason')).toBeInTheDocument();
@@ -204,7 +209,7 @@ describe('PR Review Center (specs/001 US6)', () => {
 
   it('FR-021 Apply Fix posts and shows the new review cycle counts', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(applyFixResult()));
-    renderApp(<ReviewCenterScreen initial={reviewView()} role="engineer" now={NOW} />);
+    renderApp(<ReviewCenterScreen initial={reviewView()} userRole="engineer" now={NOW} />);
     expect(cyclesTab()).toHaveTextContent('Cycles (3)');
     await userEvent.click(within(finding(2)).getByRole('button', { name: 'Apply Fix' }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
@@ -239,7 +244,7 @@ describe('PR Review Center (specs/001 US6)', () => {
 
   it('FR-021 Create Issue shows Issue requested pill', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(createIssueResult(1)));
-    renderApp(<ReviewCenterScreen initial={reviewView()} role="engineer" now={NOW} />);
+    renderApp(<ReviewCenterScreen initial={reviewView()} userRole="engineer" now={NOW} />);
     await userEvent.click(within(finding(1)).getByRole('button', { name: 'Create Issue' }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(lastCall()[0]).toBe(`/api/reviews/${PR_ID}/findings/${FINDING_IDS[0]}/issue`);
@@ -257,7 +262,7 @@ describe('PR Review Center (specs/001 US6)', () => {
     fetchMock
       .mockResolvedValueOnce(problem(409, 'Finding already has outcome ISSUE_REQUESTED'))
       .mockResolvedValueOnce(jsonResponse(recorded));
-    renderApp(<ReviewCenterScreen initial={reviewView()} role="engineer" now={NOW} />);
+    renderApp(<ReviewCenterScreen initial={reviewView()} userRole="engineer" now={NOW} />);
     await userEvent.click(within(finding(1)).getByRole('button', { name: 'Apply Fix' }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     expect(fetchMock.mock.calls[1]![0]).toBe(`/api/reviews/${PR_ID}`);
@@ -269,7 +274,7 @@ describe('PR Review Center (specs/001 US6)', () => {
   });
 
   it('FR-032 viewer sees disabled actions with explanation', () => {
-    renderApp(<ReviewCenterScreen initial={reviewView()} role="viewer" now={NOW} />);
+    renderApp(<ReviewCenterScreen initial={reviewView()} userRole="viewer" now={NOW} />);
     const f2 = finding(2);
     for (const name of ['Apply Fix', 'Dismiss', 'Create Issue']) {
       const b = within(f2).getByRole('button', { name });
@@ -285,15 +290,15 @@ describe('PR Review Center (specs/001 US6)', () => {
 
   it('FR-021 a 403 shows the problem detail and keeps the finding open', async () => {
     fetchMock.mockResolvedValueOnce(problem(403, 'Viewers cannot act on findings'));
-    renderApp(<ReviewCenterScreen initial={reviewView()} role="engineer" now={NOW} />);
+    renderApp(<ReviewCenterScreen initial={reviewView()} userRole="engineer" now={NOW} />);
     await userEvent.click(within(finding(1)).getByRole('button', { name: 'Create Issue' }));
     expect(await screen.findByText('Viewers cannot act on findings')).toBeInTheDocument();
     expect(within(finding(1)).getByRole('button', { name: 'Create Issue' })).toBeEnabled();
   });
 
   it('filters findings by lane, severity and state', async () => {
-    renderApp(<ReviewCenterScreen initial={reviewView()} role="engineer" now={NOW} />);
-    const list = () => within(screen.getByRole('list', { name: 'Findings' })).getAllByRole('listitem');
+    renderApp(<ReviewCenterScreen initial={reviewView()} userRole="engineer" now={NOW} />);
+    const list = findingRows;
     await userEvent.selectOptions(screen.getByLabelText('Lane'), 'security');
     expect(list()).toHaveLength(1);
     expect(list()[0]).toHaveTextContent('Refund endpoint does not verify authorization');
@@ -312,7 +317,7 @@ describe('PR Review Center (specs/001 US6)', () => {
 
   it('deep link #finding-2 targets the finding', async () => {
     window.location.hash = '#finding-2';
-    renderApp(<ReviewCenterScreen initial={reviewView()} role="engineer" now={NOW} />);
+    renderApp(<ReviewCenterScreen initial={reviewView()} userRole="engineer" now={NOW} />);
     expect(findingsTab()).toHaveAttribute('aria-selected', 'true');
     const target = finding(2);
     expect(target).not.toBeNull();
@@ -321,7 +326,7 @@ describe('PR Review Center (specs/001 US6)', () => {
   });
 
   it('a later #finding-n hash re-selects Findings after the user chose Cycles', async () => {
-    renderApp(<ReviewCenterScreen initial={reviewView()} role="engineer" now={NOW} />);
+    renderApp(<ReviewCenterScreen initial={reviewView()} userRole="engineer" now={NOW} />);
     await userEvent.click(cyclesTab());
     expect(cyclesTab()).toHaveAttribute('aria-selected', 'true');
     window.location.hash = '#finding-3';
@@ -331,9 +336,11 @@ describe('PR Review Center (specs/001 US6)', () => {
   });
 
   it('cycles tab lists cycles newest first with counts and an iteration meter', async () => {
-    renderApp(<ReviewCenterScreen initial={reviewView()} role="engineer" now={NOW} />);
+    renderApp(<ReviewCenterScreen initial={reviewView()} userRole="engineer" now={NOW} />);
     await userEvent.click(cyclesTab());
-    const cards = within(screen.getByRole('list', { name: 'Review cycles' })).getAllByRole('listitem');
+    const cards = within(screen.getByRole('list', { name: 'Review cycles' })).getAllByRole(
+      'listitem',
+    );
     expect(cards.map((c) => within(c).getByRole('heading', { level: 3 }).textContent)).toEqual([
       'Review Cycle #3',
       'Review Cycle #2',
@@ -349,7 +356,7 @@ describe('PR Review Center (specs/001 US6)', () => {
 
   it('no saffron button on the Review Center', async () => {
     const { container } = renderApp(
-      <ReviewCenterScreen initial={reviewView()} role="engineer" now={NOW} />,
+      <ReviewCenterScreen initial={reviewView()} userRole="engineer" now={NOW} />,
     );
     expect(saffron(container)).toBe(0);
     await userEvent.click(within(finding(2)).getByRole('button', { name: 'Dismiss' }));
@@ -370,7 +377,7 @@ describe('PR Review Center (specs/001 US6)', () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(next));
     const scrollTo = vi.fn();
     vi.stubGlobal('scrollTo', scrollTo);
-    renderApp(<ReviewCenterScreen initial={view} role="engineer" now={NOW} />);
+    renderApp(<ReviewCenterScreen initial={view} userRole="engineer" now={NOW} />);
     expect(sources).toHaveLength(1);
 
     await userEvent.click(cyclesTab());
@@ -394,8 +401,10 @@ describe('PR Review Center (specs/001 US6)', () => {
   });
 
   it('FR-034 a failed refetch shows a retryable error notice and keeps the last good model', async () => {
-    fetchMock.mockResolvedValueOnce(problem(500, 'boom')).mockResolvedValueOnce(jsonResponse(reviewView()));
-    renderApp(<ReviewCenterScreen initial={reviewView()} role="engineer" now={NOW} />);
+    fetchMock
+      .mockResolvedValueOnce(problem(500, 'boom'))
+      .mockResolvedValueOnce(jsonResponse(reviewView()));
+    renderApp(<ReviewCenterScreen initial={reviewView()} userRole="engineer" now={NOW} />);
     changed(WORKFLOW_ID);
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     const retry = await screen.findByRole('button', { name: 'Retry' });
@@ -408,8 +417,14 @@ describe('PR Review Center (specs/001 US6)', () => {
   it('no latest review yet renders pending lanes and an empty findings notice', () => {
     renderApp(
       <ReviewCenterScreen
-        initial={reviewView({ latestReview: null, findings: [], cycles: [], readyForMerge: true, blockingOpenCount: 0 })}
-        role="engineer"
+        initial={reviewView({
+          latestReview: null,
+          findings: [],
+          cycles: [],
+          readyForMerge: true,
+          blockingOpenCount: 0,
+        })}
+        userRole="engineer"
         now={NOW}
       />,
     );
@@ -420,7 +435,7 @@ describe('PR Review Center (specs/001 US6)', () => {
 
   it('axe: no violations', async () => {
     const { container } = renderApp(
-      <ReviewCenterScreen initial={reviewView()} role="engineer" now={NOW} />,
+      <ReviewCenterScreen initial={reviewView()} userRole="engineer" now={NOW} />,
     );
     await expectNoViolations(container);
     await userEvent.click(within(finding(2)).getByRole('button', { name: 'Dismiss' }));
@@ -431,7 +446,7 @@ describe('PR Review Center (specs/001 US6)', () => {
 
   it('axe: no violations for the viewer', async () => {
     const { container } = renderApp(
-      <ReviewCenterScreen initial={reviewView()} role="viewer" now={NOW} />,
+      <ReviewCenterScreen initial={reviewView()} userRole="viewer" now={NOW} />,
     );
     await expectNoViolations(container);
   });

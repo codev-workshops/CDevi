@@ -380,7 +380,7 @@ describe('Workflow Detail (specs/001 US1)', () => {
     const { container } = renderApp(<WorkflowDetailScreen initial={d} userRole="engineer" />);
     const card = screen.getByRole('region', { name: 'Pull request' });
     expect(card).toHaveTextContent('#1821 PAY-1391 Refund processing');
-    expect(within(card).getByText('complete')).toHaveClass('cd-pill');
+    expect(within(card).getByText('AI review complete')).toHaveClass('cd-pill');
     expect(within(card).getByRole('link', { name: 'Open review' })).toHaveAttribute(
       'href',
       `/reviews/${PR_ID}`,

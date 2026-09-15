@@ -61,7 +61,7 @@ describe('Reviews list (specs/001 US6)', () => {
     );
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Reviews');
-    expect(screen.getByText('2 of 2 pull requests')).toBeInTheDocument();
+    expect(screen.getByText('2 pull requests')).toBeInTheDocument();
 
     const items = rows();
     expect(items).toHaveLength(2);
@@ -74,15 +74,14 @@ describe('Reviews list (specs/001 US6)', () => {
       `/workflows/${WORKFLOW_ID}`,
     );
     expect(first).toHaveTextContent(PROJECT.key);
-    expect(within(first).getByText('complete')).toHaveClass('cd-pill');
+    expect(within(first).getByText('AI review complete')).toHaveClass('cd-pill');
     expect(first).toHaveTextContent('5 open findings');
 
     const second = items[1]!;
-    expect(within(second).getByRole('link', { name: '#1822 PAY-1402 Ledger contract suite' })).toHaveAttribute(
-      'href',
-      `/reviews/${READY_PR_ID}`,
-    );
-    expect(within(second).getByText('running')).toHaveClass('cd-pill');
+    expect(
+      within(second).getByRole('link', { name: '#1822 PAY-1402 Ledger contract suite' }),
+    ).toHaveAttribute('href', `/reviews/${READY_PR_ID}`);
+    expect(within(second).getByText('AI review running')).toHaveClass('cd-pill');
     expect(saffron(container)).toBe(0);
     await expectNoViolations(container);
   });
@@ -100,7 +99,17 @@ describe('Reviews list (specs/001 US6)', () => {
     renderApp(
       <ReviewsScreen
         me={me('engineer')}
-        initial={{ items: [listItem({ reviewStatus: null, openFindingsCount: 0, blockingOpenCount: 0, readyForMerge: true })], nextCursor: null }}
+        initial={{
+          items: [
+            listItem({
+              reviewStatus: null,
+              openFindingsCount: 0,
+              blockingOpenCount: 0,
+              readyForMerge: true,
+            }),
+          ],
+          nextCursor: null,
+        }}
         now={NOW}
       />,
     );
@@ -150,7 +159,17 @@ describe('Reviews list (specs/001 US6)', () => {
 
   it('Load more appends the next page using the cursor', async () => {
     fetchMock.mockResolvedValueOnce(
-      jsonResponse({ items: [listItem({ id: READY_PR_ID, number: 1900, title: 'Page two', reviewHref: `/reviews/${READY_PR_ID}` })], nextCursor: null }),
+      jsonResponse({
+        items: [
+          listItem({
+            id: READY_PR_ID,
+            number: 1900,
+            title: 'Page two',
+            reviewHref: `/reviews/${READY_PR_ID}`,
+          }),
+        ],
+        nextCursor: null,
+      }),
     );
     renderApp(
       <ReviewsScreen
@@ -173,7 +192,9 @@ describe('Reviews list (specs/001 US6)', () => {
     await expectNoViolations(container);
     unmount();
 
-    fetchMock.mockResolvedValueOnce(problem(500)).mockResolvedValueOnce(jsonResponse(listPopulated()));
+    fetchMock
+      .mockResolvedValueOnce(problem(500))
+      .mockResolvedValueOnce(jsonResponse(listPopulated()));
     renderApp(<ReviewsScreen me={me('engineer')} initial={listPopulated()} now={NOW} />);
     await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Project' }), PROJECT.id);
     const retry = await screen.findByRole('button', { name: 'Retry' });
@@ -187,7 +208,10 @@ describe('Reviews list (specs/001 US6)', () => {
     fetchMock.mockResolvedValue(jsonResponse(listPopulated()));
     renderApp(<ReviewsScreen me={me('engineer')} initial={listEmpty()} now={NOW} />);
     expect(sources).toHaveLength(1);
-    sources[0]!.emit('inbox.changed', JSON.stringify({ workflowId: WORKFLOW_ID, table: 'review_findings' }));
+    sources[0]!.emit(
+      'inbox.changed',
+      JSON.stringify({ workflowId: WORKFLOW_ID, table: 'review_findings' }),
+    );
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(lastUrl().pathname).toBe('/api/reviews');
     await waitFor(() => expect(rows()).toHaveLength(2));

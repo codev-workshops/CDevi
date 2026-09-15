@@ -115,7 +115,8 @@ export const FINDINGS: ReviewFindingView[] = [
     blocking: 'SUGGESTION',
     title: 'Pin `payments-sdk` to the tested minor',
     description: 'build.gradle declares payments-sdk with an open minor range.',
-    impact: 'A future minor of payments-sdk could change refund semantics without a code change here.',
+    impact:
+      'A future minor of payments-sdk could change refund semantics without a code change here.',
     evidence: [
       {
         kind: 'file',
@@ -340,7 +341,9 @@ export function listPopulated(): ReviewListResponse {
 export const listEmpty = (): ReviewListResponse => ({ items: [], nextCursor: null });
 
 /** Workflow Detail's `pullRequest` for the same PR. */
-export function workflowPullRequest(over: Partial<WorkflowPullRequestView> = {}): WorkflowPullRequestView {
+export function workflowPullRequest(
+  over: Partial<WorkflowPullRequestView> = {},
+): WorkflowPullRequestView {
   return {
     id: PR_ID,
     number: 1821,

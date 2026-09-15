@@ -5,15 +5,19 @@ import type {
   DashboardSnapshot,
   InboxSnapshot,
   Me,
+  PullRequestReviewView,
+  PullRequestStatus,
   RequirementDetail,
+  ReviewListResponse,
   RequirementListPage,
   Tab,
   WindowKey,
 } from '@cdevi/contracts';
 import { WINDOW_KEYS } from '@cdevi/contracts/dashboard-model';
+import { PULL_REQUEST_STATUSES } from '@cdevi/contracts/review-model';
 import { cookies, headers } from 'next/headers';
 import { cache } from 'react';
-import { ApiError, apiFetch } from './api';
+import { ApiError, apiFetch, getPullRequestReview, getReviews } from './api';
 import { PROJECT_COOKIE } from './navigation';
 
 export async function cookieHeader(): Promise<string> {
@@ -102,4 +106,22 @@ export const getApprovalCenterSnapshot = cache(
       cookie: await cookieHeader(),
     });
   },
+);
+
+/** First Reviews page per filter set per request (specs/001 US6 FR-020; FR-025 project scope). */
+export const getReviewList = cache(
+  async (
+    project: string,
+    state?: string | undefined,
+    cursor?: string | undefined,
+  ): Promise<ReviewListResponse> => {
+    const s: PullRequestStatus | undefined = PULL_REQUEST_STATUSES.find((x) => x === state);
+    return getReviews({ project, state: s, cursor }, { cookie: await cookieHeader() });
+  },
+);
+
+/** One Review Center read model per pull request per request (specs/001 US6 FR-020..FR-022). */
+export const getPullRequestReviewView = cache(
+  async (pullRequestId: string): Promise<PullRequestReviewView> =>
+    getPullRequestReview(pullRequestId, { cookie: await cookieHeader() }),
 );
