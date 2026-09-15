@@ -14,6 +14,29 @@ export * from './dashboard-model';
 export * from './requirements';
 export * from './workflow-list';
 export * from './integrations';
+export * from './agent-runs';
+// agent-run-model also declares zod-free twins of `ConfidenceLevel` / `PolicyOutcome` / `EvidenceKind` /
+// `RunStepStatus`; the Zod versions in ./agent-runs win at the package root, so re-export by name.
+export {
+  CONFIDENCE_LEVELS,
+  CONFIDENCE_WORDS,
+  EVIDENCE_KINDS,
+  POLICY_OUTCOMES,
+  POLICY_OUTCOME_WORDS,
+  RUN_STEP_STATUSES,
+  STALE_RUN_AFTER_MS,
+  agentRunHref,
+  decisionAnchor,
+  evidenceHref,
+  runDuration,
+  runFreshness,
+  stepsSummary,
+  type EvidenceRefLike,
+  type RunFreshness,
+  type RunFreshnessInput,
+  type RunStepLike,
+  type StepsSummary,
+} from './agent-run-model';
 // requirement-rules also declares zod-free twins of `RequirementState` / `RequirementActions`;
 // the Zod versions in ./requirements win at the package root, so re-export by name.
 export {

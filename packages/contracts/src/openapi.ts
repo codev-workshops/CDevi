@@ -3,6 +3,9 @@ import { Me, SignInRequest } from './auth';
 import { Problem } from './common';
 import { InboxSnapshot, RecordView } from './inbox';
 import {
+  AgentDecisionIngest,
+  AgentDecisionsIngest,
+  AgentDecisionsIngestResult,
   AgentRunUpsert,
   ApprovalUpsert,
   ArtifactUpsert,
@@ -15,7 +18,16 @@ import {
   RequirementAnalysisIngest,
   RequirementIngestResult,
 } from './ingest';
-import { WorkflowActionRequest, WorkflowDetail } from './workflow-detail';
+import { StageAgentRunRef, WorkflowActionRequest, WorkflowDetail } from './workflow-detail';
+import {
+  AgentDecision,
+  AgentRunDetail,
+  ConfidenceLevel,
+  EvidenceRef,
+  PolicyOutcome,
+  RunStep,
+} from './agent-runs';
+import { STALE_RUN_AFTER_MS } from './agent-run-model';
 import { AlreadyResolvedProblem, AnswerRequest, ApproveRequest, RejectRequest } from './decisions';
 import { ApprovalCenterDetail, ApprovalCenterSnapshot, DecisionResult } from './approval-center';
 import {
@@ -148,18 +160,19 @@ const requirementSessionErrors = {
 };
 
 /**
- * specs/001 US1–US4 fragment: Workflow Detail read + actions, the stage/run/artifact/test-run ingestion routes,
- * the Approval Center, the Dashboard, the Requirements routes, the runtime analysis ingest, the inbound Jira webhook and the bounded workflow list. `specs/001-sdlc-control-plane-mvp/contracts/openapi.yaml` is a snapshot of this.
+ * specs/001 US1–US5 fragment: Workflow Detail read + actions, the stage/run/artifact/test-run ingestion routes,
+ * the Approval Center, the Dashboard, the Requirements routes, the runtime analysis ingest, the inbound Jira webhook,
+ * the bounded workflow list and the Agent Run detail with its decisions ingest. `specs/001-sdlc-control-plane-mvp/contracts/openapi.yaml` is a snapshot of this.
  */
 export function buildWorkflowDetailOpenApi(): Json {
   return {
     openapi: '3.1.0',
     info: {
       title:
-        'CDevi API — Workflow Detail, Approval Center, Dashboard and Requirements (specs/001 US1–US4)',
-      version: '0.4.0',
+        'CDevi API — Workflow Detail, Approval Center, Dashboard, Requirements and Agent Runs (specs/001 US1–US5)',
+      version: '0.5.0',
       description:
-        'Generated from Zod schemas in packages/contracts (`pnpm -F @cdevi/contracts openapi`) and snapshot-tested; edit the schemas, not the yaml. Extends the specs/003 document: same session cookie, Bearer ingestion tokens, Problem errors. Live updates reuse GET /inbox/stream — the client filters inbox.changed frames by workflowId (Dashboard: refetch on any frame, coalesced). Human decisions (approve, reject, answer) are a separate path from agent ingestion: session user, approver/administrator only, exactly once. The Dashboard is a read model over existing tables: every figure carries the href of the filtered list behind it. Requirements (US4): analysis is produced by the agent runtime and delivered through PUT /ingest/requirements/{externalId}/analysis; Jira is inbound-only through the signed webhook.',
+        'Generated from Zod schemas in packages/contracts (`pnpm -F @cdevi/contracts openapi`) and snapshot-tested; edit the schemas, not the yaml. Extends the specs/003 document: same session cookie, Bearer ingestion tokens, Problem errors. Live updates reuse GET /inbox/stream — the client filters inbox.changed frames by workflowId (Dashboard: refetch on any frame, coalesced). Human decisions (approve, reject, answer) are a separate path from agent ingestion: session user, approver/administrator only, exactly once. The Dashboard is a read model over existing tables: every figure carries the href of the filtered list behind it. Requirements (US4): analysis is produced by the agent runtime and delivered through PUT /ingest/requirements/{externalId}/analysis; Jira is inbound-only through the signed webhook. Agent runs (US5): GET /agent-runs/{id} is read-only for every role; decisions are delivered whole by the runtime through PUT /ingest/agent-runs/{externalId}/decisions with a strict schema that carries bounded summaries only (FR-018) — no free-form reasoning field is accepted.',
     },
     servers: [{ url: '/api' }],
     tags: [
@@ -169,6 +182,7 @@ export function buildWorkflowDetailOpenApi(): Json {
       { name: 'dashboard' },
       { name: 'requirements' },
       { name: 'integrations' },
+      { name: 'agent-runs' },
     ],
     paths: {
       '/workflows/{id}': {
@@ -243,6 +257,28 @@ export function buildWorkflowDetailOpenApi(): Json {
           parameters: [externalId],
           requestBody: { required: true, ...json('AgentRunUpsert') },
           responses: { '200': json('IngestResult'), ...ingestErrors },
+        },
+      },
+      '/ingest/agent-runs/{externalId}/decisions': {
+        put: {
+          tags: ['ingest'],
+          summary:
+            'Runtime replaces the decisions of an agent run as a whole (FR-017, FR-018, FR-036)',
+          description:
+            'Bearer ingestion principal scoped to the run project. Replaces every decision of the run (≤ 50, positions 1..50 unique, ≤ 20 typed evidence refs each). The body is strict: `reason` is a ≤ 600-character summary and any other reasoning field (chainOfThought, reasoning, thoughts, …) is a 400. `stale` when observedAt is not newer than the stored watermark (nothing written). One ingestion_log row and one inbox_changed notification per call.',
+          security: [{ ingestionToken: [] }],
+          parameters: [externalId],
+          requestBody: { required: true, ...json('AgentDecisionsIngest') },
+          responses: {
+            '200': json('AgentDecisionsIngestResult'),
+            '400': problem('Invalid body (unknown key, bound exceeded, duplicate position)'),
+            '401': problem('Unknown or disabled principal'),
+            '403': problem('Project outside the principal scope'),
+            '404': problem('Unknown agent run externalId'),
+            '409': problem(
+              'Agent run is not accepting decisions (concurrent replacement in progress)',
+            ),
+          },
         },
       },
       '/ingest/artifacts/{externalId}': {
@@ -555,6 +591,21 @@ export function buildWorkflowDetailOpenApi(): Json {
           },
         },
       },
+      '/agent-runs/{id}': {
+        get: {
+          tags: ['agent-runs'],
+          summary:
+            'Agent run detail: metadata, steps, timeline and decisions (FR-016, FR-017, FR-018)',
+          description: `Read-only for every role including viewer; the run must belong to a visible project. Steps (≤ 20) are the runtime's structured progress, the timeline (≤ 50) its events, decisions (≤ 50) carry action, bounded reason, confidence, policy outcome, optional risk level and typed evidence (≤ 20; accessible:false or no href renders as access-restricted). durationMs is finishedAt − startedAt, or now − startedAt while unfinished. A RUNNING|RETRYING run with no timeline activity for more than ${STALE_RUN_AFTER_MS / 60_000} minutes is shown as stale by the client (runFreshness), not re-stated. Live updates ride GET /inbox/stream filtered by workflowId. Not visible and unknown both return 404.`,
+          security: [{ sessionCookie: [] }],
+          parameters: [{ ...workflowId, description: 'Agent run id' }],
+          responses: {
+            '200': json('AgentRunDetail'),
+            '401': problem('Not signed in'),
+            '404': problem('Not found or not visible (403 and 404 are indistinguishable)'),
+          },
+        },
+      },
       '/integrations/jira/webhook': {
         post: {
           tags: ['integrations'],
@@ -634,6 +685,16 @@ export function buildWorkflowDetailOpenApi(): Json {
         WorkflowListQuery: schema(WorkflowListQuery),
         WorkflowListItem: schema(WorkflowListItem),
         WorkflowListPage: schema(WorkflowListPage),
+        StageAgentRunRef: schema(StageAgentRunRef),
+        ConfidenceLevel: schema(ConfidenceLevel),
+        PolicyOutcome: schema(PolicyOutcome),
+        EvidenceRef: schema(EvidenceRef),
+        RunStep: schema(RunStep),
+        AgentDecision: schema(AgentDecision),
+        AgentRunDetail: schema(AgentRunDetail),
+        AgentDecisionIngest: schema(AgentDecisionIngest),
+        AgentDecisionsIngest: schema(AgentDecisionsIngest),
+        AgentDecisionsIngestResult: schema(AgentDecisionsIngestResult),
       },
     },
   };
@@ -655,6 +716,7 @@ export function buildFullOpenApi(): Json {
       { name: 'dashboard' },
       { name: 'requirements' },
       { name: 'integrations' },
+      { name: 'agent-runs' },
     ],
     paths: { ...(base['paths'] as Json), ...(frag['paths'] as Json) },
     components: {

@@ -150,10 +150,12 @@ export function stageElapsed(
 
 export const workflowElapsed = stageElapsed;
 
+/** `runs` are the stage's agent runs (US5 drill-down), bounded to 20; omitted by callers that predate US5. */
 export function toStageView(
   stage: StageRow,
   current: StageRow | null,
   now: Date,
+  runs: ReadonlyArray<Pick<RunRow, 'id' | 'stageId' | 'agent' | 'state'>> = [],
 ): WorkflowStageView {
   return {
     id: stage.id,
@@ -169,6 +171,10 @@ export function toStageView(
     errorSummary: stage.errorSummary,
     requiresApproval: stage.requiresApproval,
     current: current?.id === stage.id,
+    agentRuns: runs
+      .filter((r) => r.stageId === stage.id)
+      .slice(0, 20)
+      .map((r) => ({ id: r.id, agent: r.agent, state: r.state, stagePosition: stage.position })),
   };
 }
 

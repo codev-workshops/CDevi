@@ -38,6 +38,18 @@ import {
   WorkflowListItem,
   WorkflowListPage,
   WorkflowListQuery,
+  AgentDecision,
+  AgentDecisionIngest,
+  AgentDecisionsIngest,
+  AgentDecisionsIngestResult,
+  AgentRunDetail,
+  AgentRunIdParams,
+  AgentRunUpsert,
+  ConfidenceLevel,
+  EvidenceRef,
+  PolicyOutcome,
+  RunStep,
+  WorkflowStageView,
 } from '../src/index';
 
 const T = '2026-09-14T09:00:00Z';
@@ -849,5 +861,212 @@ describe('US4 requirement schemas (specs/001 data-model.md §23–§27)', () => 
     expect(splitCsv(' a, b ,,c ')).toEqual(['a', 'b', 'c']);
     expect(splitCsv(['a'])).toEqual(['a']);
     expect(splitCsv(undefined)).toBeUndefined();
+  });
+});
+
+describe('US5 agent-run schemas (specs/001 US5, FR-016–FR-018)', () => {
+  const U = '00000000-0000-7000-8000-00000000000';
+  const evidence = (over: Partial<EvidenceRef> = {}): EvidenceRef => ({
+    kind: 'file',
+    label: 'src/auth/limiter.ts',
+    href: '/workflows/abc',
+    locator: 'L12-L40',
+    accessible: true,
+    ...over,
+  });
+  const decision = (over: Record<string, unknown> = {}) => ({
+    position: 1,
+    decidedAt: T,
+    action: 'Chose token-bucket limiter',
+    reason: 'Matches the existing gateway implementation and the ticket constraints.',
+    confidence: 'HIGH',
+    policyOutcome: 'ALLOWED',
+    evidence: [evidence()],
+    ...over,
+  });
+
+  it('FR-017 ConfidenceLevel is LOW|MEDIUM|HIGH and PolicyOutcome is ALLOWED|APPROVAL_REQUIRED|DENIED', () => {
+    expect(ConfidenceLevel.options).toEqual(['LOW', 'MEDIUM', 'HIGH']);
+    expect(PolicyOutcome.options).toEqual(['ALLOWED', 'APPROVAL_REQUIRED', 'DENIED']);
+    expect(ConfidenceLevel.safeParse('high').success).toBe(false);
+    expect(PolicyOutcome.safeParse('BLOCKED').success).toBe(false);
+  });
+
+  it('FR-017 EvidenceRef: kind file|ticket|artifact|url|pullRequest, label ≤ 200, href is a DecisionLink or absent, locator ≤ 200, accessible required', () => {
+    for (const kind of ['file', 'ticket', 'artifact', 'url', 'pullRequest'] as const)
+      expect(EvidenceRef.safeParse(evidence({ kind })).success, kind).toBe(true);
+    expect(EvidenceRef.safeParse(evidence({ kind: 'note' as never })).success).toBe(false);
+    expect(EvidenceRef.safeParse(evidence({ label: 'x'.repeat(201) })).success).toBe(false);
+    expect(EvidenceRef.safeParse(evidence({ href: 'javascript:alert(1)' })).success).toBe(false);
+    expect(EvidenceRef.safeParse(evidence({ href: '//evil.example' })).success).toBe(false);
+    expect(EvidenceRef.safeParse(evidence({ href: 'https://git.example/p/1' })).success).toBe(true);
+    expect(EvidenceRef.safeParse(evidence({ href: null, accessible: false })).success).toBe(true);
+    const { href: _h, locator: _l, ...minimal } = evidence();
+    expect(EvidenceRef.safeParse(minimal).success).toBe(true);
+    expect(EvidenceRef.safeParse(evidence({ locator: 'x'.repeat(201) })).success).toBe(false);
+    const { accessible: _a, ...noAccessible } = evidence();
+    expect(EvidenceRef.safeParse(noAccessible).success).toBe(false);
+  });
+
+  it('AS-3 RunStep: label ≤ 120 single line, status completed|running|pending|failed', () => {
+    expect(RunStep.safeParse({ label: 'Read ticket', status: 'completed' }).success).toBe(true);
+    expect(RunStep.safeParse({ label: 'x'.repeat(121), status: 'pending' }).success).toBe(false);
+    expect(RunStep.safeParse({ label: 'a\nb', status: 'pending' }).success).toBe(false);
+    expect(RunStep.safeParse({ label: 'Lint', status: 'skipped' }).success).toBe(false);
+  });
+
+  it('FR-017 AgentDecision: position 1..50, action ≤ 200, reason ≤ 600, policyRef ≤ 120 optional, riskLevel optional (US5), evidence ≤ 20', () => {
+    const ok = { id: `${U}1`, ...decision() };
+    expect(AgentDecision.safeParse(ok).success).toBe(true);
+    expect(AgentDecision.safeParse({ ...ok, position: 0 }).success).toBe(false);
+    expect(AgentDecision.safeParse({ ...ok, position: 51 }).success).toBe(false);
+    expect(AgentDecision.safeParse({ ...ok, position: 1.5 }).success).toBe(false);
+    expect(AgentDecision.safeParse({ ...ok, action: 'x'.repeat(201) }).success).toBe(false);
+    expect(AgentDecision.safeParse({ ...ok, reason: 'x'.repeat(600) }).success).toBe(true);
+    expect(AgentDecision.safeParse({ ...ok, reason: 'x'.repeat(601) }).success).toBe(false);
+    expect(AgentDecision.safeParse({ ...ok, policyRef: 'POL-7' }).success).toBe(true);
+    expect(AgentDecision.safeParse({ ...ok, policyRef: 'x'.repeat(121) }).success).toBe(false);
+    expect(AgentDecision.safeParse({ ...ok, riskLevel: 'MEDIUM' }).success).toBe(true);
+    expect(AgentDecision.safeParse({ ...ok, riskLevel: null }).success).toBe(true);
+    expect(AgentDecision.safeParse({ ...ok, riskLevel: 'SEVERE' }).success).toBe(false);
+    expect(
+      AgentDecision.safeParse({ ...ok, evidence: Array.from({ length: 20 }, () => evidence()) })
+        .success,
+    ).toBe(true);
+    expect(
+      AgentDecision.safeParse({ ...ok, evidence: Array.from({ length: 21 }, () => evidence()) })
+        .success,
+    ).toBe(false);
+    expect(AgentDecision.safeParse({ ...ok, evidence: [] }).success).toBe(true);
+  });
+
+  it('FR-018 AgentDecisionIngest is the decision without id and strict: chainOfThought, reasoning, thoughts and any other unknown key are rejected', () => {
+    expect(AgentDecisionIngest.safeParse(decision()).success).toBe(true);
+    expect(AgentDecisionIngest.safeParse({ id: `${U}1`, ...decision() }).success).toBe(false);
+    for (const key of ['chainOfThought', 'reasoning', 'thoughts', 'scratchpad'])
+      expect(
+        AgentDecisionIngest.safeParse(decision({ [key]: 'Let me think step by step…' })).success,
+        key,
+      ).toBe(false);
+  });
+
+  it('FR-018 FR-036 AgentDecisionsIngest requires observedAt, bounds decisions at 50 with unique positions and is strict at the top level too', () => {
+    const body = (n: number, extra: Record<string, unknown> = {}) => ({
+      observedAt: T,
+      decisions: Array.from({ length: n }, (_, i) => decision({ position: i + 1 })),
+      ...extra,
+    });
+    expect(AgentDecisionsIngest.safeParse(body(0)).success).toBe(true);
+    expect(AgentDecisionsIngest.safeParse(body(50)).success).toBe(true);
+    expect(AgentDecisionsIngest.safeParse(body(51)).success).toBe(false);
+    expect(AgentDecisionsIngest.safeParse({ decisions: [] }).success).toBe(false);
+    expect(AgentDecisionsIngest.safeParse(body(1, { chainOfThought: 'x' })).success).toBe(false);
+    expect(AgentDecisionsIngest.safeParse(body(1, { reasoning: 'x' })).success).toBe(false);
+    expect(AgentDecisionsIngest.safeParse(body(1, { thoughts: ['x'] })).success).toBe(false);
+    expect(
+      AgentDecisionsIngest.safeParse({
+        observedAt: T,
+        decisions: [decision({ position: 2 }), decision({ position: 2 })],
+      }).success,
+    ).toBe(false);
+    expect(AgentDecisionsIngestResult.safeParse({ result: 'accepted', count: 3 }).success).toBe(
+      true,
+    );
+    expect(AgentDecisionsIngestResult.safeParse({ result: 'stale', count: 0 }).success).toBe(true);
+    expect(AgentDecisionsIngestResult.safeParse({ result: 'rejected', count: 0 }).success).toBe(
+      false,
+    );
+    expect(AgentDecisionsIngestResult.safeParse({ result: 'accepted', count: 51 }).success).toBe(
+      false,
+    );
+  });
+
+  it('AS-3 AgentRunUpsert.steps is optional, defaults to [] and is bounded to 20', () => {
+    const base = {
+      workflowExternalId: 'wf-1',
+      stagePosition: 3,
+      agent: 'implementer',
+      state: 'RUNNING',
+      startedAt: T,
+    };
+    const parsed = AgentRunUpsert.parse(base);
+    expect(parsed.steps).toEqual([]);
+    expect(parsed.timeline).toEqual([]);
+    const steps = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({ label: `Step ${i + 1}`, status: 'pending' }));
+    expect(AgentRunUpsert.safeParse({ ...base, steps: steps(20) }).success).toBe(true);
+    expect(AgentRunUpsert.safeParse({ ...base, steps: steps(21) }).success).toBe(false);
+  });
+
+  it('FR-016 AgentRunDetail bounds steps ≤ 20, timeline ≤ 50 and decisions ≤ 50 and requires workflow/stage refs; AgentRunIdParams is a uuid', () => {
+    const detail = {
+      id: `${U}1`,
+      externalId: 's500-001-r4',
+      agent: 'implementer',
+      model: 'gpt-x',
+      state: 'COMPLETED',
+      startedAt: T,
+      finishedAt: T,
+      durationMs: 0,
+      summary: null,
+      workflow: { id: `${U}2`, externalId: 's500-001', title: 'Add rate limiting' },
+      stage: { position: 4, name: 'Implementation' },
+      steps: [],
+      timeline: [],
+      decisions: [{ id: `${U}3`, ...decision() }],
+    };
+    expect(AgentRunDetail.safeParse(detail).success).toBe(true);
+    expect(AgentRunDetail.safeParse({ ...detail, durationMs: -1 }).success).toBe(false);
+    const many = <T>(n: number, f: (i: number) => T) => Array.from({ length: n }, (_, i) => f(i));
+    expect(
+      AgentRunDetail.safeParse({
+        ...detail,
+        steps: many(21, () => ({ label: 'x', status: 'pending' })),
+      }).success,
+    ).toBe(false);
+    expect(
+      AgentRunDetail.safeParse({
+        ...detail,
+        timeline: many(51, () => ({ at: T, kind: 'tool', message: 'x' })),
+      }).success,
+    ).toBe(false);
+    expect(
+      AgentRunDetail.safeParse({
+        ...detail,
+        decisions: many(51, (i) => ({ id: `${U}3`, ...decision({ position: (i % 50) + 1 }) })),
+      }).success,
+    ).toBe(false);
+    const { workflow: _w, ...noWorkflow } = detail;
+    expect(AgentRunDetail.safeParse(noWorkflow).success).toBe(false);
+    expect(AgentRunIdParams.safeParse({ id: `${U}1` }).success).toBe(true);
+    expect(AgentRunIdParams.safeParse({ id: 's500-001-r4' }).success).toBe(false);
+  });
+
+  it('AS-1 WorkflowStageView.agentRuns is additive: defaults to [], carries {id, agent, state, stagePosition} and is bounded to 20', () => {
+    const stage = {
+      id: `${U}1`,
+      position: 4,
+      name: 'Implementation',
+      state: 'RUNNING',
+      stateObservedAt: T,
+      stateReason: null,
+      agent: 'implementer',
+      startedAt: T,
+      finishedAt: null,
+      elapsedMs: 0,
+      errorSummary: null,
+      requiresApproval: false,
+      current: true,
+    };
+    expect(WorkflowStageView.parse(stage).agentRuns).toEqual([]);
+    const run = { id: `${U}2`, agent: 'implementer', state: 'RUNNING', stagePosition: 4 };
+    expect(WorkflowStageView.parse({ ...stage, agentRuns: [run] }).agentRuns).toEqual([run]);
+    expect(
+      WorkflowStageView.safeParse({ ...stage, agentRuns: Array.from({ length: 21 }, () => run) })
+        .success,
+    ).toBe(false);
+    expect(
+      WorkflowStageView.safeParse({ ...stage, agentRuns: [{ ...run, stagePosition: 0 }] }).success,
+    ).toBe(false);
   });
 });
