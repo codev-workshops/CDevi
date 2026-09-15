@@ -1107,6 +1107,19 @@ describe('S-500 agent decisions showcase (specs/001 US5, data-model.md §37)', (
       expect(await n(`select count(*) c from agent_runs where jsonb_array_length(steps) > 0`)).toBe(
         EXPECTED_AGENT_DECISIONS.runsWithSteps,
       );
+      // FR-036 watermark: set to the latest decided_at on runs that carry decisions, NULL elsewhere
+      expect(
+        await n(
+          `select count(*) c from agent_runs r where r.decisions_observed_at is not null
+             and r.decisions_observed_at = (select max(d.decided_at) from agent_decisions d where d.agent_run_id = r.id)`,
+        ),
+      ).toBe(EXPECTED_AGENT_DECISIONS.runs);
+      expect(
+        await n(
+          `select count(*) c from agent_runs r where r.decisions_observed_at is null
+             and exists (select 1 from agent_decisions d where d.agent_run_id = r.id)`,
+        ),
+      ).toBe(0);
       const clr = (
         await pool.query(`select links from clarifications where external_id = $1`, [
           DECISION_SHOWCASE.clarification,

@@ -225,6 +225,8 @@ export const agentRuns = pgTable(
     timeline: jsonb('timeline').$type<AgentRunEvent[]>().notNull().default([]),
     /** 0006: runtime-provided structured progress, ≤ 20 steps (US5 AS-3). */
     steps: jsonb('steps').$type<RunStep[]>().notNull().default([]),
+    /** 0006: observedAt watermark of the last accepted decisions replacement; NULL until the first batch. */
+    decisionsObservedAt: ts('decisions_observed_at'),
     createdAt: ts('created_at').notNull().defaultNow(),
     updatedAt: ts('updated_at').notNull().defaultNow(),
   },

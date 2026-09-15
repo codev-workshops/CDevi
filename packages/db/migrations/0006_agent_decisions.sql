@@ -9,9 +9,12 @@ CREATE TYPE confidence_level AS ENUM ('LOW', 'MEDIUM', 'HIGH');
 CREATE TYPE policy_outcome AS ENUM ('ALLOWED', 'APPROVAL_REQUIRED', 'DENIED');
 
 -- §32 structured progress on the run: ≤ 20 { label ≤ 120, status: completed|running|pending|failed }, runtime-provided.
+-- decisions_observed_at is the replace-whole watermark of PUT …/decisions (same idea as
+-- requirements.analysis_observed_at in 0005): NULL until the first batch; a batch whose observedAt is not newer is `stale`.
 ALTER TABLE agent_runs
   ADD COLUMN steps jsonb NOT NULL DEFAULT '[]'::jsonb
-    CONSTRAINT agent_runs_steps_check CHECK (jsonb_typeof(steps) = 'array' AND jsonb_array_length(steps) <= 20);
+    CONSTRAINT agent_runs_steps_check CHECK (jsonb_typeof(steps) = 'array' AND jsonb_array_length(steps) <= 20),
+  ADD COLUMN decisions_observed_at timestamptz;
 
 -- §33 one row per reported decision; `reason` is a bounded summary, never chain-of-thought (FR-018).
 -- risk_level is optional until US8 makes it mandatory. evidence is ≤ 20 typed refs
@@ -37,14 +40,24 @@ CREATE TABLE agent_decisions (
 );
 CREATE INDEX agent_decisions_run_idx ON agent_decisions (agent_run_id, position);
 
--- §34 live updates (FR-004/FR-034). Replace-whole ingestion inserts up to 50 rows in one statement, so the
--- trigger is statement-level over the transition table: one inbox_change_log row and one NOTIFY per
--- (organization, project, workflow) touched — never one frame per decision. The payload shape is the one
--- notify_inbox_changed() emits, so the SSE fan-out and the client filter by workflowId are unchanged.
+-- §34 live updates (FR-004/FR-034). Replace-whole ingestion is DELETE + one batch INSERT of up to 50 rows, so the
+-- triggers are statement-level over the transition tables (one trigger per event — Postgres does not allow a
+-- transition table on a multi-event trigger) and de-duplicated per transaction with a transaction-local setting:
+-- one inbox_change_log row and one NOTIFY per (organization, project, workflow) touched — never one frame per
+-- decision, and still exactly one when the replacement is empty (DELETE only). A cascading DELETE from a workflow
+-- that is itself being removed notifies nothing. The payload shape is the one notify_inbox_changed() emits, so the
+-- SSE fan-out and the client filter by workflowId are unchanged.
 CREATE FUNCTION notify_agent_decision_changed() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE r record; v_seq bigint;
+DECLARE r record; v_seq bigint; v_key text;
 BEGIN
-  FOR r IN SELECT DISTINCT organization_id, project_id, workflow_id FROM inserted LOOP
+  FOR r IN EXECUTE format(
+    'SELECT DISTINCT d.organization_id, d.project_id, d.workflow_id FROM %I d
+     WHERE EXISTS (SELECT 1 FROM workflows w WHERE w.id = d.workflow_id)',
+    CASE TG_OP WHEN 'INSERT' THEN 'inserted' ELSE 'deleted' END)
+  LOOP
+    v_key := 'cdevi.decisions_notified_' || replace(r.workflow_id::text, '-', '');
+    CONTINUE WHEN coalesce(current_setting(v_key, true), '') = '1';
+    PERFORM set_config(v_key, '1', true);
     INSERT INTO inbox_change_log (organization_id, project_id, workflow_id)
       VALUES (r.organization_id, r.project_id, r.workflow_id) RETURNING seq INTO v_seq;
     PERFORM pg_notify('inbox_changed', json_build_object('seq', v_seq, 'organizationId', r.organization_id,
@@ -54,6 +67,20 @@ BEGIN
 END $$;
 CREATE TRIGGER inbox_changed_agent_decisions AFTER INSERT ON agent_decisions
   REFERENCING NEW TABLE AS inserted FOR EACH STATEMENT EXECUTE FUNCTION notify_agent_decision_changed();
+CREATE TRIGGER inbox_changed_agent_decisions_deleted AFTER DELETE ON agent_decisions
+  REFERENCING OLD TABLE AS deleted FOR EACH STATEMENT EXECUTE FUNCTION notify_agent_decision_changed();
+
+-- The accepted replacement also moves agent_runs.decisions_observed_at in the same transaction. That watermark
+-- is not something a page renders, so the 0002 agent_runs trigger is split: INSERTs and UPDATEs of any rendered
+-- column still notify; an UPDATE that touches only decisions_observed_at (and updated_at) does not — otherwise a
+-- replacement would emit a second frame for the same workflow.
+DROP TRIGGER inbox_changed_agent_runs ON agent_runs;
+CREATE TRIGGER inbox_changed_agent_runs AFTER INSERT ON agent_runs FOR EACH ROW EXECUTE FUNCTION notify_inbox_changed();
+CREATE TRIGGER inbox_changed_agent_runs_updated AFTER UPDATE ON agent_runs FOR EACH ROW
+  WHEN (ROW(OLD.stage_id, OLD.agent, OLD.model, OLD.state, OLD.started_at, OLD.finished_at, OLD.summary, OLD.timeline, OLD.steps)
+        IS DISTINCT FROM
+        ROW(NEW.stage_id, NEW.agent, NEW.model, NEW.state, NEW.started_at, NEW.finished_at, NEW.summary, NEW.timeline, NEW.steps))
+  EXECUTE FUNCTION notify_inbox_changed();
 
 -- §35 RLS policy (same shape as 0001–0005; not enabled here) and grants: replace-whole ingestion needs
 -- SELECT, INSERT and DELETE; decisions are never edited in place.

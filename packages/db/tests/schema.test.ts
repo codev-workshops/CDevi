@@ -148,7 +148,9 @@ describe.skipIf(skip)('migration 0001_init (data-model.md §2)', () => {
     );
     expect(trg.rows.map((r) => r.tgname).sort()).toEqual([
       'inbox_changed_agent_decisions',
+      'inbox_changed_agent_decisions_deleted',
       'inbox_changed_agent_runs',
+      'inbox_changed_agent_runs_updated',
       'inbox_changed_approvals',
       'inbox_changed_artifacts',
       'inbox_changed_clarifications',
@@ -758,10 +760,10 @@ describe.skipIf(skip)('migration 0004_dashboard (specs/001 data-model.md §18)',
         )
       ).rows.map((r) => [r.table_name, r.n]),
     );
-    // agent_runs is 15 columns after 0002 + `steps` from 0006 (the only later column on these tables)
+    // agent_runs is 15 columns after 0002 + `steps` and `decisions_observed_at` from 0006 (the only later columns on these tables)
     expect(columnCounts).toEqual({
       test_runs: 17,
-      agent_runs: 16,
+      agent_runs: 17,
       audit_events: 15,
       approvals: 20,
       clarifications: 19,
@@ -1783,6 +1785,33 @@ describe.skipIf(skip)(
       expect(applied).toBe(1);
     });
 
+    it('FR-036 agent_runs.decisions_observed_at is a nullable timestamptz watermark (NULL until the first decisions batch)', async () => {
+      const col = (await columns('agent_runs')).find(
+        (c) => c.column_name === 'decisions_observed_at',
+      );
+      expect(col).toBeDefined();
+      expect(col?.is_nullable).toBe('YES');
+      expect(col?.column_default).toBeNull();
+      const type = (
+        await admin6.query(
+          `select data_type from information_schema.columns where table_name='agent_runs' and column_name='decisions_observed_at'`,
+        )
+      ).rows[0].data_type;
+      expect(type).toBe('timestamp with time zone');
+      const client = await app6.connect();
+      try {
+        await client.query('BEGIN');
+        const f = await fixture(client);
+        const row = (
+          await client.query(`select decisions_observed_at from agent_runs where id=$1`, [f.run])
+        ).rows[0];
+        expect(row.decisions_observed_at).toBeNull();
+        await client.query('ROLLBACK');
+      } finally {
+        client.release();
+      }
+    });
+
     it('AS-3 agent_runs.steps is jsonb NOT NULL DEFAULT [] and CHECKed as an array of at most 20 entries', async () => {
       const steps = (await columns('agent_runs')).find((c) => c.column_name === 'steps');
       expect(steps).toBeDefined();
@@ -2024,19 +2053,24 @@ describe.skipIf(skip)(
       }
     });
 
-    it("FR-034 inbox_changed_agent_decisions is a statement-level AFTER INSERT trigger: inserting a batch of decisions writes exactly one inbox_change_log row carrying the run's workflow_id and NOTIFYs inbox_changed once", async () => {
+    it("FR-034 inbox_changed_agent_decisions(_deleted) are statement-level AFTER INSERT / AFTER DELETE triggers: a replace-whole (DELETE + batch INSERT) in one transaction writes exactly one inbox_change_log row carrying the run's workflow_id, an empty replacement (DELETE only) still writes one, and NOTIFYs inbox_changed once", async () => {
       const trg = (
         await admin6.query(
-          `select tgname, tgtype from pg_trigger where tgrelid='agent_decisions'::regclass and not tgisinternal`,
+          `select tgname, tgtype from pg_trigger where tgrelid='agent_decisions'::regclass and not tgisinternal order by tgname`,
         )
       ).rows as { tgname: string; tgtype: number }[];
-      expect(trg.map((t) => t.tgname)).toEqual(['inbox_changed_agent_decisions']);
+      expect(trg.map((t) => t.tgname)).toEqual([
+        'inbox_changed_agent_decisions',
+        'inbox_changed_agent_decisions_deleted',
+      ]);
       // tgtype bit 0 (1) = FOR EACH ROW; bit 1 (2) = BEFORE; bit 2 (4) = INSERT; bit 3 (8) = DELETE; bit 4 (16) = UPDATE
-      const tgtype = trg[0]!.tgtype;
-      expect(tgtype & 1, 'FOR EACH STATEMENT').toBe(0);
-      expect(tgtype & 2, 'AFTER').toBe(0);
-      expect(tgtype & 4, 'INSERT').toBe(4);
-      expect(tgtype & (8 | 16), 'not DELETE/UPDATE').toBe(0);
+      for (const t of trg) {
+        expect(t.tgtype & 1, `${t.tgname} FOR EACH STATEMENT`).toBe(0);
+        expect(t.tgtype & 2, `${t.tgname} AFTER`).toBe(0);
+        expect(t.tgtype & 16, `${t.tgname} not UPDATE`).toBe(0);
+      }
+      expect(trg[0]!.tgtype & (4 | 8), 'INSERT only').toBe(4);
+      expect(trg[1]!.tgtype & (4 | 8), 'DELETE only').toBe(8);
 
       const client = await app6.connect();
       try {
@@ -2068,15 +2102,100 @@ describe.skipIf(skip)(
           },
         ]);
         await client.query(`delete from agent_decisions where agent_run_id=$1`, [f.run]);
-        const afterDelete = (
+        await insertDecision(client, f, 1);
+        await client.query(`update agent_runs set decisions_observed_at = now() where id=$1`, [
+          f.run,
+        ]);
+        const afterReplace = (
           await client.query(`select count(*)::int c from inbox_change_log where seq > $1`, [
             before,
           ])
         ).rows[0].c;
-        expect(afterDelete, 'DELETE alone does not notify; the ingest re-INSERT does').toBe(1);
+        expect(
+          afterReplace,
+          'DELETE + INSERT + watermark UPDATE in one transaction is one row',
+        ).toBe(1);
+        await client.query('ROLLBACK');
+
+        // The 0002 agent_runs trigger still fires for rendered columns, not for the watermark alone.
+        await client.query('BEGIN');
+        const g = await fixture(client);
+        const mark = (await client.query(`select coalesce(max(seq),0) as m from inbox_change_log`))
+          .rows[0].m;
+        await client.query(`update agent_runs set decisions_observed_at = now() where id=$1`, [
+          g.run,
+        ]);
+        expect(
+          (
+            await client.query(`select count(*)::int c from inbox_change_log where seq > $1`, [
+              mark,
+            ])
+          ).rows[0].c,
+          'watermark-only UPDATE does not notify',
+        ).toBe(0);
+        await client.query(
+          `update agent_runs set state = 'COMPLETED', finished_at = now() where id=$1`,
+          [g.run],
+        );
+        await client.query(
+          `update agent_runs set steps = '[{"label":"x","status":"completed"}]' where id=$1`,
+          [g.run],
+        );
+        expect(
+          (
+            await client.query(`select count(*)::int c from inbox_change_log where seq > $1`, [
+              mark,
+            ])
+          ).rows[0].c,
+          'state and steps UPDATEs notify (one row each)',
+        ).toBe(2);
         await client.query('ROLLBACK');
       } finally {
         client.release();
+      }
+
+      // Empty replacement: DELETE with no following INSERT still tells open pages the decisions are gone.
+      // A DELETE that removes nothing, and a cascade from a workflow being deleted, write nothing.
+      const c2 = await app6.connect();
+      try {
+        await c2.query('BEGIN');
+        const f = await fixture(c2);
+        await insertDecision(c2, f, 1);
+        await insertDecision(c2, f, 2);
+        await c2.query('COMMIT');
+        const before = (await c2.query(`select coalesce(max(seq),0) as m from inbox_change_log`))
+          .rows[0].m;
+        await c2.query(`delete from agent_decisions where agent_run_id=$1`, [f.run]);
+        const rows = (
+          await c2.query(`select workflow_id from inbox_change_log where seq > $1`, [before])
+        ).rows;
+        expect(rows).toEqual([{ workflow_id: f.workflow }]);
+        await c2.query(`delete from agent_decisions where agent_run_id=$1`, [f.run]);
+        expect(
+          (await c2.query(`select count(*)::int c from inbox_change_log where seq > $1`, [before]))
+            .rows[0].c,
+          'DELETE of nothing writes nothing',
+        ).toBe(1);
+        await c2.query('BEGIN');
+        await insertDecision(c2, f, 1);
+        await c2.query('COMMIT');
+        const beforeCascade = (
+          await c2.query(`select coalesce(max(seq),0) as m from inbox_change_log`)
+        ).rows[0].m;
+        await admin6.query(`delete from workflows where id=$1`, [f.workflow]);
+        expect(
+          (
+            await c2.query(`select count(*)::int c from inbox_change_log where seq > $1`, [
+              beforeCascade,
+            ])
+          ).rows[0].c,
+          'cascade from a deleted workflow writes nothing',
+        ).toBe(0);
+        await admin6.query(`delete from inbox_change_log where organization_id=$1`, [f.org]);
+        await admin6.query(`delete from projects where id=$1`, [f.project]);
+        await admin6.query(`delete from organizations where id=$1`, [f.org]);
+      } finally {
+        c2.release();
       }
 
       // NOTIFY is transactional, so delivery needs a committed insert; the rows are removed afterwards.

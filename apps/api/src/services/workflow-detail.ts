@@ -193,6 +193,19 @@ export async function workflowDetail(
     timeline: r.timeline,
   }));
 
+  // Per-stage drill-down refs (US5): newest 20 runs of every stage, independent of the workflow-wide
+  // 100-run window that feeds the activity feed.
+  const stageRuns = (
+    await client.query<{ id: string; stage_id: string; agent: string; state: WorkflowState }>(
+      `SELECT id, stage_id, agent, state FROM (
+         SELECT id, stage_id, agent, state,
+                row_number() OVER (PARTITION BY stage_id ORDER BY started_at DESC, id DESC) AS rn
+           FROM agent_runs WHERE workflow_id = $1) r
+       WHERE rn <= 20 ORDER BY stage_id, rn`,
+      [w.id],
+    )
+  ).rows.map((r) => ({ id: r.id, stageId: r.stage_id, agent: r.agent, state: r.state }));
+
   const artifacts = (
     await client.query<{
       id: string;
@@ -306,7 +319,7 @@ export async function workflowDetail(
           : null,
       riskLevel: w.state === 'WAITING_FOR_HUMAN' ? (approval?.riskLevel ?? null) : null,
     },
-    stages: ordered.map((s) => toStageView(s, current, now)),
+    stages: ordered.map((s) => toStageView(s, current, now, stageRuns)),
     currentStage: current
       ? {
           stage: stageRef(current),
