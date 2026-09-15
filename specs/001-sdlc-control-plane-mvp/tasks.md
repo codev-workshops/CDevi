@@ -278,9 +278,9 @@ US1 is the MVP for this branch and the only story tasked. Deliver bottom-up so e
 
 ## Phase 8: Polish & Cross-Cutting Concerns (US3)
 
-- [ ] T083 [P] Update `docs/architecture.md`: §4 "Dashboard" marked landed (`GET /api/dashboard?project=&window=`, read model only); §6 query contracts the placeholder screens must honour (`/workflows?stage=n|state=A,B|hasPr=true|intervention=human`, `/approvals?kind=clarification|risk=HIGH,CRITICAL`, `/testing?window=`, `/agents?window=`, `/audit?risk=HIGH,CRITICAL&window=`, `/reviews`); §8 layout adds `0004_dashboard.sql`, `seed/dashboard.ts`, `services/dashboard.ts`, `routes/dashboard.ts`, `apps/web/app/(app)/dashboard/`
-- [ ] T084 [P] Update `AGENTS.md` "Backend and web app work": `GET /api/dashboard` (aggregate read model, `project=all|uuid`, `window=24h|7d|30d`, indexes in 0004) and the zod-free `@cdevi/contracts/dashboard-model` subpath in the browser-import list; note the `dashboard-demo` seed project (administrator-only) under `pnpm db:seed`
-- [ ] T085 Review the diff against `develop`, run `pnpm check && pnpm test:api && pnpm test:e2e` once more, open the PR `feature/US3 → develop` with the quickstart §4.2 scenario→test table, then iterate on Devin Review findings until none remain
+- [X] T083 [P] Update `docs/architecture.md`: §4 "Dashboard" marked landed (`GET /api/dashboard?project=&window=`, read model only); §6 query contracts the placeholder screens must honour (`/workflows?stage=n|state=A,B|hasPr=true|intervention=human`, `/approvals?kind=clarification|risk=HIGH,CRITICAL`, `/testing?window=`, `/agents?window=`, `/audit?risk=HIGH,CRITICAL&window=`, `/reviews`); §8 layout adds `0004_dashboard.sql`, `seed/dashboard.ts`, `services/dashboard.ts`, `routes/dashboard.ts`, `apps/web/app/(app)/dashboard/`
+- [X] T084 [P] Update `AGENTS.md` "Backend and web app work": `GET /api/dashboard` (aggregate read model, `project=all|uuid`, `window=24h|7d|30d`, indexes in 0004) and the zod-free `@cdevi/contracts/dashboard-model` subpath in the browser-import list; note the `dashboard-demo` seed project (administrator-only) under `pnpm db:seed`
+- [X] T085 Review the diff against `develop`, run `pnpm check && pnpm test:api && pnpm test:e2e` once more, open the PR `feature/US3 → develop` with the quickstart §4.2 scenario→test table, then iterate on Devin Review findings until none remain
 
 ## Dependencies & Execution Order (Phase 7–8)
 
