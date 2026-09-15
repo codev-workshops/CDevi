@@ -17,6 +17,7 @@ import workflowRoutes from './routes/workflows';
 import approvalRoutes from './routes/approvals';
 import clarificationRoutes from './routes/clarifications';
 import dashboardRoutes from './routes/dashboard';
+import requirementRoutes from './routes/requirements';
 
 export interface BuildOptions {
   /** Injected clock (Constitution II: time is controlled in tests). */
@@ -84,6 +85,7 @@ export async function buildApp(opts: BuildOptions): Promise<FastifyInstance> {
       await api.register(approvalRoutes);
       await api.register(clarificationRoutes);
       await api.register(dashboardRoutes);
+      await api.register(requirementRoutes);
     },
     { prefix: '/api' },
   );

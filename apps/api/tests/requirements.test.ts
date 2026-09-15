@@ -175,7 +175,7 @@ describe.skipIf(skipDb)(
       expect(short.statusCode).toBe(400);
       const p = short.json() as Problem;
       expect(p.type).toBe('urn:cdevi:problem:validation');
-      expect(p.errors?.some((e) => e.path === 'title')).toBe(true);
+      expect(p.errors?.some((e) => e.path === '/title')).toBe(true);
       expect(short.body).not.toContain(objective);
       const many = await post(engineer, '/api/requirements', {
         projectId: payments,
@@ -184,7 +184,7 @@ describe.skipIf(skipDb)(
         acceptanceCriteria: Array.from({ length: 21 }, (_, i) => `Criterion ${i}`),
       });
       expect(many.statusCode).toBe(400);
-      expect((many.json() as Problem).errors?.some((e) => e.path === 'acceptanceCriteria')).toBe(
+      expect((many.json() as Problem).errors?.some((e) => e.path === '/acceptanceCriteria')).toBe(
         true,
       );
       expect(many.body).not.toContain('Criterion 0');
@@ -447,7 +447,7 @@ describe.skipIf(skipDb)(
         {},
       );
       expect(missing.statusCode).toBe(400);
-      expect((missing.json() as Problem).errors?.some((e) => e.path === 'reason')).toBe(true);
+      expect((missing.json() as Problem).errors?.some((e) => e.path === '/reason')).toBe(true);
       expect(
         (
           await post(engineer, `/api/requirements/${targets[0]!.requirement.id}/reject`, {
