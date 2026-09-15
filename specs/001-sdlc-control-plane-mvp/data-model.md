@@ -815,81 +815,80 @@ Every `audit_events` row written above has `risk_level = NULL` (§27).
 
 ## 31. Migration `0006_agent_decisions.sql` (research R46, R48, R53)
 
+As landed on `feature/US5-contracts-db` (PR #6) — `packages/db/migrations/0006_agent_decisions.sql` is the source of truth; this section mirrors it.
+
 ```sql
--- specs/001 US5 (Part E): agent decisions with evidence, structured run progress. RLS and grants follow 0001–0005.
--- Run as `migrator`.
+-- specs/001 US5 (data-model §31–§37): agent_runs.steps (structured progress, AS-3) and the agent_decisions table
+-- (FR-017, FR-018). Decisions are delivered whole by the runtime (PUT /api/ingest/agent-runs/{externalId}/decisions →
+-- DELETE + batch INSERT); the read model is GET /api/agent-runs/{id}. RLS and grants follow 0001–0005: policies are
+-- written here, ENABLE/DISABLE is owned by the CDEVI_RLS loop in migrate.ts (RLS_TABLES gains agent_decisions).
 
-CREATE TYPE confidence_level AS ENUM ('LOW','MEDIUM','HIGH');
-CREATE TYPE policy_outcome   AS ENUM ('ALLOWED','APPROVAL_REQUIRED','DENIED');
+-- vocabulary
+CREATE TYPE confidence_level AS ENUM ('LOW', 'MEDIUM', 'HIGH');
+CREATE TYPE policy_outcome AS ENUM ('ALLOWED', 'APPROVAL_REQUIRED', 'DENIED');
 
--- §31.1 structured progress (R48): runtime-provided checklist, ≤ 20 steps { label ≤ 120, status }
-ALTER TABLE agent_runs ADD COLUMN steps jsonb NOT NULL DEFAULT '[]'
-  CHECK (jsonb_typeof(steps) = 'array' AND jsonb_array_length(steps) <= 20);
+-- structured progress on the run (R48): ≤ 20 { label ≤ 120, status: completed|running|pending|failed }, runtime-provided.
+ALTER TABLE agent_runs
+  ADD COLUMN steps jsonb NOT NULL DEFAULT '[]'::jsonb
+    CONSTRAINT agent_runs_steps_check CHECK (jsonb_typeof(steps) = 'array' AND jsonb_array_length(steps) <= 20);
 
--- §31.2 agent_decisions (R46): one row per decision of one run; evidence refs are leaf jsonb (≤ 20)
+-- one row per reported decision (R46); `reason` is a bounded summary, never chain-of-thought (FR-018).
+-- risk_level is optional until US8 makes it mandatory. evidence is ≤ 20 typed refs validated by the contract.
 CREATE TABLE agent_decisions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   organization_id uuid NOT NULL REFERENCES organizations(id),
-  project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  project_id uuid NOT NULL REFERENCES projects(id),
   workflow_id uuid NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
   stage_id uuid NOT NULL REFERENCES workflow_stages(id) ON DELETE CASCADE,
   agent_run_id uuid NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
   position smallint NOT NULL CHECK (position BETWEEN 1 AND 50),
   decided_at timestamptz NOT NULL,
-  action text NOT NULL CHECK (char_length(action) BETWEEN 1 AND 200),
-  reason text NOT NULL CHECK (char_length(reason) BETWEEN 1 AND 600),
+  action text NOT NULL CHECK (char_length(action) <= 200),
+  reason text NOT NULL CHECK (char_length(reason) <= 600),
   confidence confidence_level NOT NULL,
   policy_outcome policy_outcome NOT NULL,
-  policy_ref text CHECK (char_length(policy_ref) <= 120),      -- NULL until US8 names policies
-  risk_level risk_level,                                        -- OPTIONAL in US5; mandatory with US8 (R46)
-  evidence jsonb NOT NULL DEFAULT '[]'
-    CHECK (jsonb_typeof(evidence) = 'array' AND jsonb_array_length(evidence) <= 20),
+  policy_ref text CHECK (char_length(policy_ref) <= 120),
+  risk_level risk_level,
+  evidence jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(evidence) = 'array' AND jsonb_array_length(evidence) <= 20),
   created_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (agent_run_id, position)
+  CONSTRAINT agent_decisions_run_position_key UNIQUE (agent_run_id, position)
 );
 CREATE INDEX agent_decisions_run_idx ON agent_decisions (agent_run_id, position);
 
--- §31.3 live updates (R53): decision changes ride inbox_changed with the run's workflow_id.
--- INSERT OR UPDATE OR DELETE because the ingest replaces the set whole (a DELETE-only snapshot must also notify);
--- the row that fires carries workflow_id itself, so no lookup is needed. Statement-level to emit ONE row per replace.
+-- live updates (R53, FR-004/FR-034). Replace-whole ingestion inserts up to 50 rows in one statement, so the
+-- trigger is statement-level over the transition table: one inbox_change_log row and one NOTIFY per
+-- (organization, project, workflow) touched — never one frame per decision. The payload shape is the one
+-- notify_inbox_changed() emits, so the SSE fan-out and the client filter by workflowId are unchanged.
 CREATE FUNCTION notify_agent_decision_changed() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE v_seq bigint; r record;
+DECLARE r record; v_seq bigint;
 BEGIN
-  FOR r IN
-    SELECT DISTINCT organization_id, project_id, workflow_id FROM new_table
-    UNION SELECT DISTINCT organization_id, project_id, workflow_id FROM old_table
-  LOOP
-    INSERT INTO inbox_change_log (organization_id, project_id, workflow_id, requirement_id)
-      VALUES (r.organization_id, r.project_id, r.workflow_id, NULL) RETURNING seq INTO v_seq;
+  FOR r IN SELECT DISTINCT organization_id, project_id, workflow_id FROM inserted LOOP
+    INSERT INTO inbox_change_log (organization_id, project_id, workflow_id)
+      VALUES (r.organization_id, r.project_id, r.workflow_id) RETURNING seq INTO v_seq;
     PERFORM pg_notify('inbox_changed', json_build_object('seq', v_seq, 'organizationId', r.organization_id,
-      'projectId', r.project_id, 'workflowId', r.workflow_id, 'requirementId', NULL)::text);
+      'projectId', r.project_id, 'workflowId', r.workflow_id)::text);
   END LOOP;
   RETURN NULL;
 END $$;
-CREATE TRIGGER inbox_changed_agent_decisions_ins AFTER INSERT ON agent_decisions
-  REFERENCING NEW TABLE AS new_table FOR EACH STATEMENT EXECUTE FUNCTION notify_agent_decision_changed();
-CREATE TRIGGER inbox_changed_agent_decisions_upd AFTER UPDATE ON agent_decisions
-  REFERENCING OLD TABLE AS old_table NEW TABLE AS new_table FOR EACH STATEMENT EXECUTE FUNCTION notify_agent_decision_changed();
-CREATE TRIGGER inbox_changed_agent_decisions_del AFTER DELETE ON agent_decisions
-  REFERENCING OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION notify_agent_decision_changed();
+CREATE TRIGGER inbox_changed_agent_decisions AFTER INSERT ON agent_decisions
+  REFERENCING NEW TABLE AS inserted FOR EACH STATEMENT EXECUTE FUNCTION notify_agent_decision_changed();
 
--- §31.4 RLS policy (same shape as 0001/0002; ENABLE/DISABLE is owned by the CDEVI_RLS loop in migrate.ts, whose
--- RLS_TABLES gains 'agent_decisions') and grants — like 0002 PLUS DELETE, because the ingest replaces the set whole
+-- RLS policy (same shape as 0001–0005; not enabled here) and grants: replace-whole ingestion needs
+-- SELECT, INSERT and DELETE; decisions are never edited in place (no UPDATE).
 CREATE POLICY agent_decisions_org_isolation ON agent_decisions
   USING (organization_id = current_setting('app.organization_id', true)::uuid);
-GRANT SELECT, INSERT, UPDATE, DELETE ON agent_decisions TO app_user;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_user;
+GRANT SELECT, INSERT, DELETE ON agent_decisions TO app_user;
 ```
 
-**Trigger naming.** The source plan names one trigger `inbox_changed_agent_decisions`. Postgres transition tables (`REFERENCING … TABLE`) require one trigger per event, so the migration creates the three statement-level triggers above (`_ins`, `_upd`, `_del`) — all with the `inbox_changed_` prefix so the existing `inbox_changed_%` assertions and the LISTEN client are unaffected. If the implementer prefers the single name, the alternative is one `FOR EACH ROW` trigger `inbox_changed_agent_decisions AFTER INSERT OR UPDATE OR DELETE` using `COALESCE(NEW, OLD)` — correct but emitting up to 100 `inbox_change_log` rows per replace (the SSE debounce absorbs them). Either is acceptable; the tests in T130 assert the prefix list, the `inbox_change_log` row(s) carry the run's `workflow_id`, and exactly one `inbox.changed` SSE event is observed after debounce.
+**Trigger.** Exactly one trigger, `inbox_changed_agent_decisions`: statement-level, `AFTER INSERT` only, over the `REFERENCING NEW TABLE AS inserted` transition table. A replace of ≤ 50 decisions therefore produces **one** `inbox_change_log` row (carrying the run's `workflow_id`, `requirement_id` NULL) and **one** `inbox_changed` NOTIFY per distinct `(organization_id, project_id, workflow_id)` in the statement. The preceding `DELETE` of the old set does **not** notify — the re-INSERT does. Consequence for the API layer (§36): a replace-whole with an **empty** `decisions` array inserts nothing and fires no trigger, so `replaceAgentDecisions` must write the `inbox_change_log` row (and its NOTIFY via the existing `notify_inbox_changed()` path or an explicit `INSERT … RETURNING seq` + `pg_notify`) itself in that case so the open run screen drops its last decisions without reload.
 
 `agent_decisions.evidence[]` element shape (validated by the contract, §32 `EvidenceRef`; the `CHECK` only bounds the array): `{ kind: 'file'|'ticket'|'artifact'|'url'|'pullRequest', label ≤ 200, href?: DecisionLink, locator? ≤ 200, accessible: boolean }`.
 
-`agent_runs.steps[]` element shape (contract §32 `RunStep`): `{ label ≤ 120, status: 'completed'|'running'|'pending'|'failed' }`.
+`agent_runs.steps[]` element shape (contract §32 `RunStep`): `{ label ≤ 120, status: 'completed'|'running'|'pending'|'failed' }`. Constraint name `agent_runs_steps_check`; unique constraint name `agent_decisions_run_position_key`.
 
-**Existing tests that 0006 changes** (the `db` project applies every migration in `beforeAll`; same pattern as §22 for 0005, edited tests-first in T130): (i) `packages/db/tests/schema.test.ts` — the `inbox_changed_%` trigger list asserted with `toEqual` gains the decision trigger name(s) (`'inbox_changed_agent_decisions_del'`, `'inbox_changed_agent_decisions_ins'`, `'inbox_changed_agent_decisions_upd'` — sorted before `inbox_changed_agent_runs`; or the single `'inbox_changed_agent_decisions'` if the row-level alternative is chosen); (ii) `schema.test.ts` `SC-007 0004 adds no tables …` — the `pg_tables` expectation becomes `[...TABLES_AFTER_0003, ...TABLES_ADDED_BY_0005, ...TABLES_ADDED_BY_0006].sort()` with `TABLES_ADDED_BY_0006 = ['agent_decisions']`; (iii) **in addition to the two the source plan anticipated**, the same test's `columnCounts` map pins `agent_runs: 15`, which `steps` makes **16** — the map entry is updated (the 0004 SQL-text assertions and everything else are untouched). No other US1–US4 test reads the trigger list, `pg_tables` or the column counts. These three edits are the **only** changes to existing assertions in US5.
+**Existing tests that 0006 changes** (as landed in PR #6 `packages/db/tests/schema.test.ts`; same pattern as §22 for 0005): (i) the `inbox_changed_%` trigger list asserted with `toEqual` gains `'inbox_changed_agent_decisions'` (sorted before `inbox_changed_agent_runs`); (ii) `SC-007 0004 adds no tables …` — the `pg_tables` expectation becomes `[...TABLES_AFTER_0003, ...TABLES_ADDED_BY_0005, ...TABLES_ADDED_BY_0006].sort()` with `TABLES_ADDED_BY_0006 = ['agent_decisions']`; (iii) the same test's `columnCounts` map pins `agent_runs: 15`, which `steps` makes **16**. These three edits are the only changes to existing assertions; the new `describe('migration 0006_agent_decisions …')` block covers enums, `agent_runs.steps` CHECK, the 16 columns/nullability/enum types/unique/index, CHECK bounds and duplicate-position rejection, cascade + replace-whole, RLS policy + exact grants (`DELETE, INSERT, SELECT`; `UPDATE` is `permission denied`), and the statement-level trigger (one log row per 50-row batch, DELETE alone does not notify, exactly one NOTIFY frame per committed batch).
 
-Mirrored in `packages/db/src/schema.ts`: `confidenceLevel`, `policyOutcome` pg enums; `agentRuns.steps` (`jsonb().notNull().default([])`); `agentDecisions` table with every column above, the unique constraint and `agent_decisions_run_idx`. `packages/db/src/migrate.ts` `RLS_TABLES` gains `agent_decisions`. Rollback: drop the three triggers and `notify_agent_decision_changed()`, the policy, the table, `agent_runs.steps`, the two enums.
+Mirrored in `packages/db/src/schema.ts`: `confidenceLevel`, `policyOutcome` pg enums; `agentRuns.steps` (`jsonb().notNull().default([])`); `agentDecisions` table with every column above, `agent_decisions_run_position_key` and `agent_decisions_run_idx`. `packages/db/src/migrate.ts` `RLS_TABLES` gains `agent_decisions`. Rollback: drop the trigger and `notify_agent_decision_changed()`, the policy, the table, `agent_runs.steps`, the two enums.
 
 ## 32. Agent run shapes (`packages/contracts/src/agent-runs.ts`, Zod; `ingest.ts` and `workflow-detail.ts` extended) — research R46–R50, R52
 
@@ -1025,7 +1024,7 @@ One transaction (default isolation), in order:
 1. **Principal scope**: resolve the run by `(organization_id = principal.organization_id, external_id)` → 404 when absent; the principal's project scope must include the run's `project_id` → 403 otherwise (`ingestion_log outcome='forbidden'`, as existing routes do).
 2. **Lock**: `SELECT id, state, project_id, workflow_id, stage_id FROM agent_runs WHERE id = $1 FOR UPDATE`.
 3. **Watermark**: the watermark is the `observedAt` of the latest **accepted** `ingestion_log` row for `route = 'PUT /ingest/agent-runs/{externalId}/decisions'` and this `target_external_id` (stored in `detail` as `observedAt=<ISO>`; no new column — the source plan's "watermark vs `ingestion_log`"). `observedAt ≤ watermark` → if the run's `state ∈ {COMPLETED, CANCELLED, FAILED}` → **409 `stale-terminal-run`** (a late snapshot for a finished run is an integration fault worth surfacing); otherwise **200 `{ result: 'stale', count: <existing count> }`** with an `ingestion_log outcome='stale'` row and no change.
-4. **Replace whole**: `DELETE FROM agent_decisions WHERE agent_run_id = $1`; one batch `INSERT … VALUES (…) × n` with `organization_id, project_id, workflow_id, stage_id` copied from the locked run and `position, decided_at, action, reason, confidence, policy_outcome, policy_ref, risk_level, evidence` from the payload (`evidence` stored exactly as validated — `EvidenceRef` is `.strict()`, so nothing unvalidated reaches the row). The statement-level triggers (§31.3) write `inbox_change_log` with the run's `workflow_id` and `pg_notify`.
+4. **Replace whole**: `DELETE FROM agent_decisions WHERE agent_run_id = $1`; one batch `INSERT … VALUES (…) × n` with `organization_id, project_id, workflow_id, stage_id` copied from the locked run and `position, decided_at, action, reason, confidence, policy_outcome, policy_ref, risk_level, evidence` from the payload (`evidence` stored exactly as validated — `EvidenceRef` is `.strict()`, so nothing unvalidated reaches the row). The statement-level `AFTER INSERT` trigger (§31) writes one `inbox_change_log` row with the run's `workflow_id` and one `pg_notify` for the batch. **Empty set** (`decisions: []`): the `INSERT` is skipped, nothing fires, so the service itself inserts the `inbox_change_log (organization_id, project_id, workflow_id)` row for the run's workflow (same payload shape) inside the transaction, so the screen learns the decisions were cleared.
 5. **Log**: `ingestion_log (principal_id, route, target_external_id, outcome='accepted', detail='observedAt=<ISO> count=<n>')`.
 6. **Respond**: `200 { result: 'accepted', count: n }`.
 
