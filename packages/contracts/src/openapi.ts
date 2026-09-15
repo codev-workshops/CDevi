@@ -12,6 +12,8 @@ import {
   TestRunUpsert,
   Transition,
   WorkflowUpsert,
+  RequirementAnalysisIngest,
+  RequirementIngestResult,
 } from './ingest';
 import { WorkflowActionRequest, WorkflowDetail } from './workflow-detail';
 import { AlreadyResolvedProblem, AnswerRequest, ApproveRequest, RejectRequest } from './decisions';
@@ -32,6 +34,23 @@ import {
   Window,
 } from './dashboard';
 import { ACTIVE_CARD_LIMIT, WINDOW_KEYS } from './dashboard-model';
+import {
+  CreateRequirementRequest,
+  RejectRequirementRequest,
+  Requirement,
+  RequirementDetail,
+  RequirementListPage,
+  RequirementListQuery,
+  RequirementState,
+} from './requirements';
+import {
+  REQUIREMENT_STATES,
+  REQUIREMENTS_PAGE_SIZE,
+  WORKFLOWS_PAGE_SIZE,
+} from './requirement-rules';
+import { WorkflowListItem, WorkflowListPage, WorkflowListQuery } from './workflow-list';
+import { JiraWebhookEvent, JiraWebhookResult } from './integrations';
+import { WORKFLOW_STATES } from './vocabulary';
 
 type Json = Record<string, unknown>;
 
@@ -104,21 +123,53 @@ const projectQuery = {
   },
 };
 
+const cursorQuery = {
+  name: 'cursor',
+  in: 'query',
+  required: false,
+  schema: { type: 'string', maxLength: 200 },
+  description: 'Opaque keyset cursor from the previous page (nextCursor)',
+};
+const csvQuery = (name: string, values: readonly string[]) => ({
+  name,
+  in: 'query',
+  required: false,
+  schema: { type: 'string' },
+  description: `Comma-separated subset of ${values.join('|')}`,
+});
+const requirementId = { ...workflowId, description: 'Requirement id' };
+const requirementSessionErrors = {
+  '401': problem('Not signed in'),
+  '403': problem('Role may not perform this action (FR-032)'),
+  '404': problem('Not found or not visible'),
+  '409': problem(
+    'Transition not legal in the current state (urn:cdevi:problem:invalid-transition)',
+  ),
+};
+
 /**
- * specs/001 US1–US3 fragment: Workflow Detail read + actions, the stage/run/artifact/test-run ingestion routes,
- * the Approval Center and the Dashboard. `specs/001-sdlc-control-plane-mvp/contracts/openapi.yaml` is a snapshot of this.
+ * specs/001 US1–US4 fragment: Workflow Detail read + actions, the stage/run/artifact/test-run ingestion routes,
+ * the Approval Center, the Dashboard, the Requirements routes, the runtime analysis ingest, the inbound Jira webhook and the bounded workflow list. `specs/001-sdlc-control-plane-mvp/contracts/openapi.yaml` is a snapshot of this.
  */
 export function buildWorkflowDetailOpenApi(): Json {
   return {
     openapi: '3.1.0',
     info: {
-      title: 'CDevi API — Workflow Detail, Approval Center and Dashboard (specs/001 US1–US3)',
-      version: '0.3.0',
+      title:
+        'CDevi API — Workflow Detail, Approval Center, Dashboard and Requirements (specs/001 US1–US4)',
+      version: '0.4.0',
       description:
-        'Generated from Zod schemas in packages/contracts (`pnpm -F @cdevi/contracts openapi`) and snapshot-tested; edit the schemas, not the yaml. Extends the specs/003 document: same session cookie, Bearer ingestion tokens, Problem errors. Live updates reuse GET /inbox/stream — the client filters inbox.changed frames by workflowId (Dashboard: refetch on any frame, coalesced). Human decisions (approve, reject, answer) are a separate path from agent ingestion: session user, approver/administrator only, exactly once. The Dashboard is a read model over existing tables: every figure carries the href of the filtered list behind it.',
+        'Generated from Zod schemas in packages/contracts (`pnpm -F @cdevi/contracts openapi`) and snapshot-tested; edit the schemas, not the yaml. Extends the specs/003 document: same session cookie, Bearer ingestion tokens, Problem errors. Live updates reuse GET /inbox/stream — the client filters inbox.changed frames by workflowId (Dashboard: refetch on any frame, coalesced). Human decisions (approve, reject, answer) are a separate path from agent ingestion: session user, approver/administrator only, exactly once. The Dashboard is a read model over existing tables: every figure carries the href of the filtered list behind it. Requirements (US4): analysis is produced by the agent runtime and delivered through PUT /ingest/requirements/{externalId}/analysis; Jira is inbound-only through the signed webhook.',
     },
     servers: [{ url: '/api' }],
-    tags: [{ name: 'workflows' }, { name: 'ingest' }, { name: 'approvals' }, { name: 'dashboard' }],
+    tags: [
+      { name: 'workflows' },
+      { name: 'ingest' },
+      { name: 'approvals' },
+      { name: 'dashboard' },
+      { name: 'requirements' },
+      { name: 'integrations' },
+    ],
     paths: {
       '/workflows/{id}': {
         get: {
@@ -329,6 +380,211 @@ export function buildWorkflowDetailOpenApi(): Json {
           },
         },
       },
+      '/workflows': {
+        get: {
+          tags: ['workflows'],
+          summary: 'Bounded workflow list for the Workflow Center (FR-003)',
+          description: `Workflows in the visible projects, newest state change first, ${WORKFLOWS_PAGE_SIZE} per page with a keyset cursor over (state_observed_at DESC, id DESC). An invisible project or requirement yields an empty page (total 0), not 404.`,
+          security: [{ sessionCookie: [] }],
+          parameters: [
+            projectQuery,
+            {
+              name: 'requirement',
+              in: 'query',
+              required: false,
+              schema: { type: 'string', format: 'uuid' },
+            },
+            csvQuery('state', WORKFLOW_STATES),
+            {
+              name: 'stage',
+              in: 'query',
+              required: false,
+              schema: { type: 'integer', minimum: 1, maximum: 7 },
+              description: 'Current stage position',
+            },
+            cursorQuery,
+          ],
+          responses: {
+            '200': json('WorkflowListPage'),
+            '400': problem('Invalid query or cursor'),
+            '401': problem('Not signed in'),
+          },
+        },
+      },
+      '/requirements': {
+        get: {
+          tags: ['requirements'],
+          summary:
+            'Requirements list with state, project and assignee filters (FR-007, FR-009, FR-025)',
+          description: `Requirements in the visible projects (or one project), newest first, ${REQUIREMENTS_PAGE_SIZE} per page with a keyset cursor over (created_at DESC, id DESC). Each row carries the linked workflow state when one exists.`,
+          security: [{ sessionCookie: [] }],
+          parameters: [
+            projectQuery,
+            csvQuery('state', REQUIREMENT_STATES),
+            {
+              name: 'assignee',
+              in: 'query',
+              required: false,
+              schema: {
+                oneOf: [
+                  { const: 'me' },
+                  { const: 'unassigned' },
+                  { type: 'string', format: 'uuid' },
+                ],
+              },
+            },
+            cursorQuery,
+          ],
+          responses: {
+            '200': json('RequirementListPage'),
+            '400': problem('Invalid query or cursor'),
+            '401': problem('Not signed in'),
+          },
+        },
+        post: {
+          tags: ['requirements'],
+          summary: 'Create a requirement in DRAFT (FR-007, FR-032)',
+          description:
+            'Engineers, approvers and administrators only; the project must be visible to the caller. Saved as DRAFT with source manual.',
+          security: [{ sessionCookie: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/CreateRequirementRequest' },
+              },
+            },
+          },
+          responses: {
+            '201': {
+              ...json('RequirementDetail', 'Created'),
+              headers: {
+                Location: { schema: { type: 'string' }, description: '/api/requirements/{id}' },
+              },
+            },
+            '400': problem('Invalid body'),
+            '401': problem('Not signed in'),
+            '403': problem('Viewers may not create requirements (FR-032)'),
+            '404': problem('Project not visible'),
+          },
+        },
+      },
+      '/requirements/{id}': {
+        get: {
+          tags: ['requirements'],
+          summary: 'Requirement detail with analysis, transitions and role-gated actions (FR-009)',
+          description:
+            'Business objective, the runtime analysis (acceptance criteria, rules, open questions — each flagged aiGenerated with its source), the linked workflow and the actions the caller may take. Not visible and unknown both return 404.',
+          security: [{ sessionCookie: [] }],
+          parameters: [requirementId],
+          responses: {
+            '200': json('RequirementDetail'),
+            '401': problem('Not signed in'),
+            '404': problem('Not found or not visible (403 and 404 are indistinguishable)'),
+          },
+        },
+      },
+      '/requirements/{id}/submit': {
+        post: {
+          tags: ['requirements'],
+          summary: 'Submit for analysis: DRAFT | NEEDS_CLARIFICATION → ANALYZING (FR-009, FR-036)',
+          description:
+            'Engineers, approvers and administrators. Records who submitted and when; the agent runtime delivers the result through PUT /ingest/requirements/{externalId}/analysis.',
+          security: [{ sessionCookie: [] }],
+          parameters: [requirementId],
+          responses: { '200': json('RequirementDetail'), ...requirementSessionErrors },
+        },
+      },
+      '/requirements/{id}/approve': {
+        post: {
+          tags: ['requirements'],
+          summary: 'Approve: READY → APPROVED and create the workflow (FR-010, FR-032)',
+          description:
+            'Approvers and administrators only. One transaction (SELECT … FOR UPDATE, exactly once): the requirement becomes APPROVED, a workflow with its seven stages is created with the first stage QUEUED, an audit_events row is written and inbox_changed is notified.',
+          security: [{ sessionCookie: [] }],
+          parameters: [requirementId],
+          responses: { '200': json('RequirementDetail'), ...requirementSessionErrors },
+        },
+      },
+      '/requirements/{id}/reject': {
+        post: {
+          tags: ['requirements'],
+          summary: 'Reject: DRAFT | NEEDS_CLARIFICATION | READY → REJECTED (FR-009, FR-032)',
+          description:
+            'Approvers and administrators only; the reason is recorded on the requirement and in audit_events.',
+          security: [{ sessionCookie: [] }],
+          parameters: [requirementId],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/RejectRequirementRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': json('RequirementDetail'),
+            '400': problem('Invalid body (reason required)'),
+            ...requirementSessionErrors,
+          },
+        },
+      },
+      '/ingest/requirements/{externalId}/analysis': {
+        put: {
+          tags: ['ingest'],
+          summary: 'Runtime delivers the requirement analysis (FR-009, FR-036)',
+          description:
+            'Bearer ingestion principal scoped to the requirement project. Replaces the analysis items; state becomes READY when openQuestions is empty, otherwise NEEDS_CLARIFICATION. `stale` when observedAt is not newer than the stored analysis (nothing written).',
+          security: [{ ingestionToken: [] }],
+          parameters: [externalId],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/RequirementAnalysisIngest' },
+              },
+            },
+          },
+          responses: {
+            '200': json('RequirementIngestResult'),
+            '400': problem('Invalid body'),
+            '401': problem('Unknown or disabled principal'),
+            '403': problem('Project outside the principal scope'),
+            '404': problem('Unknown requirement externalId'),
+            '409': problem('Requirement is not ANALYZING or NEEDS_CLARIFICATION'),
+          },
+        },
+      },
+      '/integrations/jira/webhook': {
+        post: {
+          tags: ['integrations'],
+          summary: 'Inbound Jira issue webhook (FR-008)',
+          description:
+            'No session. The raw body (≤ 256 KB) is authenticated with x-hub-signature = sha256=<hex HMAC-SHA256(JIRA_WEBHOOK_SECRET, body)> compared in constant time before it is parsed. jira:issue_created / jira:issue_updated create or update the requirement of the project mapped to the Jira project key (source jira, externalRef). jira:issue_deleted or a transition into a done status flags the requirement and moves its linked workflow to BLOCKED. Unmapped projects and unknown events are ignored.',
+          security: [],
+          parameters: [
+            {
+              name: 'x-hub-signature',
+              in: 'header',
+              required: true,
+              schema: { type: 'string', pattern: '^sha256=[0-9a-f]{64}$' },
+            },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/JiraWebhookEvent' } },
+            },
+          },
+          responses: {
+            '202': json('JiraWebhookResult', 'Accepted'),
+            '400': problem('Invalid event payload'),
+            '401': problem('Missing or invalid signature, or webhook secret not configured'),
+            '413': problem('Body larger than 256 KB'),
+            '429': problem('Rate limited (120 requests per minute per IP)'),
+          },
+        },
+      },
     },
     components: {
       securitySchemes: {
@@ -364,6 +620,20 @@ export function buildWorkflowDetailOpenApi(): Json {
         DashboardRisk: schema(DashboardRisk),
         ActiveWorkflowCard: schema(ActiveWorkflowCard),
         DashboardSnapshot: schema(DashboardSnapshot),
+        RequirementState: schema(RequirementState),
+        Requirement: schema(Requirement),
+        RequirementDetail: schema(RequirementDetail),
+        RequirementListQuery: schema(RequirementListQuery),
+        RequirementListPage: schema(RequirementListPage),
+        CreateRequirementRequest: schema(CreateRequirementRequest),
+        RejectRequirementRequest: schema(RejectRequirementRequest),
+        RequirementAnalysisIngest: schema(RequirementAnalysisIngest),
+        RequirementIngestResult: schema(RequirementIngestResult),
+        JiraWebhookEvent: schema(JiraWebhookEvent),
+        JiraWebhookResult: schema(JiraWebhookResult),
+        WorkflowListQuery: schema(WorkflowListQuery),
+        WorkflowListItem: schema(WorkflowListItem),
+        WorkflowListPage: schema(WorkflowListPage),
       },
     },
   };
@@ -383,6 +653,8 @@ export function buildFullOpenApi(): Json {
       { name: 'workflows' },
       { name: 'approvals' },
       { name: 'dashboard' },
+      { name: 'requirements' },
+      { name: 'integrations' },
     ],
     paths: { ...(base['paths'] as Json), ...(frag['paths'] as Json) },
     components: {
