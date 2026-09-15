@@ -12,7 +12,8 @@
     "./read-model": "./src/read-model.ts",
     "./decision-rules": "./src/decision-rules.ts",
     "./dashboard-model": "./src/dashboard-model.ts",
-    "./vocabulary": "./src/vocabulary.ts"
+    "./vocabulary": "./src/vocabulary.ts",
+    "./requirement-rules": "./src/requirement-rules.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
