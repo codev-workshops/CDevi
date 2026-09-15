@@ -25,6 +25,7 @@ const RLS_TABLES = [
   'requirements',
   'requirement_analysis_items',
   'requirement_transitions',
+  'agent_decisions',
 ];
 
 export interface MigrateOptions {

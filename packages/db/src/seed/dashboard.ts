@@ -210,6 +210,8 @@ export function buildDashboardShowcase(base: Date): {
         ev(startedAt, 'note', `${agent} started ${STAGES[stagePosition - 1]}`),
         ...(finishedAt ? [ev(finishedAt, state === 'FAILED' ? 'error' : 'note', summary)] : []),
       ],
+      steps: [],
+      decisions: [],
     };
   };
 

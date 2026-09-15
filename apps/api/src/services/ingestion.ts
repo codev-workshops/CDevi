@@ -1,5 +1,7 @@
 import {
   canTransition,
+  type AgentDecisionsIngest,
+  type AgentDecisionsIngestResult,
   type AgentRunUpsert,
   type ApprovalUpsert,
   type ArtifactUpsert,
@@ -493,10 +495,11 @@ export class IngestionService {
       await this.assertOwnedBy(client, 'agent_runs', externalId, w.id);
       const timeline = body.timeline.slice(-50);
       const r = await client.query<{ id: string }>(
-        `INSERT INTO agent_runs (organization_id, project_id, workflow_id, stage_id, external_id, agent, model, state, started_at, finished_at, summary, timeline)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
+        `INSERT INTO agent_runs (organization_id, project_id, workflow_id, stage_id, external_id, agent, model, state, started_at, finished_at, summary, timeline, steps)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb)
          ON CONFLICT (organization_id, external_id) DO UPDATE SET stage_id = EXCLUDED.stage_id, agent = EXCLUDED.agent, model = COALESCE(EXCLUDED.model, agent_runs.model),
-           state = EXCLUDED.state, started_at = EXCLUDED.started_at, finished_at = EXCLUDED.finished_at, summary = COALESCE(EXCLUDED.summary, agent_runs.summary), timeline = EXCLUDED.timeline
+           state = EXCLUDED.state, started_at = EXCLUDED.started_at, finished_at = EXCLUDED.finished_at, summary = COALESCE(EXCLUDED.summary, agent_runs.summary), timeline = EXCLUDED.timeline,
+           steps = EXCLUDED.steps
          RETURNING id`,
         [
           this.principal.organizationId,
@@ -511,10 +514,122 @@ export class IngestionService {
           body.finishedAt ? new Date(body.finishedAt) : null,
           body.summary ?? null,
           JSON.stringify(timeline),
+          JSON.stringify(body.steps),
         ],
+      );
+      await client.query(
+        `UPDATE agent_decisions SET stage_id = $2 WHERE agent_run_id = $1 AND stage_id <> $2`,
+        [r.rows[0]!.id, stage.id],
       );
       await this.log(client, 'accepted');
       return { outcome: 'accepted', id: r.rows[0]!.id, state: w.state };
+    });
+  }
+
+  async replaceAgentDecisions(
+    externalId: string,
+    body: AgentDecisionsIngest,
+  ): Promise<AgentDecisionsIngestResult> {
+    return this.run(async (client) => {
+      // Lock order matches upsertAgentRun (workflow → stage → run): resolve the run's workflow
+      // without locking, lock the workflow row, then lock the run and re-read its watermark.
+      const ref = (
+        await client.query<{ workflow_id: string }>(
+          `SELECT workflow_id FROM agent_runs WHERE organization_id = $1 AND external_id = $2`,
+          [this.principal.organizationId, externalId],
+        )
+      ).rows[0];
+      if (!ref) throw problems.notFound(`Unknown agent run ${externalId}.`);
+      await client.query(
+        `SELECT id FROM workflows WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [this.principal.organizationId, ref.workflow_id],
+      );
+      const run = (
+        await client.query<{
+          id: string;
+          project_id: string;
+          workflow_id: string;
+          stage_id: string;
+          state: WorkflowState;
+          decisions_observed_at: Date | null;
+        }>(
+          `SELECT id, project_id, workflow_id, stage_id, state, decisions_observed_at FROM agent_runs
+            WHERE organization_id = $1 AND external_id = $2 FOR UPDATE`,
+          [this.principal.organizationId, externalId],
+        )
+      ).rows[0];
+      if (!run) throw problems.notFound(`Unknown agent run ${externalId}.`);
+      this.assertScope(run.project_id);
+      const observedAt = new Date(body.observedAt);
+      const existingCount = async () =>
+        Number(
+          (
+            await client.query<{ c: string }>(
+              `SELECT count(*) c FROM agent_decisions WHERE agent_run_id = $1`,
+              [run.id],
+            )
+          ).rows[0]!.c,
+        );
+      if (
+        run.decisions_observed_at &&
+        observedAt.getTime() <= run.decisions_observed_at.getTime()
+      ) {
+        const stored = run.decisions_observed_at.toISOString();
+        await this.log(
+          client,
+          'stale',
+          `observedAt ${body.observedAt} is not newer than ${stored}`,
+        );
+        return { result: 'stale', count: await existingCount() };
+      }
+      const deleted = await client.query(`DELETE FROM agent_decisions WHERE agent_run_id = $1`, [
+        run.id,
+      ]);
+      if (body.decisions.length > 0) {
+        await client.query(
+          `INSERT INTO agent_decisions (organization_id, project_id, workflow_id, stage_id, agent_run_id, position, decided_at,
+                                        action, reason, confidence, policy_outcome, policy_ref, risk_level, evidence)
+           SELECT $1, $2, $3, $4, $5, d.position, d.decided_at, d.action, d.reason, d.confidence::confidence_level,
+                  d.policy_outcome::policy_outcome, d.policy_ref, d.risk_level::risk_level, d.evidence
+             FROM jsonb_to_recordset($6::jsonb) AS d(position smallint, decided_at timestamptz, action text, reason text,
+                  confidence text, policy_outcome text, policy_ref text, risk_level text, evidence jsonb)`,
+          [
+            this.principal.organizationId,
+            run.project_id,
+            run.workflow_id,
+            run.stage_id,
+            run.id,
+            JSON.stringify(
+              body.decisions.map((d) => ({
+                position: d.position,
+                decided_at: d.decidedAt,
+                action: d.action,
+                reason: d.reason,
+                confidence: d.confidence,
+                policy_outcome: d.policyOutcome,
+                policy_ref: d.policyRef ?? null,
+                risk_level: d.riskLevel ?? null,
+                evidence: d.evidence,
+              })),
+            ),
+          ],
+        );
+      } else if ((deleted.rowCount ?? 0) === 0) {
+        await client.query(
+          `WITH row AS (
+             INSERT INTO inbox_change_log (organization_id, project_id, workflow_id) VALUES ($1, $2, $3) RETURNING seq
+           )
+           SELECT pg_notify('inbox_changed', json_build_object('seq', seq, 'organizationId', $1::uuid,
+                            'projectId', $2::uuid, 'workflowId', $3::uuid)::text) FROM row`,
+          [this.principal.organizationId, run.project_id, run.workflow_id],
+        );
+      }
+      await client.query(`UPDATE agent_runs SET decisions_observed_at = $2 WHERE id = $1`, [
+        run.id,
+        observedAt,
+      ]);
+      await this.log(client, 'accepted');
+      return { result: 'accepted', count: body.decisions.length };
     });
   }
 

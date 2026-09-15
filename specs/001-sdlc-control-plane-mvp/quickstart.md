@@ -328,3 +328,83 @@ The Independent Test creates its own requirement (`uniq('e2e-req')`) and Jira is
 | `inbox.changed` → updated pill ≤ 5 s p95, ≤ 1 s median (SC-003) | e2e measures after the §5.3 step-3 ingest |
 | Payloads: list ≤ 40 KB, detail ≤ 32 KB, workflow list ≤ 40 KB | `content-length` asserted |
 | Route JS ≤ 200 KB gzip | `pnpm check:size` |
+
+## 6. User Story 5 — Agent Run Inspector
+
+### 6.1 Prerequisites
+
+Same as §5.1: `.env`, `docker compose up -d`, `pnpm db:migrate` (now applies `0006_agent_decisions.sql` — two enums, `agent_runs.steps`, `agent_decisions`), `pnpm db:seed`, `pnpm dev`; export the printed ingestion token as `INGEST_TOKEN`. The US5 Independent Test uses **viewer1** (`viewer1@cdevi.demo`, member of `payments-api`) because the screen is read-only for every role (FR-032, R55) — a viewer proves that nothing on it needs a higher role. The seeded showcase decisions (data-model §37) live on `s500-d05-r1` (`dashboard-demo`, visible to the administrator only) and `s500-001-r8` (`payments-api`); the walk-through below ingests its own run so the timing is under your control.
+
+### 6.2 Red → green order (Principle II)
+
+tasks.md Phase 11: 11a contracts tests → 11a implementation (+ `openapi.yaml` regen) → (11b database tests → 11b migration/schema/seed) **in parallel with** (11d web component tests on typed fixtures → 11d implementation) → 11c API tests → 11c services/routes → 11e Playwright → Phase 12 polish. Every test name starts with the FR/SC id it proves.
+
+### 6.3 Independent Test (spec line 100)
+
+Automated as `apps/web/tests/e2e/agent-run.spec.ts` (`FR-016 …`, `FR-017 …`, `FR-018 …`, `FR-032 …`, `FR-034 …`, `SC-003 …`, `SC-007 …`, `SC-010 …`); by hand:
+
+1. **Ingest a run with timeline and steps** (FR-036). Put stage 5 of the failed showcase workflow back to running, then report a run for it:
+
+```bash
+NOW() { date -u +%FT%TZ; }
+curl -s -X PUT localhost:3001/api/ingest/workflows/s500-045/stages/5 -H "authorization: Bearer $INGEST_TOKEN" -H 'content-type: application/json' \
+  -d '{"name":"Testing","state":"RUNNING","observedAt":"'"$(NOW)"'","agent":"Test Agent","reason":"Retry requested"}'
+curl -s -X PUT localhost:3001/api/ingest/agent-runs/us5-run-01 -H "authorization: Bearer $INGEST_TOKEN" -H 'content-type: application/json' -d '{
+  "workflowExternalId":"s500-045","stagePosition":5,"agent":"Test Agent","model":"cdevi-orchestrator-1",
+  "state":"RUNNING","startedAt":"'"$(NOW)"'","summary":"Re-running the unit suite after the limiter fix.",
+  "steps":[{"label":"Restore test database","status":"completed"},{"label":"Run unit suite","status":"running"},
+           {"label":"Run integration suite","status":"pending"},{"label":"Publish report","status":"pending"}],
+  "timeline":[{"at":"'"$(NOW)"'","kind":"tool","message":"Restored fixtures (2 340 rows)"},
+              {"at":"'"$(NOW)"'","kind":"note","message":"Starting unit suite (180 tests)"}]}'
+# → {"outcome":"accepted", …}
+```
+
+2. **Ingest three decisions** (FR-017, FR-036) — one allowed, one requiring approval with a risk level, one denied with evidence the viewer cannot access:
+
+```bash
+WF=$(curl -s "localhost:3001/api/workflows?project=payments-api" -b "$COOKIE" | jq -r '.items[] | select(.externalId=="s500-045") | .id')   # or copy the uuid from the Workflow Detail URL
+curl -s -X PUT localhost:3001/api/ingest/agent-runs/us5-run-01/decisions -H "authorization: Bearer $INGEST_TOKEN" -H 'content-type: application/json' -d '{
+  "observedAt":"'"$(NOW)"'",
+  "decisions":[
+    {"position":1,"decidedAt":"'"$(NOW)"'","action":"Re-run only the limiter unit tests first","reason":"The failing tests were all in the limiter module; a focused run gives a faster signal before the full suite.",
+     "confidence":"HIGH","policyOutcome":"ALLOWED",
+     "evidence":[{"kind":"file","label":"src/auth/limiter.test.ts","href":"https://git.cdevi.demo/payments-api/blob/main/src/auth/limiter.test.ts","locator":"src/auth/limiter.test.ts","accessible":true},
+                 {"kind":"artifact","label":"Test report — Testing (failed)","href":"/workflows/'"$WF"'#artifact-s500-045-report","locator":"s500-045-report","accessible":true}]},
+    {"position":2,"decidedAt":"'"$(NOW)"'","action":"Raise the CI timeout for the integration suite to 20 min","reason":"The integration suite exceeded the 15 min budget twice; a change to CI configuration needs an owner approval.",
+     "confidence":"MEDIUM","policyOutcome":"APPROVAL_REQUIRED","policyRef":"ci/config-change","riskLevel":"MEDIUM",
+     "evidence":[{"kind":"ticket","label":"PAY-1207","href":"https://jira.acme.example/browse/PAY-1207","locator":"PAY-1207","accessible":true}]},
+    {"position":3,"decidedAt":"'"$(NOW)"'","action":"Download the production request log for realistic load fixtures","reason":"Production logs contain customer identifiers; the data-access policy denies this. Synthetic traffic will be generated instead.",
+     "confidence":"HIGH","policyOutcome":"DENIED","policyRef":"data-access/pii",
+     "evidence":[{"kind":"url","label":"Production request log (last 24 h)","locator":"logs.prod/auth","accessible":false}]}]}'
+# → {"result":"accepted","count":3}
+```
+
+`WF` (set above) is the uuid of `s500-045`, used for the artifact evidence anchor. Repeating the same command returns `{"result":"stale","count":3}` and changes nothing. Sending a decision with an extra key — e.g. `"reasoning":"…"` or `"chainOfThought":"…"` — returns **400** `validation-failed` whose `errors[0].pointer` names the key and whose body never echoes the text (FR-018, R50).
+
+3. **Open from Workflow Detail** (Scenario 1 / AS-1). Sign in as viewer1 → Inbox → the `s500-045` card → Workflow Detail. In the **Stage pipeline**, step "5. Testing" now shows **Inspect run · Test Agent** with a `running` pill (there are two runs on this stage: the failed `s500-045-r5` and yours); the **Current stage** card has a **Run** row with the same links. Click the one for Test Agent → `/agents/runs/{id}`.
+4. **Header** (FR-016): crumbs "Workflows › {title} › Stage 5 · Testing › Run · Test Agent"; the `KeyValue` shows Agent **Test Agent**, Workflow **s500-045 · {title}** (link), Stage **5. Testing**, Model **cdevi-orchestrator-1**, Started (time + "just now"), Duration ticking every second with a **running** pill, Status **running** as a `StatePill`. Below it the summary "Re-running the unit suite after the limiter fix." sits inside a **Test Agent · summary** message captioned "Agent summary — not evidence". No saffron button exists anywhere on the page (§7 of the contract); viewer1 sees exactly what an administrator sees.
+5. **Progress** (Scenario 3 / AS-3): the `Stepper` "Progress" reads "1 of 4 steps completed": *Restore test database* done, *Run unit suite* current (with a `running` pill and `aria-current="step"`), two pending. There is no spinner.
+6. **Timeline**: the "Timeline (2)" tab shows the `ToolLog` "Agent activity" with two timestamped lines, oldest first, each starting with its kind word (`tool`, `note`).
+7. **Decisions** (Scenario 2 / FR-017): the "Decisions (3)" tab shows three neutral `DecisionCard`s: **1. Re-run only the limiter unit tests first** — pills **allowed**, **confidence high**; reason text; evidence list with two `GateCheck` rows: the file (link opens the repository file in a new tab; source "file · src/auth/limiter.test.ts") and the artifact (link to the workflow's artifact anchor; source "artifact · s500-045-report"). **2. Raise the CI timeout…** — pills **approval required**, **confidence medium**, and a **medium risk** `RiskBadge`; "policy ci/config-change"; the ticket evidence opens Jira in a new tab. **3. Download the production request log…** — pills **denied**, **confidence high**; "policy data-access/pii".
+8. **Restricted evidence** (edge case, R49): decision 3's evidence row reads **"Production request log (last 24 h) — access restricted"** with source "link · logs.prod/auth · not available to you" — it is plain text; there is no link to click and nothing 404s. Tab through the card: the only tab stops are the accessible evidence links of decisions 1 and 2.
+9. **No raw reasoning** (Scenario 4 / FR-018, SC-009): search the page (`Ctrl/⌘+F`) for "reasoning" and "chainOfThought" — no matches in any state; the only prose is the summary, the actions and the reasons, all bounded and all inside agent-claim components.
+10. **Live step change without reload** (Scenario 3, FR-034, SC-003): re-send the run upsert from step 1 with `"steps"` changed so *Run unit suite* is `completed`, *Run integration suite* is `running`, and one more timeline line `{"kind":"tool","message":"Unit suite passed (180/180)"}` (`observedAt`/`startedAt` may stay; the run upsert's own watermark is the stage/run state rule — keep `state` `RUNNING`). Within 5 s and **without reloading**: the `Stepper` reads "2 of 4 steps completed", the current step moves, the Timeline tab label becomes "Timeline (3)", the new line appears, focus stays where it was, and the "live" pill pulses once. Then send the decisions payload again with `position: 2`'s `policyOutcome` changed to `"ALLOWED"` and a newer `observedAt`: the card's pill changes to **allowed** and the risk badge stays — decisions update live too (R53).
+11. **Stale run** (edge case, R54): stop ingesting and wait — or, faster, re-send the run upsert with `startedAt` and every timeline `at` set to 40 minutes ago. Within 5 s an info notice appears: "No activity for 40 min — the runtime has not reported progress. The run's state is unchanged …"; the `StatePill` still reads **running**; the duration pill reads **no recent activity**. Ingest a fresh timeline line and the notice disappears.
+12. **Finish the run**: re-send the upsert with `"state":"COMPLETED"`, `"finishedAt"` now and all steps `completed`. The duration stops ticking, the running pill disappears, the `Stepper` is all done. `GET /api/agent-runs/{id}` now answers a **stale** `PUT …/decisions` with an older `observedAt` with **409** (terminal run + older snapshot — §36).
+13. **Visibility** (FR-032): as viewer1, open the seeded `s500-d05-r1` run (copy its uuid from the administrator's Dashboard Demo Workflow Detail): **"This item isn't available to you."** — the same copy for a non-existent id; nothing reveals whether the run exists. As the administrator the same URL renders the seeded six-step progress and three decisions (one restricted evidence, one `DENIED`, one `APPROVAL_REQUIRED` with a medium risk badge).
+14. **Keyboard + accessibility** (SC-010): Tab from the top — Back to workflow → crumbs → Workflow link → tablist (arrow keys switch Timeline/Decisions) → evidence links; every stop has a visible focus ring; axe reports no WCAG 2.2 AA violations in any of the states above.
+
+### 6.4 Seed invariants (research R55, data-model §37)
+
+`pnpm db:seed` adds no workflow, stage, run, artifact, test run, approval, clarification or requirement: `EXPECTED_SHOWCASE`, `EXPECTED_DASHBOARD`, and every US2/US4 `EXPECTED_*` figure are unchanged and asserted in `packages/db/tests/seed.test.ts`. It adds `steps` (6) and 3 decisions to `s500-d05-r1`, 2 decisions to `s500-001-r8`, and points `s500-clr-01`'s `links.agentRun` at `/agents/runs/{uuid of s500-d05-r1}` (`EXPECTED_AGENT_DECISIONS = { total: 5, runsWithDecisions: 2, approvalRequired: 2, denied: 1, restrictedEvidence: 1, withRiskLevel: 1 }`). The Inbox, Approval Center, Dashboard and Requirements figures in §2–§5 are therefore exactly as documented there.
+
+### 6.5 Performance budgets (plan Part E) — how to verify
+
+| Budget | How |
+|--------|-----|
+| `GET /api/agent-runs/{id}` ≤ 150 ms p95, payload ≤ 48 KB | `apps/api/tests/agent-runs.test.ts` `SC-007 …` — 20 calls at the SC-007 fixtures (latency and ≤ 1 MB ceiling at 50 timeline × 240 chars, 20 steps, 50 decisions × 20 evidence refs; the 48 KB budget at the realistic 50 decisions × 2 evidence refs fixture), `Server-Timing` and `content-length` asserted; ≤ 3 statements in one `REPEATABLE READ` transaction counted through the `pg` wrapper; manual: `time curl -b "$COOKIE" localhost:3001/api/agent-runs/{id}` |
+| `PUT …/decisions` ≤ 200 ms p95 for 50 × 20 | `apps/api/tests/ingest-decisions.test.ts` `SC-007 …` |
+| Initial content ≤ 2 s p95 | `agent-run.spec.ts` `SC-007 …` — 10 navigations with a Playwright trace; manual: DevTools Performance on `/agents/runs/{id}` |
+| Live update ≤ 5 s p95, ≤ 1 s median | `agent-run.spec.ts` `SC-003 …` — time from the step-change `PUT` to the updated `Stepper` text |
+| Route JS ≤ 200 KB gzip | `pnpm check:size` (`tools/check-size.mjs`); the route imports only `@cdevi/contracts/agent-run-model`, `/vocabulary`, `/read-model` |
+| Duration ticker ≤ 16 ms per tick | `agent-run.test.tsx` with fake timers — one cell re-renders; the interval is cleared on unmount and when `finishedAt` arrives |

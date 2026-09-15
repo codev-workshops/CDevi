@@ -6,7 +6,12 @@ import { buildDashboardShowcase, DASHBOARD_PROJECT, EXPECTED_DASHBOARD } from '.
 import { buildRequirements, EXPECTED_REQUIREMENTS, type RequirementsSeed } from './requirements';
 import { buildS500, PROJECTS, type SeedShowcase, type SeedWorkflow } from './s500';
 
-export { DECISION_SHOWCASE, SHOWCASE_FAILED, SHOWCASE_WAITING } from './s500';
+export {
+  DECISION_SHOWCASE,
+  EXPECTED_AGENT_DECISIONS,
+  SHOWCASE_FAILED,
+  SHOWCASE_WAITING,
+} from './s500';
 export { DASHBOARD_FIGURES, DASHBOARD_PROJECT, EXPECTED_DASHBOARD } from './dashboard';
 export { EXPECTED_REQUIREMENTS, JIRA_MAPPING, REQUIREMENT_SHOWCASE } from './requirements';
 
@@ -21,6 +26,20 @@ function workflowLinks<T extends { workflow?: string | undefined }>(
   return links.workflow === `/workflows/${externalId}`
     ? { ...links, workflow: `/workflows/${workflowId}` }
     : links;
+}
+
+/** Evidence `href`s authored as `/workflows/<externalId>[#anchor]` resolve to the workflow row id the same way. */
+function evidenceLinks<T extends { href?: string | null | undefined }>(
+  evidence: readonly T[],
+  externalId: string,
+  workflowId: string,
+): T[] {
+  const prefix = `/workflows/${externalId}`;
+  return evidence.map((e) =>
+    e.href && (e.href === prefix || e.href.startsWith(`${prefix}#`))
+      ? { ...e, href: `/workflows/${workflowId}${e.href.slice(prefix.length)}` }
+      : e,
+  );
 }
 
 export interface SeedOptions {
@@ -46,6 +65,8 @@ export interface SeedResult {
     runs: number;
     artifacts: number;
     testRuns: number;
+    /** specs/001 US5 (data-model.md §37); compare with EXPECTED_AGENT_DECISIONS.decisions. */
+    agentDecisions: number;
     dashboard: Record<keyof typeof EXPECTED_DASHBOARD, number>;
     /** specs/001 US4 requirements seed (research R44); compare with EXPECTED_REQUIREMENTS. */
     requirements: RequirementCounts;
@@ -171,13 +192,31 @@ async function insertWorkflows(
   return { approvals, clarifications, refs };
 }
 
-/** Stages, stage transitions, runs, artifacts and test runs for workflows already inserted (`refs`). */
+interface ShowcaseCounts {
+  stages: number;
+  runs: number;
+  artifacts: number;
+  testRuns: number;
+  agentDecisions: number;
+}
+
+/**
+ * Stages, stage transitions, runs (with steps and decisions), artifacts and test runs for workflows already
+ * inserted (`refs`). Returns the inserted run ids by external id so `links.agentRun` can be resolved.
+ */
 async function insertShowcase(
   { client, org, principal }: InsertContext,
   showcase: readonly SeedShowcase[],
   refs: Map<string, WorkflowRef>,
-): Promise<{ stages: number; runs: number; artifacts: number; testRuns: number }> {
-  const counts = { stages: 0, runs: 0, artifacts: 0, testRuns: 0 };
+): Promise<ShowcaseCounts & { runIds: Map<string, string> }> {
+  const counts: ShowcaseCounts = {
+    stages: 0,
+    runs: 0,
+    artifacts: 0,
+    testRuns: 0,
+    agentDecisions: 0,
+  };
+  const runIds = new Map<string, string>();
   for (const sc of showcase) {
     const ref = refs.get(sc.externalId)!;
     const stageIds = new Map<number, string>();
@@ -214,14 +253,15 @@ async function insertShowcase(
     }
     for (const run of sc.runs) {
       counts.runs++;
-      await client.query(
-        `INSERT INTO agent_runs (organization_id, project_id, workflow_id, stage_id, external_id, agent, model, state, started_at, finished_at, summary, timeline)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)`,
+      const stageId = stageIds.get(run.stagePosition);
+      const rr = await client.query<{ id: string }>(
+        `INSERT INTO agent_runs (organization_id, project_id, workflow_id, stage_id, external_id, agent, model, state, started_at, finished_at, summary, timeline, steps, decisions_observed_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb,$14) RETURNING id`,
         [
           org,
           ref.projectId,
           ref.id,
-          stageIds.get(run.stagePosition),
+          stageId,
           run.externalId,
           run.agent,
           run.model,
@@ -230,8 +270,37 @@ async function insertShowcase(
           run.finishedAt,
           run.summary,
           JSON.stringify(run.timeline),
+          JSON.stringify(run.steps),
+          run.decisions.length
+            ? new Date(Math.max(...run.decisions.map((d) => d.decidedAt.getTime())))
+            : null,
         ],
       );
+      const runId = rr.rows[0]!.id;
+      runIds.set(run.externalId, runId);
+      for (const d of run.decisions) {
+        counts.agentDecisions++;
+        await client.query(
+          `INSERT INTO agent_decisions (organization_id, project_id, workflow_id, stage_id, agent_run_id, position, decided_at, action, reason, confidence, policy_outcome, policy_ref, risk_level, evidence)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb)`,
+          [
+            org,
+            ref.projectId,
+            ref.id,
+            stageId,
+            runId,
+            d.position,
+            d.decidedAt,
+            d.action,
+            d.reason,
+            d.confidence,
+            d.policyOutcome,
+            d.policyRef,
+            d.riskLevel,
+            JSON.stringify(evidenceLinks(d.evidence, sc.externalId, ref.id)),
+          ],
+        );
+      }
     }
     for (const a of sc.artifacts) {
       counts.artifacts++;
@@ -276,7 +345,24 @@ async function insertShowcase(
       );
     }
   }
-  return counts;
+  return { ...counts, runIds };
+}
+
+/**
+ * S-500 authors `links.agentRun` by run external id (`/agents/runs/<externalId>`); the web route is keyed by the
+ * agent_runs row id assigned at insert, so the link is rewritten once the showcase runs exist.
+ */
+async function resolveAgentRunLinks(
+  { client, org }: InsertContext,
+  runIds: Map<string, string>,
+): Promise<void> {
+  for (const [externalId, runId] of runIds) {
+    await client.query(
+      `UPDATE clarifications SET links = links || jsonb_build_object('agentRun', $3::text)
+       WHERE organization_id = $1 AND links->>'agentRun' = $2`,
+      [org, `/agents/runs/${externalId}`, `/agents/runs/${runId}`],
+    );
+  }
 }
 
 /**
@@ -481,6 +567,8 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
     const s500 = await insertWorkflows(ctx, workflows);
     // specs/001 US1 showcase journeys (research R8): stages, stage transitions, runs, artifacts, test runs.
     const s500Counts = await insertShowcase(ctx, showcase, s500.refs);
+    // specs/001 US5: `s500-clr-01` drills into a showcase run, so its link resolves after the runs exist.
+    await resolveAgentRunLinks(ctx, s500Counts.runIds);
     // specs/001 US3 dashboard-demo (research R30): written after S-500 so S-500 row order is unchanged.
     const dash = await insertWorkflows(ctx, dashboard.workflows);
     const dashCounts = await insertShowcase(ctx, dashboard.showcase, dash.refs);
@@ -493,6 +581,7 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
       runs: s500Counts.runs + dashCounts.runs,
       artifacts: s500Counts.artifacts + dashCounts.artifacts,
       testRuns: s500Counts.testRuns + dashCounts.testRuns,
+      agentDecisions: s500Counts.agentDecisions + dashCounts.agentDecisions,
     };
     // The seed's own inserts should not count as "changes" for SSE replay.
     await client.query(`TRUNCATE inbox_change_log RESTART IDENTITY`);
@@ -503,7 +592,7 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
       `  users: ${users.length}  workflows: ${workflows.length + dashboard.workflows.length}  approvals: ${approvals}  clarifications: ${clarifications}`,
     );
     log(
-      `  showcase (${showcase.map((s) => s.externalId).join(', ')}): stages ${s500Counts.stages}  runs ${s500Counts.runs}  artifacts ${s500Counts.artifacts}  test runs ${s500Counts.testRuns}`,
+      `  showcase (${showcase.map((s) => s.externalId).join(', ')}): stages ${s500Counts.stages}  runs ${s500Counts.runs}  artifacts ${s500Counts.artifacts}  test runs ${s500Counts.testRuns}  agent decisions ${s500Counts.agentDecisions}`,
     );
     log(
       `  ${DASHBOARD_PROJECT.key}: workflows ${dashboard.workflows.length}  approvals ${dash.approvals}  clarifications ${dash.clarifications}  stages ${dashCounts.stages}  runs ${dashCounts.runs}  test runs ${dashCounts.testRuns}`,

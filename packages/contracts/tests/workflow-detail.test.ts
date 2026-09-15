@@ -237,6 +237,7 @@ describe('workflow-detail read model (data-model.md §6)', () => {
     const artifacts: ArtifactRow[] = [
       {
         id: uuid(3),
+        externalId: 'art-3',
         stageId: stages[2]!.id,
         type: 'code_diff',
         title: 'diff',
@@ -246,6 +247,7 @@ describe('workflow-detail read model (data-model.md §6)', () => {
       },
       {
         id: uuid(1),
+        externalId: 'art-1',
         stageId: stages[0]!.id,
         type: 'requirement_spec',
         title: 'spec',
@@ -255,6 +257,7 @@ describe('workflow-detail read model (data-model.md §6)', () => {
       },
       {
         id: uuid(2),
+        externalId: 'art-2',
         stageId: stages[0]!.id,
         type: 'impact_analysis',
         title: 'impact',
@@ -264,6 +267,7 @@ describe('workflow-detail read model (data-model.md §6)', () => {
       },
       {
         id: uuid(4),
+        externalId: 'art-4',
         stageId: 'orphan',
         type: 'pull_request',
         title: 'x',
@@ -275,6 +279,7 @@ describe('workflow-detail read model (data-model.md §6)', () => {
     const grouped = groupArtifactsByStage(artifacts, stages);
     expect(grouped.map((a) => a.title)).toEqual(['spec', 'impact', 'diff']);
     expect(grouped.map((a) => a.stage.position)).toEqual([1, 1, 3]);
+    expect(grouped.map((a) => a.externalId)).toEqual(['art-1', 'art-2', 'art-3']);
     expect(grouped[2]!.stage.name).toBe('Planning');
   });
 

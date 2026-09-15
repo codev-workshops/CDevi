@@ -44,6 +44,15 @@ export type WorkflowIdParams = z.infer<typeof WorkflowIdParams>;
 export const StageRef = z.object({ id: Uuid, position: z.number().int(), name: z.string() });
 export type StageRef = z.infer<typeof StageRef>;
 
+/** Drill-down entry to `/agents/runs/{id}` from a stage (specs/001 US5 AS-1). */
+export const StageAgentRunRef = z.object({
+  id: Uuid,
+  agent: z.string(),
+  state: WorkflowState,
+  stagePosition: z.number().int().min(1),
+});
+export type StageAgentRunRef = z.infer<typeof StageAgentRunRef>;
+
 export const WorkflowStageView = z.object({
   id: Uuid,
   position: z.number().int(),
@@ -58,6 +67,7 @@ export const WorkflowStageView = z.object({
   errorSummary: z.string().nullable(),
   requiresApproval: z.boolean(),
   current: z.boolean(),
+  agentRuns: z.array(StageAgentRunRef).max(20).default([]),
 });
 export type WorkflowStageView = z.infer<typeof WorkflowStageView>;
 
@@ -84,6 +94,7 @@ export type ActivityEvent = z.infer<typeof ActivityEvent>;
 
 export const ArtifactView = z.object({
   id: Uuid,
+  externalId: z.string(),
   type: ArtifactType,
   title: z.string(),
   href: z.string().nullable(),

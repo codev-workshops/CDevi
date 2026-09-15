@@ -147,7 +147,10 @@ describe.skipIf(skip)('migration 0001_init (data-model.md §2)', () => {
       `select tgname from pg_trigger where tgname like 'inbox_changed_%' and not tgisinternal`,
     );
     expect(trg.rows.map((r) => r.tgname).sort()).toEqual([
+      'inbox_changed_agent_decisions',
+      'inbox_changed_agent_decisions_deleted',
       'inbox_changed_agent_runs',
+      'inbox_changed_agent_runs_updated',
       'inbox_changed_approvals',
       'inbox_changed_artifacts',
       'inbox_changed_clarifications',
@@ -691,6 +694,7 @@ describe.skipIf(skip)('migration 0004_dashboard (specs/001 data-model.md §18)',
     'requirement_analysis_items',
     'requirement_transitions',
   ];
+  const TABLES_ADDED_BY_0006 = ['agent_decisions'];
   beforeAll(async () => {
     const { migrate } = await import('../src/migrate');
     await migrate({ log: () => {} });
@@ -745,7 +749,9 @@ describe.skipIf(skip)('migration 0004_dashboard (specs/001 data-model.md §18)',
         `select tablename from pg_tables where schemaname='public' order by tablename`,
       )
     ).rows.map((r) => r.tablename as string);
-    expect(tables).toEqual([...TABLES_AFTER_0003, ...TABLES_ADDED_BY_0005].sort());
+    expect(tables).toEqual(
+      [...TABLES_AFTER_0003, ...TABLES_ADDED_BY_0005, ...TABLES_ADDED_BY_0006].sort(),
+    );
     const columnCounts = Object.fromEntries(
       (
         await admin4.query(
@@ -754,9 +760,10 @@ describe.skipIf(skip)('migration 0004_dashboard (specs/001 data-model.md §18)',
         )
       ).rows.map((r) => [r.table_name, r.n]),
     );
+    // agent_runs is 15 columns after 0002 + `steps` and `decisions_observed_at` from 0006 (the only later columns on these tables)
     expect(columnCounts).toEqual({
       test_runs: 17,
-      agent_runs: 15,
+      agent_runs: 17,
       audit_events: 15,
       approvals: 20,
       clarifications: 19,
@@ -1676,3 +1683,590 @@ describe.skipIf(skip)('migration 0005_requirements (specs/001 data-model.md §22
     }
   });
 });
+
+describe.skipIf(skip)(
+  'migration 0006_agent_decisions (specs/001 data-model.md §31–§37, US5)',
+  () => {
+    const admin6 = new pg.Pool({ connectionString: process.env['DATABASE_MIGRATOR_URL'] });
+    const app6 = new pg.Pool({ connectionString: process.env['DATABASE_URL'] });
+    beforeAll(async () => {
+      const { migrate } = await import('../src/migrate');
+      await migrate({ log: () => {} });
+    });
+    afterAll(async () => {
+      await admin6.end();
+      await app6.end();
+    });
+
+    const columns = async (table: string) =>
+      (
+        await admin6.query(
+          `select column_name, is_nullable, column_default from information_schema.columns where table_name=$1`,
+          [table],
+        )
+      ).rows as { column_name: string; is_nullable: 'YES' | 'NO'; column_default: string | null }[];
+    const constraintNames = async (table: string) =>
+      (
+        await admin6.query(`select conname from pg_constraint where conrelid = $1::regclass`, [
+          table,
+        ])
+      ).rows.map((r) => r.conname as string);
+
+    /** org, project, workflow, stage and one RUNNING agent run inside the caller's transaction. */
+    async function fixture(client: pg.PoolClient) {
+      const org = (
+        await client.query(`insert into organizations(name) values ('t-org-0006') returning id`)
+      ).rows[0].id as string;
+      const project = (
+        await client.query(
+          `insert into projects(organization_id, key, name) values ($1,'t6','T6') returning id`,
+          [org],
+        )
+      ).rows[0].id as string;
+      const workflow = (
+        await client.query(
+          `insert into workflows(organization_id, project_id, external_id, title, state, state_observed_at) values ($1,$2,'w6','W6','RUNNING',now()) returning id`,
+          [org, project],
+        )
+      ).rows[0].id as string;
+      const stage = (
+        await client.query(
+          `insert into workflow_stages(organization_id, project_id, workflow_id, position, name, state, state_observed_at) values ($1,$2,$3,4,'Implementation','RUNNING',now()) returning id`,
+          [org, project, workflow],
+        )
+      ).rows[0].id as string;
+      const run = (
+        await client.query(
+          `insert into agent_runs(organization_id, project_id, workflow_id, stage_id, external_id, agent, state, started_at) values ($1,$2,$3,$4,'r6','implementer','RUNNING',now()) returning id`,
+          [org, project, workflow, stage],
+        )
+      ).rows[0].id as string;
+      return { org, project, workflow, stage, run };
+    }
+    const insertDecision = (
+      client: pg.PoolClient,
+      f: { org: string; project: string; workflow: string; stage: string; run: string },
+      position: number,
+      over: Record<string, unknown> = {},
+    ) =>
+      client.query(
+        `insert into agent_decisions(organization_id, project_id, workflow_id, stage_id, agent_run_id, position, decided_at, action, reason, confidence, policy_outcome, policy_ref, risk_level, evidence)
+       values ($1,$2,$3,$4,$5,$6,now(),$7,$8,$9,$10,$11,$12,$13::jsonb) returning id`,
+        [
+          f.org,
+          f.project,
+          f.workflow,
+          f.stage,
+          f.run,
+          position,
+          over['action'] ?? 'Chose token bucket',
+          over['reason'] ?? 'Matches the gateway.',
+          over['confidence'] ?? 'HIGH',
+          over['policy_outcome'] ?? 'ALLOWED',
+          over['policy_ref'] ?? null,
+          over['risk_level'] ?? null,
+          JSON.stringify(over['evidence'] ?? []),
+        ],
+      );
+
+    it('FR-017 enums confidence_level and policy_outcome have the exact values and 0006 is recorded', async () => {
+      const enumValues = enumValuesFrom(admin6);
+      expect(await enumValues('confidence_level')).toEqual(['LOW', 'MEDIUM', 'HIGH']);
+      expect(await enumValues('policy_outcome')).toEqual([
+        'ALLOWED',
+        'APPROVAL_REQUIRED',
+        'DENIED',
+      ]);
+      const applied = (
+        await admin6.query(
+          `select name from schema_migrations where name='0006_agent_decisions.sql'`,
+        )
+      ).rowCount;
+      expect(applied).toBe(1);
+    });
+
+    it('FR-036 agent_runs.decisions_observed_at is a nullable timestamptz watermark (NULL until the first decisions batch)', async () => {
+      const col = (await columns('agent_runs')).find(
+        (c) => c.column_name === 'decisions_observed_at',
+      );
+      expect(col).toBeDefined();
+      expect(col?.is_nullable).toBe('YES');
+      expect(col?.column_default).toBeNull();
+      const type = (
+        await admin6.query(
+          `select data_type from information_schema.columns where table_name='agent_runs' and column_name='decisions_observed_at'`,
+        )
+      ).rows[0].data_type;
+      expect(type).toBe('timestamp with time zone');
+      const client = await app6.connect();
+      try {
+        await client.query('BEGIN');
+        const f = await fixture(client);
+        const row = (
+          await client.query(`select decisions_observed_at from agent_runs where id=$1`, [f.run])
+        ).rows[0];
+        expect(row.decisions_observed_at).toBeNull();
+        await client.query('ROLLBACK');
+      } finally {
+        client.release();
+      }
+    });
+
+    it('AS-3 agent_runs.steps is jsonb NOT NULL DEFAULT [] and CHECKed as an array of at most 20 entries', async () => {
+      const steps = (await columns('agent_runs')).find((c) => c.column_name === 'steps');
+      expect(steps).toBeDefined();
+      expect(steps?.is_nullable).toBe('NO');
+      expect(steps?.column_default).toContain("'[]'");
+      expect(await constraintNames('agent_runs')).toContain('agent_runs_steps_check');
+      const client = await app6.connect();
+      try {
+        await client.query('BEGIN');
+        const f = await fixture(client);
+        const row = (await client.query(`select steps from agent_runs where id=$1`, [f.run]))
+          .rows[0];
+        expect(row.steps).toEqual([]);
+        const many = (n: number) =>
+          JSON.stringify(
+            Array.from({ length: n }, (_, i) => ({ label: `S${i}`, status: 'pending' })),
+          );
+        await client.query(`update agent_runs set steps=$2::jsonb where id=$1`, [f.run, many(20)]);
+        await expect(
+          client.query(`update agent_runs set steps=$2::jsonb where id=$1`, [f.run, many(21)]),
+        ).rejects.toThrow(/agent_runs_steps_check/);
+        await client.query('ROLLBACK');
+        await client.query('BEGIN');
+        const g = await fixture(client);
+        await expect(
+          client.query(`update agent_runs set steps=$2::jsonb where id=$1`, [g.run, '{"a":1}']),
+        ).rejects.toThrow(/agent_runs_steps_check/);
+        await client.query('ROLLBACK');
+      } finally {
+        client.release();
+      }
+    });
+
+    it('FR-017 agent_decisions has the §33 columns, nullable policy_ref and risk_level (optional in US5), evidence DEFAULT [], UNIQUE(agent_run_id, position) and agent_decisions_run_idx', async () => {
+      const cols = await columns('agent_decisions');
+      const byName = Object.fromEntries(cols.map((c) => [c.column_name, c]));
+      for (const c of [
+        'id',
+        'organization_id',
+        'project_id',
+        'workflow_id',
+        'stage_id',
+        'agent_run_id',
+        'position',
+        'decided_at',
+        'action',
+        'reason',
+        'confidence',
+        'policy_outcome',
+        'policy_ref',
+        'risk_level',
+        'evidence',
+        'created_at',
+      ])
+        expect(byName, c).toHaveProperty(c);
+      expect(Object.keys(byName)).toHaveLength(16);
+      expect(byName['policy_ref']?.is_nullable).toBe('YES');
+      expect(byName['risk_level']?.is_nullable).toBe('YES');
+      expect(byName['evidence']?.is_nullable).toBe('NO');
+      expect(byName['evidence']?.column_default).toContain("'[]'");
+      for (const c of ['organization_id', 'project_id', 'workflow_id', 'stage_id', 'agent_run_id'])
+        expect(byName[c]?.is_nullable, c).toBe('NO');
+      const udt = (
+        await admin6.query(
+          `select column_name, udt_name from information_schema.columns where table_name='agent_decisions' and column_name in ('confidence','policy_outcome','risk_level','position')`,
+        )
+      ).rows.map((r) => [r.column_name, r.udt_name]);
+      expect(Object.fromEntries(udt)).toEqual({
+        confidence: 'confidence_level',
+        policy_outcome: 'policy_outcome',
+        risk_level: 'risk_level',
+        position: 'int2',
+      });
+      expect(await constraintNames('agent_decisions')).toContain(
+        'agent_decisions_run_position_key',
+      );
+      const idx = (
+        await admin6.query(
+          `select indexname, indexdef from pg_indexes where tablename='agent_decisions' and indexname='agent_decisions_run_idx'`,
+        )
+      ).rows[0] as { indexname: string; indexdef: string } | undefined;
+      expect(idx?.indexdef).toMatch(/\(agent_run_id, "position"\)$/);
+    });
+
+    it('FR-017 FR-018 CHECKs bound position 1..50, action ≤ 200, reason ≤ 600, policy_ref ≤ 120 and evidence to an array of at most 20; a second decision at the same position is rejected', async () => {
+      const client = await app6.connect();
+      const rejects = async (
+        f: Awaited<ReturnType<typeof fixture>>,
+        position: number,
+        over: Record<string, unknown>,
+        pattern: RegExp,
+      ) => {
+        await client.query('SAVEPOINT s');
+        await expect(insertDecision(client, f, position, over)).rejects.toThrow(pattern);
+        await client.query('ROLLBACK TO SAVEPOINT s');
+      };
+      try {
+        await client.query('BEGIN');
+        const f = await fixture(client);
+        await insertDecision(client, f, 1);
+        await insertDecision(client, f, 50, { reason: 'x'.repeat(600), action: 'y'.repeat(200) });
+        await rejects(f, 0, {}, /check/i);
+        await rejects(f, 51, {}, /check/i);
+        await rejects(f, 2, { action: 'x'.repeat(201) }, /check/i);
+        await rejects(f, 2, { reason: 'x'.repeat(601) }, /check/i);
+        await rejects(f, 2, { policy_ref: 'x'.repeat(121) }, /check/i);
+        await rejects(f, 2, { evidence: { kind: 'file' } }, /check/i);
+        await rejects(
+          f,
+          2,
+          {
+            evidence: Array.from({ length: 21 }, () => ({
+              kind: 'url',
+              label: 'x',
+              accessible: true,
+            })),
+          },
+          /check/i,
+        );
+        await rejects(
+          f,
+          2,
+          { confidence: 'high' },
+          /invalid input value for enum confidence_level/,
+        );
+        await rejects(
+          f,
+          2,
+          { policy_outcome: 'BLOCKED' },
+          /invalid input value for enum policy_outcome/,
+        );
+        await rejects(f, 1, {}, /agent_decisions_run_position_key/);
+        await insertDecision(client, f, 2, {
+          policy_outcome: 'APPROVAL_REQUIRED',
+          risk_level: 'MEDIUM',
+          policy_ref: 'POL-7',
+          evidence: [{ kind: 'ticket', label: 'PAY-231', accessible: false }],
+        });
+        const rows = (
+          await client.query(
+            `select position, policy_outcome, risk_level, evidence from agent_decisions where agent_run_id=$1 order by position`,
+            [f.run],
+          )
+        ).rows;
+        expect(rows.map((r) => r.position)).toEqual([1, 2, 50]);
+        expect(rows[1]).toMatchObject({
+          policy_outcome: 'APPROVAL_REQUIRED',
+          risk_level: 'MEDIUM',
+          evidence: [{ kind: 'ticket', label: 'PAY-231', accessible: false }],
+        });
+        await client.query('ROLLBACK');
+      } finally {
+        client.release();
+      }
+    });
+
+    it('FR-017 deleting the agent run cascades to its decisions; replace-whole (DELETE + INSERT) leaves exactly the new set and reuses positions', async () => {
+      const client = await app6.connect();
+      try {
+        await client.query('BEGIN');
+        const f = await fixture(client);
+        await insertDecision(client, f, 1);
+        await insertDecision(client, f, 2);
+        await insertDecision(client, f, 3);
+        await client.query(`delete from agent_decisions where agent_run_id=$1`, [f.run]);
+        await insertDecision(client, f, 1, { action: 'Replaced' });
+        await insertDecision(client, f, 2, { action: 'Replaced' });
+        const after = (
+          await client.query(
+            `select position, action from agent_decisions where agent_run_id=$1 order by position`,
+            [f.run],
+          )
+        ).rows;
+        expect(after).toEqual([
+          { position: 1, action: 'Replaced' },
+          { position: 2, action: 'Replaced' },
+        ]);
+        await client.query('ROLLBACK');
+        await client.query('BEGIN');
+        const g = await fixture(client);
+        await insertDecision(client, g, 1);
+        await insertDecision(client, g, 2);
+        // app_user has no DELETE on agent_runs; the cascade is exercised as the migrator below.
+        await client.query('ROLLBACK');
+      } finally {
+        client.release();
+      }
+      const m = await admin6.connect();
+      try {
+        await m.query('BEGIN');
+        const f = await fixture(m);
+        await insertDecision(m, f, 1);
+        await insertDecision(m, f, 2);
+        await m.query(`delete from agent_runs where id=$1`, [f.run]);
+        const left = (
+          await m.query(`select count(*)::int c from agent_decisions where agent_run_id=$1`, [
+            f.run,
+          ])
+        ).rows[0].c;
+        expect(left).toBe(0);
+        await m.query('ROLLBACK');
+      } finally {
+        m.release();
+      }
+    });
+
+    it('FR-032 agent_decisions has the org-isolation RLS policy (disabled while CDEVI_RLS=off) and app_user has exactly SELECT, INSERT, DELETE', async () => {
+      expect((await columns('agent_decisions')).map((c) => c.column_name)).toContain(
+        'organization_id',
+      );
+      const pol = (
+        await admin6.query(
+          `select policyname, qual from pg_policies where tablename='agent_decisions'`,
+        )
+      ).rows;
+      expect(pol.map((p) => p.policyname)).toEqual(['agent_decisions_org_isolation']);
+      expect(pol[0].qual).toContain("current_setting('app.organization_id'");
+      const rls = await admin6.query(
+        `select relrowsecurity from pg_class where relname='agent_decisions'`,
+      );
+      expect(rls.rows[0].relrowsecurity).toBe(false);
+      const privs = (
+        await admin6.query(
+          `select privilege_type from information_schema.role_table_grants where grantee='app_user' and table_name='agent_decisions'`,
+        )
+      ).rows.map((r) => r.privilege_type as string);
+      expect(privs.sort()).toEqual(['DELETE', 'INSERT', 'SELECT']);
+      const client = await app6.connect();
+      try {
+        await client.query('BEGIN');
+        const f = await fixture(client);
+        const id = (await insertDecision(client, f, 1)).rows[0].id as string;
+        await expect(
+          client.query(`update agent_decisions set action='edited' where id=$1`, [id]),
+        ).rejects.toThrow(/permission denied/);
+        await client.query('ROLLBACK');
+      } finally {
+        client.release();
+      }
+    });
+
+    it('FR-017 app_user may UPDATE only agent_decisions.stage_id (column grant), so decisions can follow their run to another stage without any content edit', async () => {
+      const cols = (
+        await admin6.query(
+          `select column_name from information_schema.role_column_grants where grantee='app_user' and table_name='agent_decisions' and privilege_type='UPDATE'`,
+        )
+      ).rows.map((r) => r.column_name as string);
+      expect(cols).toEqual(['stage_id']);
+      const client = await app6.connect();
+      try {
+        await client.query('BEGIN');
+        const f = await fixture(client);
+        const id = (await insertDecision(client, f, 1)).rows[0].id as string;
+        await expect(
+          client.query(`update agent_decisions set stage_id=$2 where id=$1`, [id, f.stage]),
+        ).resolves.toMatchObject({ rowCount: 1 });
+        await expect(
+          client.query(`update agent_decisions set position=99 where id=$1`, [id]),
+        ).rejects.toThrow(/permission denied/);
+        await client.query('ROLLBACK');
+      } finally {
+        client.release();
+      }
+    });
+
+    it("FR-034 inbox_changed_agent_decisions(_deleted) are statement-level AFTER INSERT / AFTER DELETE triggers: a replace-whole (DELETE + batch INSERT) in one transaction writes exactly one inbox_change_log row carrying the run's workflow_id, an empty replacement (DELETE only) still writes one, and NOTIFYs inbox_changed once", async () => {
+      const trg = (
+        await admin6.query(
+          `select tgname, tgtype from pg_trigger where tgrelid='agent_decisions'::regclass and not tgisinternal order by tgname`,
+        )
+      ).rows as { tgname: string; tgtype: number }[];
+      expect(trg.map((t) => t.tgname)).toEqual([
+        'inbox_changed_agent_decisions',
+        'inbox_changed_agent_decisions_deleted',
+      ]);
+      // tgtype bit 0 (1) = FOR EACH ROW; bit 1 (2) = BEFORE; bit 2 (4) = INSERT; bit 3 (8) = DELETE; bit 4 (16) = UPDATE
+      for (const t of trg) {
+        expect(t.tgtype & 1, `${t.tgname} FOR EACH STATEMENT`).toBe(0);
+        expect(t.tgtype & 2, `${t.tgname} AFTER`).toBe(0);
+        expect(t.tgtype & 16, `${t.tgname} not UPDATE`).toBe(0);
+      }
+      expect(trg[0]!.tgtype & (4 | 8), 'INSERT only').toBe(4);
+      expect(trg[1]!.tgtype & (4 | 8), 'DELETE only').toBe(8);
+
+      const client = await app6.connect();
+      try {
+        await client.query('BEGIN');
+        const f = await fixture(client);
+        const before = (
+          await client.query(`select coalesce(max(seq),0) as m from inbox_change_log`)
+        ).rows[0].m;
+        const values = Array.from(
+          { length: 50 },
+          (_, i) => `($1,$2,$3,$4,$5,${i + 1},now(),'a','r','HIGH','ALLOWED')`,
+        );
+        await client.query(
+          `insert into agent_decisions(organization_id, project_id, workflow_id, stage_id, agent_run_id, position, decided_at, action, reason, confidence, policy_outcome) values ${values.join(',')}`,
+          [f.org, f.project, f.workflow, f.stage, f.run],
+        );
+        const rows = (
+          await client.query(
+            `select organization_id, project_id, workflow_id, requirement_id from inbox_change_log where seq > $1`,
+            [before],
+          )
+        ).rows;
+        expect(rows).toEqual([
+          {
+            organization_id: f.org,
+            project_id: f.project,
+            workflow_id: f.workflow,
+            requirement_id: null,
+          },
+        ]);
+        await client.query(`delete from agent_decisions where agent_run_id=$1`, [f.run]);
+        await insertDecision(client, f, 1);
+        await client.query(`update agent_runs set decisions_observed_at = now() where id=$1`, [
+          f.run,
+        ]);
+        const afterReplace = (
+          await client.query(`select count(*)::int c from inbox_change_log where seq > $1`, [
+            before,
+          ])
+        ).rows[0].c;
+        expect(
+          afterReplace,
+          'DELETE + INSERT + watermark UPDATE in one transaction is one row',
+        ).toBe(1);
+        await client.query('ROLLBACK');
+
+        // The 0002 agent_runs trigger still fires for rendered columns, not for the watermark alone.
+        await client.query('BEGIN');
+        const g = await fixture(client);
+        const mark = (await client.query(`select coalesce(max(seq),0) as m from inbox_change_log`))
+          .rows[0].m;
+        await client.query(`update agent_runs set decisions_observed_at = now() where id=$1`, [
+          g.run,
+        ]);
+        expect(
+          (
+            await client.query(`select count(*)::int c from inbox_change_log where seq > $1`, [
+              mark,
+            ])
+          ).rows[0].c,
+          'watermark-only UPDATE does not notify',
+        ).toBe(0);
+        await client.query(
+          `update agent_runs set state = 'COMPLETED', finished_at = now() where id=$1`,
+          [g.run],
+        );
+        await client.query(
+          `update agent_runs set steps = '[{"label":"x","status":"completed"}]' where id=$1`,
+          [g.run],
+        );
+        expect(
+          (
+            await client.query(`select count(*)::int c from inbox_change_log where seq > $1`, [
+              mark,
+            ])
+          ).rows[0].c,
+          'state and steps UPDATEs notify (one row each)',
+        ).toBe(2);
+        await client.query('ROLLBACK');
+      } finally {
+        client.release();
+      }
+
+      // Empty replacement: DELETE with no following INSERT still tells open pages the decisions are gone.
+      // A DELETE that removes nothing, and a cascade from a workflow being deleted, write nothing.
+      const c2 = await app6.connect();
+      try {
+        await c2.query('BEGIN');
+        const f = await fixture(c2);
+        await insertDecision(c2, f, 1);
+        await insertDecision(c2, f, 2);
+        await c2.query('COMMIT');
+        const before = (await c2.query(`select coalesce(max(seq),0) as m from inbox_change_log`))
+          .rows[0].m;
+        await c2.query(`delete from agent_decisions where agent_run_id=$1`, [f.run]);
+        const rows = (
+          await c2.query(`select workflow_id from inbox_change_log where seq > $1`, [before])
+        ).rows;
+        expect(rows).toEqual([{ workflow_id: f.workflow }]);
+        await c2.query(`delete from agent_decisions where agent_run_id=$1`, [f.run]);
+        expect(
+          (await c2.query(`select count(*)::int c from inbox_change_log where seq > $1`, [before]))
+            .rows[0].c,
+          'DELETE of nothing writes nothing',
+        ).toBe(1);
+        await c2.query('BEGIN');
+        await insertDecision(c2, f, 1);
+        await c2.query('COMMIT');
+        const beforeCascade = (
+          await c2.query(`select coalesce(max(seq),0) as m from inbox_change_log`)
+        ).rows[0].m;
+        await admin6.query(`delete from workflows where id=$1`, [f.workflow]);
+        expect(
+          (
+            await c2.query(`select count(*)::int c from inbox_change_log where seq > $1`, [
+              beforeCascade,
+            ])
+          ).rows[0].c,
+          'cascade from a deleted workflow writes nothing',
+        ).toBe(0);
+        await admin6.query(`delete from inbox_change_log where organization_id=$1`, [f.org]);
+        await admin6.query(`delete from projects where id=$1`, [f.project]);
+        await admin6.query(`delete from organizations where id=$1`, [f.org]);
+      } finally {
+        c2.release();
+      }
+
+      // NOTIFY is transactional, so delivery needs a committed insert; the rows are removed afterwards.
+      const listener = await admin6.connect();
+      const writer = await admin6.connect();
+      try {
+        const payloads: string[] = [];
+        listener.on('notification', (n) => {
+          if (n.payload) payloads.push(n.payload);
+        });
+        await listener.query('listen inbox_changed');
+        await writer.query('begin');
+        const f = await fixture(writer);
+        const seqBefore = (
+          await writer.query(`select coalesce(max(seq),0) as m from inbox_change_log`)
+        ).rows[0].m as number;
+        await writer.query(
+          `insert into agent_decisions(organization_id, project_id, workflow_id, stage_id, agent_run_id, position, decided_at, action, reason, confidence, policy_outcome)
+         values ($1,$2,$3,$4,$5,1,now(),'a','r','HIGH','ALLOWED'), ($1,$2,$3,$4,$5,2,now(),'b','r','LOW','DENIED')`,
+          [f.org, f.project, f.workflow, f.stage, f.run],
+        );
+        await writer.query('commit');
+        const deadline = Date.now() + 5_000;
+        const mine = () =>
+          payloads
+            .map((p) => JSON.parse(p))
+            .filter((p) => p.workflowId === f.workflow && Number(p.seq) > Number(seqBefore));
+        while (Date.now() < deadline && mine().length < 1)
+          await new Promise((r) => setTimeout(r, 50));
+        // seqBefore was read after the fixture rows, so only the decision batch is newer: exactly one frame for two rows
+        await new Promise((r) => setTimeout(r, 200));
+        expect(mine()).toHaveLength(1);
+        expect(mine()[0]).toMatchObject({
+          organizationId: f.org,
+          projectId: f.project,
+          workflowId: f.workflow,
+        });
+        await writer.query(`delete from inbox_change_log where organization_id=$1`, [f.org]);
+        await writer.query(`delete from workflows where id=$1`, [f.workflow]);
+        await writer.query(`delete from inbox_change_log where organization_id=$1`, [f.org]);
+        await writer.query(`delete from projects where id=$1`, [f.project]);
+        await writer.query(`delete from organizations where id=$1`, [f.org]);
+        await listener.query('unlisten inbox_changed');
+      } finally {
+        listener.release();
+        writer.release();
+      }
+    });
+  },
+);

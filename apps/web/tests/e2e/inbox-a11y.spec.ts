@@ -1,16 +1,5 @@
-import AxeBuilder from '@axe-core/playwright';
-import { expect, test, type Page } from '@playwright/test';
-import { signIn } from './helpers';
-
-async function expectAxeClean(page: Page, label: string) {
-  const results = await new AxeBuilder({ page })
-    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
-    .analyze();
-  expect(
-    results.violations.map((v) => `${v.id}: ${v.help} — ${v.nodes.map((n) => n.html).join(' | ')}`),
-    label,
-  ).toEqual([]);
-}
+import { expect, test } from '@playwright/test';
+import { expectAxeClean, signIn } from './helpers';
 
 test.describe('Accessibility (SC-005): zero axe violations on every route and state', () => {
   test('sign-in, populated tabs, record stub, placeholders', async ({ page }) => {

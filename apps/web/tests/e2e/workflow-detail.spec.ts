@@ -1,7 +1,6 @@
-import AxeBuilder from '@axe-core/playwright';
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import { expect, test, type APIRequestContext } from '@playwright/test';
 import { E2E } from '../../playwright.config';
-import { API, signIn, uniq } from './helpers';
+import { API, expectAxeClean, signIn, uniq } from './helpers';
 
 const HEADERS = {
   authorization: `Bearer ${E2E.ingestToken}`,
@@ -126,16 +125,6 @@ async function ingestJourney(
     finishedAt: at(112),
   });
   return { ext, title, id: w.id };
-}
-
-async function expectAxeClean(page: Page, label: string) {
-  const results = await new AxeBuilder({ page })
-    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
-    .analyze();
-  expect(
-    results.violations.map((v) => `${v.id}: ${v.help} — ${v.nodes.map((n) => n.html).join(' | ')}`),
-    label,
-  ).toEqual([]);
 }
 
 test.describe('Workflow Detail (specs/001 US1)', () => {

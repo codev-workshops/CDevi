@@ -4,6 +4,7 @@ import { ARTIFACT_TYPES } from '@cdevi/contracts';
 import {
   buildS500,
   DECISION_SHOWCASE,
+  EXPECTED_AGENT_DECISIONS,
   EXPECTED_BUCKETS,
   EXPECTED_SHOWCASE,
   SHOWCASE_FAILED,
@@ -229,7 +230,7 @@ describe.skipIf(Boolean(process.env['CDEVI_SKIP_DB_TESTS']))(
 );
 
 describe('S-500 decision showcase (specs/001 US2, data-model.md §13)', () => {
-  it('SC-006 decision showcase is deterministic: s500-apr-req (LOW), s500-apr-pr (MEDIUM, links.pullRequest), s500-clr-01 (why_it_matters, 3 options, 4 links) on three distinct WAITING_FOR_HUMAN workflows', () => {
+  it('SC-006 decision showcase is deterministic: s500-apr-req (LOW), s500-apr-pr (MEDIUM, links.pullRequest), s500-clr-01 (why_it_matters, 3 options, 5 links) on three distinct WAITING_FOR_HUMAN workflows', () => {
     const a = buildS500(BASE);
     const req = a.workflows.find((w) => w.approval?.externalId === DECISION_SHOWCASE.requirement)!;
     const pr = a.workflows.find((w) => w.approval?.externalId === DECISION_SHOWCASE.pullRequest)!;
@@ -250,6 +251,7 @@ describe('S-500 decision showcase (specs/001 US2, data-model.md §13)', () => {
     expect(clr.clarification!.options.filter((o) => o.recommended)).toHaveLength(1);
     expect(clr.clarification!.hasRecommendedAnswer).toBe(true);
     expect(Object.keys(clr.clarification!.links).sort()).toEqual([
+      'agentRun',
       'externalTicket',
       'pullRequest',
       'requirement',
@@ -295,7 +297,7 @@ describe('S-500 decision showcase (specs/001 US2, data-model.md §13)', () => {
       expect(clr.why_it_matters).toBeTruthy();
       expect(clr.options).toHaveLength(3);
       expect(clr.has_recommended_answer).toBe(true);
-      expect(Object.keys(clr.links)).toHaveLength(4);
+      expect(Object.keys(clr.links)).toHaveLength(5);
     });
 
     it('SC-006 seeded links.workflow points at the workflow row id the web route resolves', async () => {
@@ -975,6 +977,156 @@ describe('requirements seed (specs/001 US4, data-model.md §30, research R44)', 
       ).rows;
       for (const row of last) expect(row.last, row.external_id).toBe(row.state);
       expect(await n(`select count(*) c from audit_events`)).toBe(0);
+      expect(await n(`select count(*) c from inbox_change_log`)).toBe(0);
+    });
+  });
+});
+
+describe('S-500 agent decisions showcase (specs/001 US5, data-model.md §37)', () => {
+  it('FR-016 FR-017 builds steps and decisions deterministically: 3 on the active showcase run, 2 on a COMPLETED payments-api run, and no extra workflows or runs', () => {
+    const a = buildS500(BASE);
+    const b = buildS500(BASE);
+    expect(JSON.stringify(a.showcase)).toBe(JSON.stringify(b.showcase));
+    const runs = a.showcase.flatMap((s) => s.runs);
+    expect(runs).toHaveLength(EXPECTED_SHOWCASE.runs);
+    expect(a.showcase).toHaveLength(EXPECTED_SHOWCASE.workflows);
+    const withDecisions = runs.filter((r) => r.decisions.length > 0);
+    expect(withDecisions.map((r) => r.externalId).sort()).toEqual(
+      [
+        EXPECTED_AGENT_DECISIONS.active.externalId,
+        EXPECTED_AGENT_DECISIONS.completed.externalId,
+      ].sort(),
+    );
+    const active = runs.find((r) => r.externalId === EXPECTED_AGENT_DECISIONS.active.externalId)!;
+    const completed = runs.find(
+      (r) => r.externalId === EXPECTED_AGENT_DECISIONS.completed.externalId,
+    )!;
+    expect(active.finishedAt).toBeNull();
+    expect(active.decisions).toHaveLength(3);
+    expect(completed.state).toBe('COMPLETED');
+    expect(completed.decisions).toHaveLength(2);
+    expect(a.showcase.find((s) => s.runs.includes(completed))!.externalId).toBe(SHOWCASE_WAITING);
+    expect(a.workflows.find((w) => w.externalId === SHOWCASE_WAITING)!.project).toBe(
+      'payments-api',
+    );
+    const all = runs.flatMap((r) => r.decisions);
+    expect(all).toHaveLength(EXPECTED_AGENT_DECISIONS.decisions);
+    for (const r of withDecisions) {
+      expect(r.decisions.map((d) => d.position)).toEqual(r.decisions.map((_, i) => i + 1));
+      for (const d of r.decisions) {
+        expect(d.action.length).toBeLessThanOrEqual(200);
+        expect(d.reason.length).toBeLessThanOrEqual(600);
+        expect(d.evidence.length).toBeLessThanOrEqual(20);
+        expect(d.decidedAt.getTime()).toBeGreaterThanOrEqual(r.startedAt.getTime());
+        if (r.finishedAt) expect(d.decidedAt.getTime()).toBeLessThanOrEqual(r.finishedAt.getTime());
+      }
+    }
+    const approvalRequired = all.filter((d) => d.policyOutcome === 'APPROVAL_REQUIRED');
+    expect(approvalRequired).toHaveLength(1);
+    expect(approvalRequired[0]!.riskLevel).toBe('MEDIUM');
+    expect(all.filter((d) => d.policyOutcome === 'DENIED')).toHaveLength(1);
+    const evidence = all.flatMap((d) => d.evidence);
+    expect(evidence.filter((e) => !e.accessible)).toHaveLength(1);
+    expect([...new Set(evidence.map((e) => e.kind))].sort()).toEqual([
+      'artifact',
+      'file',
+      'ticket',
+      'url',
+    ]);
+    for (const e of evidence.filter((e) => e.accessible)) expect(e.href).toBeTruthy();
+    // AS-3 structured progress: the active run shows one running step and at least one pending step.
+    expect(active.steps.length).toBeGreaterThan(0);
+    expect(active.steps.length).toBeLessThanOrEqual(20);
+    expect(active.steps.filter((s) => s.status === 'running')).toHaveLength(1);
+    expect(active.steps.some((s) => s.status === 'pending')).toBe(true);
+    expect(completed.steps.every((s) => s.status === 'completed')).toBe(true);
+    for (const r of runs) for (const s of r.steps) expect(s.label.length).toBeLessThanOrEqual(120);
+    // The clarification showcase drills into the active run (authored by external id, resolved at insert).
+    const clr = a.workflows.find(
+      (w) => w.clarification?.externalId === DECISION_SHOWCASE.clarification,
+    )!;
+    expect(clr.clarification!.links.agentRun).toBe(
+      `/agents/runs/${EXPECTED_AGENT_DECISIONS.active.externalId}`,
+    );
+  });
+
+  describe.skipIf(Boolean(process.env['CDEVI_SKIP_DB_TESTS']))('written to the database', () => {
+    const pool = new pg.Pool({ connectionString: process.env['DATABASE_MIGRATOR_URL'] });
+    afterAll(() => pool.end());
+
+    it('FR-016 FR-017 seeding writes agent_runs.steps and 5 agent_decisions on 2 runs, and s500-clr-01 links.agentRun points at the inserted run id', async () => {
+      const r = await seed({
+        base: BASE,
+        password: 'cdevi-demo-test-pass',
+        ingestToken: 'cdvi_test_token',
+        log: () => {},
+      });
+      expect(r.counts.agentDecisions).toBe(EXPECTED_AGENT_DECISIONS.decisions);
+      expect(r.counts.runs).toBe(EXPECTED_SHOWCASE.runs + EXPECTED_DASHBOARD.runs);
+      const n = async (sql: string) => Number((await pool.query(sql)).rows[0].c);
+      expect(await n('select count(*) c from agent_decisions')).toBe(
+        EXPECTED_AGENT_DECISIONS.decisions,
+      );
+      expect(await n('select count(distinct agent_run_id) c from agent_decisions')).toBe(
+        EXPECTED_AGENT_DECISIONS.runs,
+      );
+      const active = (
+        await pool.query<{ id: string; steps: unknown[]; workflow_id: string; decisions: number }>(
+          `select r.id, r.steps, r.workflow_id, (select count(*)::int from agent_decisions d where d.agent_run_id = r.id) decisions
+           from agent_runs r where r.external_id = $1`,
+          [EXPECTED_AGENT_DECISIONS.active.externalId],
+        )
+      ).rows[0]!;
+      expect(active.decisions).toBe(3);
+      expect(active.steps.length).toBeGreaterThan(0);
+      const decisions = (
+        await pool.query(
+          `select d.position, d.policy_outcome, d.risk_level, d.evidence, d.workflow_id, d.stage_id = r.stage_id same_stage
+           from agent_decisions d join agent_runs r on r.id = d.agent_run_id where d.agent_run_id = $1 order by d.position`,
+          [active.id],
+        )
+      ).rows;
+      expect(decisions.map((d) => d.position)).toEqual([1, 2, 3]);
+      for (const d of decisions) {
+        expect(d.workflow_id).toBe(active.workflow_id);
+        expect(d.same_stage).toBe(true);
+      }
+      expect(
+        await n(
+          `select count(*) c from agent_decisions where policy_outcome = 'APPROVAL_REQUIRED' and risk_level = 'MEDIUM'`,
+        ),
+      ).toBe(1);
+      expect(
+        await n(`select count(*) c from agent_decisions where policy_outcome = 'DENIED'`),
+      ).toBe(1);
+      expect(
+        await n(
+          `select count(*) c from agent_decisions d, jsonb_array_elements(d.evidence) e where (e->>'accessible')::boolean = false`,
+        ),
+      ).toBe(1);
+      expect(await n(`select count(*) c from agent_runs where jsonb_array_length(steps) > 0`)).toBe(
+        EXPECTED_AGENT_DECISIONS.runsWithSteps,
+      );
+      // FR-036 watermark: set to the latest decided_at on runs that carry decisions, NULL elsewhere
+      expect(
+        await n(
+          `select count(*) c from agent_runs r where r.decisions_observed_at is not null
+             and r.decisions_observed_at = (select max(d.decided_at) from agent_decisions d where d.agent_run_id = r.id)`,
+        ),
+      ).toBe(EXPECTED_AGENT_DECISIONS.runs);
+      expect(
+        await n(
+          `select count(*) c from agent_runs r where r.decisions_observed_at is null
+             and exists (select 1 from agent_decisions d where d.agent_run_id = r.id)`,
+        ),
+      ).toBe(0);
+      const clr = (
+        await pool.query(`select links from clarifications where external_id = $1`, [
+          DECISION_SHOWCASE.clarification,
+        ])
+      ).rows[0]!;
+      expect(clr.links.agentRun).toBe(`/agents/runs/${active.id}`);
+      expect(Object.keys(clr.links)).toHaveLength(5);
       expect(await n(`select count(*) c from inbox_change_log`)).toBe(0);
     });
   });

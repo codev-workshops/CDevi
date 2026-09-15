@@ -17,6 +17,18 @@ export type ExternalId = z.infer<typeof ExternalId>;
 
 export const Uuid = z.uuid();
 
+/**
+ * http(s) URL or app-relative path, ≤ 500 chars (data-model.md §13). A relative path must start with a single `/`:
+ * `//host` and `/\host` are protocol-relative and would leave the app.
+ */
+export const DecisionLink = z
+  .string()
+  .trim()
+  .max(500)
+  .refine((s) => /^https?:\/\//.test(s) || /^\/(?![/\\])/.test(s), {
+    message: 'must be an http(s) URL or an app-relative path',
+  });
+
 /** `?state=A,B` → ['A', 'B'] for `z.preprocess`; non-strings (already arrays) pass through. */
 export const splitCsv = (v: unknown) =>
   typeof v === 'string'

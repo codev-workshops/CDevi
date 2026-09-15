@@ -6,9 +6,13 @@ import type {
   AgentRunEvent,
   ArtifactType,
   ClarificationOption,
+  ConfidenceLevel,
   DecisionLinks,
+  EvidenceRef,
+  PolicyOutcome,
   RiskLevel,
   Role,
+  RunStep,
   TestRunStatus,
   WorkflowState,
 } from '@cdevi/contracts';
@@ -86,6 +90,8 @@ export const DECISION_SHOWCASE = {
   requirement: 's500-apr-req',
   pullRequest: 's500-apr-pr',
   clarification: 's500-clr-01',
+  /** specs/001 US5: the run `s500-clr-01` drills into (`links.agentRun`, resolved to the row id at insert). */
+  agentRun: 's500-001-r7',
 } as const;
 export interface SeedWorkflow {
   externalId: string;
@@ -186,6 +192,18 @@ export interface SeedStage {
     reason: string | null;
   }[];
 }
+/** specs/001 US5 (data-model.md §33): one reported decision of a run; `id` is assigned at insert. */
+export interface SeedAgentDecision {
+  position: number;
+  decidedAt: Date;
+  action: string;
+  reason: string;
+  confidence: ConfidenceLevel;
+  policyOutcome: PolicyOutcome;
+  policyRef: string | null;
+  riskLevel: RiskLevel | null;
+  evidence: EvidenceRef[];
+}
 export interface SeedAgentRun {
   externalId: string;
   stagePosition: number;
@@ -196,6 +214,8 @@ export interface SeedAgentRun {
   finishedAt: Date | null;
   summary: string | null;
   timeline: AgentRunEvent[];
+  steps: RunStep[];
+  decisions: SeedAgentDecision[];
 }
 export interface SeedArtifact {
   externalId: string;
@@ -286,6 +306,8 @@ export function buildShowcase(base: Date, wait: SeedWorkflow, fail: SeedWorkflow
     to: number | null,
     summary: string,
     timeline: AgentRunEvent[],
+    steps: RunStep[] = [],
+    decisions: SeedAgentDecision[] = [],
   ): SeedAgentRun => ({
     externalId,
     stagePosition,
@@ -296,6 +318,29 @@ export function buildShowcase(base: Date, wait: SeedWorkflow, fail: SeedWorkflow
     finishedAt: to === null ? null : t(to),
     summary,
     timeline,
+    steps,
+    decisions,
+  });
+  const step = (label: string, status: RunStep['status']): RunStep => ({ label, status });
+  const decision = (
+    position: number,
+    min: number,
+    action: string,
+    reason: string,
+    confidence: ConfidenceLevel,
+    policyOutcome: PolicyOutcome,
+    evidence: EvidenceRef[],
+    over: Partial<Pick<SeedAgentDecision, 'policyRef' | 'riskLevel'>> = {},
+  ): SeedAgentDecision => ({
+    position,
+    decidedAt: t(min),
+    action,
+    reason,
+    confidence,
+    policyOutcome,
+    policyRef: over.policyRef ?? null,
+    riskLevel: over.riskLevel ?? null,
+    evidence,
   });
   const artifact = (
     externalId: string,
@@ -436,6 +481,55 @@ export function buildShowcase(base: Date, wait: SeedWorkflow, fail: SeedWorkflow
           ev(wm + 200, 'tool', 'Created src/auth/limiter.ts'),
           ev(wm + 140, 'tool', 'Ran pnpm typecheck — clean'),
         ],
+        [
+          step('Read the implementation plan', 'completed'),
+          step('Implement limiter module', 'completed'),
+          step('Wire middleware into /api/auth', 'completed'),
+          step('Typecheck', 'completed'),
+        ],
+        [
+          decision(
+            1,
+            wm + 205,
+            'Implement the limiter as a new module rather than extending authMiddleware',
+            'Keeps the middleware single-purpose and lets the limiter be unit-tested in isolation, as the plan recommends.',
+            'HIGH',
+            'ALLOWED',
+            [
+              {
+                kind: 'artifact',
+                label: 'Implementation plan — sliding-window limiter',
+                href: `/workflows/${w}#artifact-${w}-plan`,
+                locator: `${w}-plan`,
+                accessible: true,
+              },
+              {
+                kind: 'file',
+                label: 'src/auth/limiter.ts',
+                href: 'https://git.cdevi.demo/payments-api/blob/pay-231/src/auth/limiter.ts',
+                locator: 'src/auth/limiter.ts:1',
+                accessible: true,
+              },
+            ],
+          ),
+          decision(
+            2,
+            wm + 150,
+            'Did not add a dependency for the sliding window',
+            'A third-party rate-limit package would need a security review; the window fits in 40 lines against the existing Redis client.',
+            'MEDIUM',
+            'DENIED',
+            [
+              {
+                kind: 'url',
+                label: 'Dependency policy — new runtime packages need review',
+                href: 'https://wiki.acme.example/policies/dependencies',
+                accessible: true,
+              },
+            ],
+            { policyRef: 'POL-DEP-01' },
+          ),
+        ],
       ),
       run(
         `${w}-r5`,
@@ -474,6 +568,70 @@ export function buildShowcase(base: Date, wait: SeedWorkflow, fail: SeedWorkflow
         [
           ev(wm + 10, 'note', 'No blocking findings; 1 suggestion on error copy'),
           ev(wm + 0, 'decision', 'Opening a pull request needs human approval (policy)'),
+        ],
+        [
+          step('Review the diff', 'completed'),
+          step('Check test evidence', 'completed'),
+          step('Wait for approval to open the PR', 'running'),
+          step('Open the pull request', 'pending'),
+        ],
+        [
+          decision(
+            1,
+            wm + 15,
+            'Accepted the limiter diff without requesting changes',
+            'All four suites pass and the clock-skew fix has a regression test; the one suggestion (error copy) is not blocking.',
+            'HIGH',
+            'ALLOWED',
+            [
+              {
+                kind: 'artifact',
+                label: 'Test results — all suites',
+                href: `/workflows/${w}#artifact-${w}-tests`,
+                locator: `${w}-tests`,
+                accessible: true,
+              },
+              {
+                kind: 'ticket',
+                label: 'PAY-231 — rate limiting for /api/auth',
+                href: 'https://jira.acme.example/browse/PAY-231',
+                accessible: true,
+              },
+            ],
+          ),
+          decision(
+            2,
+            wm + 8,
+            'Skipped the optional load test',
+            'The limiter is bounded per user and the gateway already enforces a global ceiling; the load-test harness is in a restricted repository.',
+            'LOW',
+            'ALLOWED',
+            [
+              {
+                kind: 'file',
+                label: 'perf/auth-load.k6.js (restricted repository)',
+                locator: 'platform-perf/perf/auth-load.k6.js',
+                accessible: false,
+              },
+            ],
+          ),
+          decision(
+            3,
+            wm + 0,
+            'Requested human approval before opening the pull request',
+            'Policy requires an approver for changes to authentication endpoints; the PR is prepared and opens once approved.',
+            'HIGH',
+            'APPROVAL_REQUIRED',
+            [
+              {
+                kind: 'url',
+                label: 'Policy — changes to auth endpoints need approval',
+                href: 'https://wiki.acme.example/policies/auth-changes',
+                accessible: true,
+              },
+            ],
+            { policyRef: 'POL-AUTH-03', riskLevel: 'MEDIUM' },
+          ),
         ],
       ),
       run(
@@ -668,6 +826,15 @@ export const EXPECTED_SHOWCASE = {
   testRuns: 5,
 } as const;
 
+/** specs/001 US5 (data-model.md §37): decisions and steps ride existing showcase runs — no new workflows or runs. */
+export const EXPECTED_AGENT_DECISIONS = {
+  runs: 2,
+  decisions: 5,
+  runsWithSteps: 2,
+  active: { externalId: DECISION_SHOWCASE.agentRun, decisions: 3 },
+  completed: { externalId: 's500-001-r4', decisions: 2 },
+} as const;
+
 export function buildS500(base: Date): {
   users: SeedUser[];
   workflows: SeedWorkflow[];
@@ -842,6 +1009,7 @@ export function buildS500(base: Date): {
           pullRequest: `https://github.com/acme/${w.project}/pull/388`,
           externalTicket: 'https://jira.acme.example/browse/PAY-1207',
           workflow: `/workflows/${w.externalId}`,
+          agentRun: `/agents/runs/${DECISION_SHOWCASE.agentRun}`,
         },
       };
     }

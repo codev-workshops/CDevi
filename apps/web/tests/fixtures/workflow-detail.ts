@@ -25,9 +25,25 @@ const stage = (position: number, state: WorkflowState, current = false): Stage =
     errorSummary: state === 'FAILED' ? 'Unit tests failed: 3 of 120' : null,
     requiresApproval: position === 6,
     current,
+    agentRuns: [],
   };
 };
 const ref = (s: Stage) => ({ id: s.id, position: s.position, name: s.name });
+
+/** specs/001 US5 drill-down: two runs on the retried Test stage (newest first) and one on the current stage. */
+export function detailWithRuns(): WorkflowDetail {
+  const d = detail();
+  const test = d.stages[4]!;
+  const cur = d.stages[5]!;
+  test.agentRuns = [
+    { id: uuid(), agent: 'Test Agent', state: 'COMPLETED', stagePosition: test.position },
+    { id: uuid(), agent: 'Test Agent', state: 'FAILED', stagePosition: test.position },
+  ];
+  cur.agentRuns = [
+    { id: uuid(), agent: 'Approve Agent', state: 'WAITING_FOR_HUMAN', stagePosition: cur.position },
+  ];
+  return d;
+}
 
 export function detail(over: Partial<WorkflowDetail> = {}): WorkflowDetail {
   const stages = [
@@ -117,6 +133,7 @@ export function detail(over: Partial<WorkflowDetail> = {}): WorkflowDetail {
     artifacts: [
       {
         id: uuid(),
+        externalId: 's500-001-art1',
         type: 'requirement_spec',
         title: 'Requirement spec',
         href: 'https://example.test/spec',
@@ -126,6 +143,7 @@ export function detail(over: Partial<WorkflowDetail> = {}): WorkflowDetail {
       },
       {
         id: uuid(),
+        externalId: 's500-001-art2',
         type: 'impact_analysis',
         title: 'Impact analysis',
         href: null,
@@ -135,6 +153,7 @@ export function detail(over: Partial<WorkflowDetail> = {}): WorkflowDetail {
       },
       {
         id: uuid(),
+        externalId: 's500-001-art3',
         type: 'implementation_plan',
         title: 'Implementation plan',
         href: null,
@@ -144,6 +163,7 @@ export function detail(over: Partial<WorkflowDetail> = {}): WorkflowDetail {
       },
       {
         id: uuid(),
+        externalId: 's500-001-art4',
         type: 'code_diff',
         title: 'Code diff',
         href: 'https://example.test/diff',
@@ -153,6 +173,7 @@ export function detail(over: Partial<WorkflowDetail> = {}): WorkflowDetail {
       },
       {
         id: uuid(),
+        externalId: 's500-001-art5',
         type: 'test_results',
         title: 'Test results',
         href: 'https://example.test/tests',
@@ -162,6 +183,7 @@ export function detail(over: Partial<WorkflowDetail> = {}): WorkflowDetail {
       },
       {
         id: uuid(),
+        externalId: 's500-001-art6',
         type: 'pull_request',
         title: 'PR #412',
         href: 'https://example.test/pr/412',

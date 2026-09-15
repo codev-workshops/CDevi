@@ -2,7 +2,7 @@ import AxeBuilder from '@axe-core/playwright';
 import { createPool } from '@cdevi/db';
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import { E2E } from '../../playwright.config';
-import { API, me, signIn, uniq } from './helpers';
+import { API, me, measureLcp, signIn, uniq } from './helpers';
 
 // Dashboard Independent Test (specs/001 US3, quickstart §4.2): administrator, project "Dashboard Demo", window 7d.
 // The seed is deterministic (seed/dashboard.ts); the API clock is pinned to E2E.base so windows are stable.
@@ -412,22 +412,7 @@ test.describe('Dashboard — Independent Test (specs/001 US3)', () => {
       await page.goto('about:blank');
       await page.goto(url, { waitUntil: 'load' });
       await expect(figure(page, '18 active workflows')).toBeVisible();
-      const ms = await page.evaluate(
-        () =>
-          new Promise<number>((resolve) => {
-            let value = 0;
-            const po = new PerformanceObserver((list) => {
-              for (const e of list.getEntries()) value = e.startTime;
-            });
-            po.observe({ type: 'largest-contentful-paint', buffered: true });
-            setTimeout(() => {
-              po.disconnect();
-              const nav = performance.getEntriesByType('navigation')[0] as
-                PerformanceNavigationTiming | undefined;
-              resolve(Math.max(value, nav?.responseEnd ?? 0));
-            }, 300);
-          }),
-      );
+      const ms = await measureLcp(page);
       samples.push(ms);
     }
     samples.sort((a, b) => a - b);
