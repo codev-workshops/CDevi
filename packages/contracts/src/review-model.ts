@@ -32,6 +32,16 @@ export type LaneStatus = (typeof LANE_STATUSES)[number];
 const LANE_STATUS_WORDS: Record<LaneStatus, string> = { PASS: 'Pass', WARN: 'Warn', FAIL: 'Fail' };
 export const laneStatusWord = (status: LaneStatus): string => LANE_STATUS_WORDS[status];
 
+export const PULL_REQUEST_STATUSES = ['OPEN', 'MERGED', 'CLOSED'] as const;
+export type PullRequestStatus = (typeof PULL_REQUEST_STATUSES)[number];
+const PULL_REQUEST_STATUS_WORDS: Record<PullRequestStatus, string> = {
+  OPEN: 'open',
+  MERGED: 'merged',
+  CLOSED: 'closed',
+};
+export const pullRequestStatusWord = (status: PullRequestStatus): string =>
+  PULL_REQUEST_STATUS_WORDS[status];
+
 export const REVIEW_STATUSES = ['RUNNING', 'COMPLETE', 'FAILED'] as const;
 export type ReviewStatus = (typeof REVIEW_STATUSES)[number];
 const REVIEW_STATUS_WORDS: Record<ReviewStatus, string> = {

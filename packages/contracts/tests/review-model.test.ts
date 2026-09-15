@@ -27,6 +27,8 @@ import {
   reviewHref,
   REVIEWS_PAGE_SIZE,
   reviewStatusWord,
+  PULL_REQUEST_STATUSES,
+  pullRequestStatusWord,
   severityPill,
   toDesignBlocking,
   type FindingLike,
@@ -70,6 +72,8 @@ describe('US6 review model (specs/001 US6, FR-020/FR-021/FR-022)', () => {
     expect(FINDING_BLOCKING_CLASSES).toEqual(['BLOCKING', 'NON_BLOCKING', 'SUGGESTION']);
     expect(FINDING_STATES).toEqual(['OPEN', 'FIX_REQUESTED', 'FIXED', 'DISMISSED', 'ISSUE_REQUESTED']);
     expect(REVIEW_CYCLE_STATES).toEqual(['RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED']);
+    expect(PULL_REQUEST_STATUSES).toEqual(['OPEN', 'MERGED', 'CLOSED']);
+    expect(PULL_REQUEST_STATUSES.map(pullRequestStatusWord)).toEqual(['open', 'merged', 'closed']);
     expect(laneStatusWord('PASS')).toBe('Pass');
     expect(laneStatusWord('WARN')).toBe('Warn');
     expect(laneStatusWord('FAIL')).toBe('Fail');
