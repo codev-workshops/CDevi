@@ -572,6 +572,7 @@ export const pullRequests = pgTable(
     projectId: uuid('project_id').notNull(),
     workflowId: uuid('workflow_id').notNull(),
     requirementId: uuid('requirement_id'),
+    reviewStageId: uuid('review_stage_id'),
     externalId: text('external_id').notNull(),
     number: integer('number').notNull(),
     title: text('title').notNull(),
@@ -626,6 +627,9 @@ export const reviewCycles = pgTable(
       t.cycleNumber,
     ),
     index('review_cycles_pr_idx').on(t.pullRequestId, t.cycleNumber),
+    uniqueIndex('review_cycles_one_running_idx')
+      .on(t.pullRequestId)
+      .where(sql`${t.state} = 'RUNNING'`),
   ],
 );
 export type ReviewCycleRow = typeof reviewCycles.$inferSelect;
@@ -696,10 +700,7 @@ export const reviewFindings = pgTable(
   },
   (t) => [
     uniqueIndex('review_findings_review_id_position_key').on(t.reviewId, t.position),
-    uniqueIndex('review_findings_organization_id_external_id_key').on(
-      t.organizationId,
-      t.externalId,
-    ),
+    uniqueIndex('review_findings_review_id_external_id_key').on(t.reviewId, t.externalId),
     index('review_findings_review_idx').on(t.reviewId, t.position),
     index('review_findings_pr_idx').on(t.pullRequestId, t.position),
     index('review_findings_blocking_open_idx')

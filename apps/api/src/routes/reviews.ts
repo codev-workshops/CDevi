@@ -1,8 +1,14 @@
 import {
+  ApplyFixBody,
+  CreateIssueBody,
+  DismissFindingBody,
   FindingActionParams,
   PullRequestExternalIdParams,
   PullRequestIdParams,
+  PullRequestIngest,
+  ReviewCycleIngest,
   ReviewCycleParams,
+  ReviewIngest,
   ReviewListQuery,
 } from '@cdevi/contracts';
 import type { FastifyInstance } from 'fastify';
@@ -38,29 +44,43 @@ export default async function reviewRoutes(app: FastifyInstance) {
     { schema: { tags: ['reviews'], params: PullRequestIdParams }, preHandler: app.requireUser },
     pending,
   );
-  for (const action of ['dismiss', 'fix', 'issue'] as const) {
+  const actions = [
+    ['dismiss', DismissFindingBody],
+    ['fix', ApplyFixBody],
+    ['issue', CreateIssueBody],
+  ] as const;
+  for (const [action, body] of actions) {
     api.post(
       `/reviews/:pullRequestId/findings/:findingId/${action}`,
-      { schema: { tags: ['reviews'], params: FindingActionParams }, preHandler: app.requireUser },
+      {
+        schema: { tags: ['reviews'], params: FindingActionParams, body },
+        preHandler: app.requireUser,
+      },
       pending,
     );
   }
   api.put(
     '/ingest/pull-requests/:externalId',
     {
-      schema: { tags: ['ingest'], params: PullRequestExternalIdParams },
+      schema: { tags: ['ingest'], params: PullRequestExternalIdParams, body: PullRequestIngest },
       preHandler: app.requirePrincipal,
     },
     pending,
   );
   api.put(
     '/ingest/pull-requests/:externalId/reviews/:cycle',
-    { schema: { tags: ['ingest'], params: ReviewCycleParams }, preHandler: app.requirePrincipal },
+    {
+      schema: { tags: ['ingest'], params: ReviewCycleParams, body: ReviewIngest },
+      preHandler: app.requirePrincipal,
+    },
     pending,
   );
   api.put(
     '/ingest/pull-requests/:externalId/cycles/:cycle',
-    { schema: { tags: ['ingest'], params: ReviewCycleParams }, preHandler: app.requirePrincipal },
+    {
+      schema: { tags: ['ingest'], params: ReviewCycleParams, body: ReviewCycleIngest },
+      preHandler: app.requirePrincipal,
+    },
     pending,
   );
 }

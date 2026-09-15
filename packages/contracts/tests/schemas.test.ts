@@ -1142,7 +1142,8 @@ describe('US6 review schemas (specs/001 US6, FR-020–FR-022, FR-036)', () => {
     severity: 'CRITICAL',
     blocking: 'BLOCKING',
     title: 'Refund endpoint does not verify authorization against the original payment owner',
-    description: 'The refund handler loads the payment by id and never compares its owner to the caller.',
+    description:
+      'The refund handler loads the payment by id and never compares its owner to the caller.',
     impact: "A user may potentially refund another user's payment.",
     evidence: [evidence()],
     recommendedFix: 'Validate payment ownership before processing.',
@@ -1372,10 +1373,16 @@ describe('US6 review schemas (specs/001 US6, FR-020–FR-022, FR-036)', () => {
     expect(ReviewListItem.safeParse(item).success).toBe(true);
     expect(ReviewListItem.safeParse({ ...item, reviewStatus: null }).success).toBe(true);
     expect(ReviewListResponse.safeParse({ items: [item], nextCursor: null }).success).toBe(true);
-    expect(ReviewListResponse.safeParse({ items: many(50, () => item), nextCursor: 'abc' }).success).toBe(true);
-    expect(ReviewListResponse.safeParse({ items: many(51, () => item), nextCursor: null }).success).toBe(false);
+    expect(
+      ReviewListResponse.safeParse({ items: many(50, () => item), nextCursor: 'abc' }).success,
+    ).toBe(true);
+    expect(
+      ReviewListResponse.safeParse({ items: many(51, () => item), nextCursor: null }).success,
+    ).toBe(false);
     expect(ReviewListQuery.parse({})).toEqual({ project: 'all' });
-    expect(ReviewListQuery.safeParse({ project: `${U}7`, state: 'OPEN', cursor: 'abc' }).success).toBe(true);
+    expect(
+      ReviewListQuery.safeParse({ project: `${U}7`, state: 'OPEN', cursor: 'abc' }).success,
+    ).toBe(true);
     expect(ReviewListQuery.safeParse({ project: 'payments-api' }).success).toBe(false);
     expect(ReviewListQuery.safeParse({ state: 'DRAFT' }).success).toBe(false);
     expect(ReviewListQuery.safeParse({ cursor: 'x'.repeat(201) }).success).toBe(false);
@@ -1384,9 +1391,17 @@ describe('US6 review schemas (specs/001 US6, FR-020–FR-022, FR-036)', () => {
   it('FR-021 FR-032 params and action bodies: PullRequestIdParams / FindingActionParams are uuids, DismissFindingBody requires reason ≤ 240 (241 → fail) and every body is strict (unknown key → fail)', () => {
     expect(PullRequestIdParams.safeParse({ pullRequestId: `${U}3` }).success).toBe(true);
     expect(PullRequestIdParams.safeParse({ pullRequestId: 'pr-1821' }).success).toBe(false);
-    expect(FindingActionParams.safeParse({ pullRequestId: `${U}3`, findingId: `${U}1` }).success).toBe(true);
-    expect(FindingActionParams.safeParse({ pullRequestId: `${U}3`, findingId: 'find-1821-2' }).success).toBe(false);
-    expect(DismissFindingBody.safeParse({ reason: 'False positive: ownership is checked by the gateway.' }).success).toBe(true);
+    expect(
+      FindingActionParams.safeParse({ pullRequestId: `${U}3`, findingId: `${U}1` }).success,
+    ).toBe(true);
+    expect(
+      FindingActionParams.safeParse({ pullRequestId: `${U}3`, findingId: 'find-1821-2' }).success,
+    ).toBe(false);
+    expect(
+      DismissFindingBody.safeParse({
+        reason: 'False positive: ownership is checked by the gateway.',
+      }).success,
+    ).toBe(true);
     expect(DismissFindingBody.safeParse({ reason: 'x'.repeat(240) }).success).toBe(true);
     expect(DismissFindingBody.safeParse({ reason: 'x'.repeat(241) }).success).toBe(false);
     expect(DismissFindingBody.safeParse({ reason: '   ' }).success).toBe(false);
@@ -1397,15 +1412,35 @@ describe('US6 review schemas (specs/001 US6, FR-020–FR-022, FR-036)', () => {
     expect(CreateIssueBody.safeParse({}).success).toBe(true);
     expect(CreateIssueBody.safeParse({ project: 'PAY' }).success).toBe(false);
     expect(
-      FindingActionResult.safeParse({ finding: findingView({ state: 'DISMISSED', dismissedReason: 'dup', dismissedBy: { id: `${U}9`, displayName: 'E' }, dismissedAt: T }), readyForMerge: true, blockingOpenCount: 0 }).success,
+      FindingActionResult.safeParse({
+        finding: findingView({
+          state: 'DISMISSED',
+          dismissedReason: 'dup',
+          dismissedBy: { id: `${U}9`, displayName: 'E' },
+          dismissedAt: T,
+        }),
+        readyForMerge: true,
+        blockingOpenCount: 0,
+      }).success,
     ).toBe(true);
     expect(
-      FindingActionResult.safeParse({ finding: findingView({ state: 'FIX_REQUESTED', fixCycleId: `${U}2` }), cycle: cycleView({ state: 'RUNNING', finishedAt: null, fixedCount: 0, remainingCount: 1, findingsCount: 1 }), readyForMerge: false, blockingOpenCount: 1 }).success,
+      FindingActionResult.safeParse({
+        finding: findingView({ state: 'FIX_REQUESTED', fixCycleId: `${U}2` }),
+        cycle: cycleView({
+          state: 'RUNNING',
+          finishedAt: null,
+          fixedCount: 0,
+          remainingCount: 1,
+          findingsCount: 1,
+        }),
+        readyForMerge: false,
+        blockingOpenCount: 1,
+      }).success,
     ).toBe(true);
     expect(FindingActionResult.safeParse({ finding: findingView() }).success).toBe(false);
   });
 
-  it('FR-036 PullRequestIngest: number, title ≤ 200, href http(s), status, requirementExternalId?, workflowExternalId, observedAt; strict', () => {
+  it('FR-036 PullRequestIngest: number, title ≤ 200, href http(s), status, requirementExternalId?, workflowExternalId, reviewStagePosition? (1–20), observedAt; strict', () => {
     const body = {
       number: 1821,
       title: 'PAY-1391 Refund processing',
@@ -1415,11 +1450,25 @@ describe('US6 review schemas (specs/001 US6, FR-020–FR-022, FR-036)', () => {
       observedAt: T,
     };
     expect(PullRequestIngest.safeParse(body).success).toBe(true);
-    expect(PullRequestIngest.safeParse({ ...body, requirementExternalId: 'req-seed-006' }).success).toBe(true);
+    expect(
+      PullRequestIngest.safeParse({ ...body, requirementExternalId: 'req-seed-006' }).success,
+    ).toBe(true);
+    expect(PullRequestIngest.safeParse({ ...body, requirementExternalId: null }).success).toBe(
+      true,
+    );
+    expect(PullRequestIngest.safeParse({ ...body, reviewStagePosition: 6 }).success).toBe(true);
+    expect(PullRequestIngest.safeParse({ ...body, reviewStagePosition: null }).success).toBe(true);
+    expect(PullRequestIngest.safeParse({ ...body, reviewStagePosition: 0 }).success).toBe(false);
+    expect(PullRequestIngest.safeParse({ ...body, reviewStagePosition: 21 }).success).toBe(false);
+    expect(PullRequestIngest.safeParse({ ...body, reviewStagePosition: 'Review' }).success).toBe(
+      false,
+    );
     expect(PullRequestIngest.safeParse({ ...body, number: 0 }).success).toBe(false);
     expect(PullRequestIngest.safeParse({ ...body, number: 1.5 }).success).toBe(false);
     expect(PullRequestIngest.safeParse({ ...body, title: 'x'.repeat(201) }).success).toBe(false);
-    expect(PullRequestIngest.safeParse({ ...body, href: 'javascript:alert(1)' }).success).toBe(false);
+    expect(PullRequestIngest.safeParse({ ...body, href: 'javascript:alert(1)' }).success).toBe(
+      false,
+    );
     expect(PullRequestIngest.safeParse({ ...body, status: 'DRAFT' }).success).toBe(false);
     const { workflowExternalId: _w, ...noWorkflow } = body;
     expect(PullRequestIngest.safeParse(noWorkflow).success).toBe(false);
@@ -1428,13 +1477,19 @@ describe('US6 review schemas (specs/001 US6, FR-020–FR-022, FR-036)', () => {
     expect(PullRequestIngest.safeParse({ ...body, reasoning: 'x' }).success).toBe(false);
     expect(PullRequestExternalIdParams.safeParse({ externalId: 'pr-1821' }).success).toBe(true);
     expect(PullRequestExternalIdParams.safeParse({ externalId: 'has space' }).success).toBe(false);
-    expect(ReviewCycleParams.parse({ externalId: 'pr-1821', cycle: '3' })).toEqual({ externalId: 'pr-1821', cycle: 3 });
+    expect(ReviewCycleParams.parse({ externalId: 'pr-1821', cycle: '3' })).toEqual({
+      externalId: 'pr-1821',
+      cycle: 3,
+    });
     expect(ReviewCycleParams.safeParse({ externalId: 'pr-1821', cycle: '0' }).success).toBe(false);
-    expect(ReviewCycleParams.safeParse({ externalId: 'pr-1821', cycle: 'three' }).success).toBe(false);
+    expect(ReviewCycleParams.safeParse({ externalId: 'pr-1821', cycle: 'three' }).success).toBe(
+      false,
+    );
   });
 
-  it('FR-020 FR-036 ReviewIngest: status, exactly seven distinct lanes (6 → fail), findings ≤ 50 (51 → fail) with unique positions and externalIds, evidence ≤ 10, optional state, startedAt, finishedAt?, agentRunExternalId?, observedAt', () => {
+  it('FR-020 FR-036 ReviewIngest: externalId, status, exactly seven distinct lanes (6 → fail), findings ≤ 50 (51 → fail) with unique positions and externalIds, evidence ≤ 10, runtime status open|fixed only (human states rejected), startedAt, finishedAt?, agentRunExternalId?, observedAt', () => {
     const body = (over: Record<string, unknown> = {}) => ({
+      externalId: 'rev-1821-3',
       status: 'COMPLETE',
       lanes: lanes({ security: 'FAIL', correctness: 'WARN' }),
       findings: [findingIngest()],
@@ -1444,26 +1499,55 @@ describe('US6 review schemas (specs/001 US6, FR-020–FR-022, FR-036)', () => {
       ...over,
     });
     expect(ReviewIngest.safeParse(body()).success).toBe(true);
-    expect(ReviewIngest.safeParse(body({ findings: [], finishedAt: undefined, status: 'RUNNING' })).success).toBe(true);
+    expect(
+      ReviewIngest.safeParse(body({ findings: [], finishedAt: undefined, status: 'RUNNING' }))
+        .success,
+    ).toBe(true);
     expect(ReviewIngest.safeParse(body({ agentRunExternalId: 's500-001-r6' })).success).toBe(true);
     expect(ReviewIngest.safeParse(body({ lanes: lanes().slice(0, 6) })).success).toBe(false);
     expect(
-      ReviewIngest.safeParse(body({ findings: many(50, (i) => findingIngest({ position: i + 1, externalId: `f-${i}` })) })).success,
+      ReviewIngest.safeParse(
+        body({
+          findings: many(50, (i) => findingIngest({ position: i + 1, externalId: `f-${i}` })),
+        }),
+      ).success,
     ).toBe(true);
     expect(
-      ReviewIngest.safeParse(body({ findings: many(51, (i) => findingIngest({ position: i + 1, externalId: `f-${i}` })) })).success,
+      ReviewIngest.safeParse(
+        body({
+          findings: many(51, (i) => findingIngest({ position: i + 1, externalId: `f-${i}` })),
+        }),
+      ).success,
     ).toBe(false);
     expect(
-      ReviewIngest.safeParse(body({ findings: [findingIngest({ position: 1, externalId: 'a' }), findingIngest({ position: 1, externalId: 'b' })] })).success,
+      ReviewIngest.safeParse(
+        body({
+          findings: [
+            findingIngest({ position: 1, externalId: 'a' }),
+            findingIngest({ position: 1, externalId: 'b' }),
+          ],
+        }),
+      ).success,
     ).toBe(false);
     expect(
-      ReviewIngest.safeParse(body({ findings: [findingIngest({ position: 1 }), findingIngest({ position: 2 })] })).success,
+      ReviewIngest.safeParse(
+        body({ findings: [findingIngest({ position: 1 }), findingIngest({ position: 2 })] }),
+      ).success,
     ).toBe(false);
-    expect(ReviewFindingIngest.safeParse(findingIngest({ evidence: many(11, () => evidence()) })).success).toBe(false);
+    expect(
+      ReviewFindingIngest.safeParse(findingIngest({ evidence: many(11, () => evidence()) }))
+        .success,
+    ).toBe(false);
     expect(ReviewFindingIngest.safeParse(findingIngest({ evidence: [] })).success).toBe(true);
-    expect(ReviewFindingIngest.safeParse(findingIngest({ state: 'FIXED' })).success).toBe(true);
-    expect(ReviewFindingIngest.safeParse(findingIngest({ state: 'DISMISSED' })).success).toBe(true);
+    expect(ReviewFindingIngest.parse(findingIngest()).status).toBe('open');
+    expect(ReviewFindingIngest.safeParse(findingIngest({ status: 'fixed' })).success).toBe(true);
+    for (const human of ['FIXED', 'OPEN', 'DISMISSED', 'FIX_REQUESTED', 'ISSUE_REQUESTED']) {
+      expect(ReviewFindingIngest.safeParse(findingIngest({ status: human })).success).toBe(false);
+      expect(ReviewFindingIngest.safeParse(findingIngest({ state: human })).success).toBe(false);
+    }
     expect(ReviewFindingIngest.safeParse(findingIngest({ id: `${U}1` })).success).toBe(false);
+    const { externalId: _e, ...noExternal } = body();
+    expect(ReviewIngest.safeParse(noExternal).success).toBe(false);
     const { startedAt: _s, ...noStarted } = body();
     expect(ReviewIngest.safeParse(noStarted).success).toBe(false);
     const { observedAt: _o, ...noObserved } = body();
@@ -1472,6 +1556,7 @@ describe('US6 review schemas (specs/001 US6, FR-020–FR-022, FR-036)', () => {
 
   it('FR-018 SC-009 ReviewIngest is strict at every level: reasoning, chainOfThought, rationale, thoughts or any unknown key on the review, a lane, a finding or an evidence item → parse failure', () => {
     const ok = {
+      externalId: 'rev-1821-3',
       status: 'COMPLETE',
       lanes: lanes(),
       findings: [findingIngest()],
@@ -1480,14 +1565,26 @@ describe('US6 review schemas (specs/001 US6, FR-020–FR-022, FR-036)', () => {
     };
     expect(ReviewIngest.safeParse(ok).success).toBe(true);
     for (const key of ['reasoning', 'chainOfThought', 'rationale', 'thoughts', 'scratchpad']) {
-      expect(ReviewIngest.safeParse({ ...ok, [key]: 'Let me think step by step…' }).success, `review.${key}`).toBe(false);
       expect(
-        ReviewIngest.safeParse({ ...ok, lanes: [{ ...ok.lanes[0], [key]: 'x' }, ...ok.lanes.slice(1)] }).success,
+        ReviewIngest.safeParse({ ...ok, [key]: 'Let me think step by step…' }).success,
+        `review.${key}`,
+      ).toBe(false);
+      expect(
+        ReviewIngest.safeParse({
+          ...ok,
+          lanes: [{ ...ok.lanes[0], [key]: 'x' }, ...ok.lanes.slice(1)],
+        }).success,
         `lane.${key}`,
       ).toBe(false);
-      expect(ReviewIngest.safeParse({ ...ok, findings: [findingIngest({ [key]: 'x' })] }).success, `finding.${key}`).toBe(false);
       expect(
-        ReviewIngest.safeParse({ ...ok, findings: [findingIngest({ evidence: [{ ...evidence(), [key]: 'x' }] })] }).success,
+        ReviewIngest.safeParse({ ...ok, findings: [findingIngest({ [key]: 'x' })] }).success,
+        `finding.${key}`,
+      ).toBe(false);
+      expect(
+        ReviewIngest.safeParse({
+          ...ok,
+          findings: [findingIngest({ evidence: [{ ...evidence(), [key]: 'x' }] })],
+        }).success,
         `evidence.${key}`,
       ).toBe(false);
     }
@@ -1505,7 +1602,9 @@ describe('US6 review schemas (specs/001 US6, FR-020–FR-022, FR-036)', () => {
       observedAt: T,
     };
     expect(ReviewCycleIngest.safeParse(body).success).toBe(true);
-    expect(ReviewCycleIngest.safeParse({ ...body, maxIterations: 5, agentRunExternalId: 'r-9' }).success).toBe(true);
+    expect(
+      ReviewCycleIngest.safeParse({ ...body, maxIterations: 5, agentRunExternalId: 'r-9' }).success,
+    ).toBe(true);
     expect(ReviewCycleIngest.safeParse({ ...body, fixedCount: 7 }).success).toBe(false);
     expect(ReviewCycleIngest.safeParse({ ...body, remainingCount: -1 }).success).toBe(false);
     expect(ReviewCycleIngest.safeParse({ ...body, iteration: 0 }).success).toBe(false);
@@ -1533,7 +1632,9 @@ describe('US6 review schemas (specs/001 US6, FR-020–FR-022, FR-036)', () => {
     expect(WorkflowPullRequestView.safeParse(pr).success).toBe(true);
     expect(WorkflowPullRequestView.safeParse({ ...pr, reviewStatus: null }).success).toBe(true);
     expect(WorkflowPullRequestView.safeParse({ ...pr, blockingOpenCount: -1 }).success).toBe(false);
-    expect(WorkflowPullRequestView.safeParse({ ...pr, reviewHref: '//evil.example' }).success).toBe(false);
+    expect(WorkflowPullRequestView.safeParse({ ...pr, reviewHref: '//evil.example' }).success).toBe(
+      false,
+    );
     const shape = WorkflowDetail.shape;
     expect(shape.pullRequest.safeParse(undefined).success).toBe(true);
     expect(shape.pullRequest.parse(undefined)).toBeNull();
