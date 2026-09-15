@@ -188,6 +188,32 @@ describe.skipIf(skipDb)(
       expect(again.json()).toMatchObject({ state: 'FIX_REQUESTED', fixCycleId: body.cycle!.id });
     });
 
+    it('FR-021 fix locks the workflow row before the pull request row — the same order as the ingest routes, so no deadlock', async () => {
+      const fx = await reviewFixture(app);
+      const id = await findingId(engineer, fx, 0);
+      const other = await pool.connect();
+      try {
+        await other.query('BEGIN');
+        await other.query(`SELECT id FROM workflows WHERE id = $1 FOR UPDATE`, [fx.workflowId]);
+        const fix = act(engineer, fx, id, 'fix');
+        await new Promise((r) => setTimeout(r, 300));
+        // Parked on the workflow row, holding nothing: the ingest order (workflow → PR) can still proceed.
+        const pr = await other.query(
+          `SELECT id FROM pull_requests WHERE id = $1 FOR UPDATE NOWAIT`,
+          [fx.pullRequestId],
+        );
+        expect(pr.rowCount).toBe(1);
+        await other.query('COMMIT');
+        const r = await fix;
+        expect(r.statusCode, r.body).toBe(200);
+        expect((r.json() as FindingActionResult).finding.state).toBe('FIX_REQUESTED');
+        expect(await reviewStage(fx.workflowId)).toBe('RUNNING');
+      } finally {
+        await other.query('ROLLBACK').catch(() => undefined);
+        other.release();
+      }
+    });
+
     it('FR-021 second fix on the same PR attaches to the running cycle', async () => {
       const fx = await reviewFixture(app);
       const first = await act(engineer, fx, await findingId(engineer, fx, 0), 'fix');

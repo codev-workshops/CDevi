@@ -795,17 +795,17 @@ export function buildWorkflowDetailOpenApi(): Json {
       },
       '/ingest/pull-requests/{externalId}/reviews/{cycle}': cycleIngest(
         'Runtime replaces the AI review of a cycle as a whole (FR-020, FR-018, FR-036)',
-        'Bearer ingestion principal scoped to the pull request project. Exactly seven distinct lane results and ≤ 50 findings (positions and externalIds unique, ≤ 10 typed evidence refs each). The body is strict: description / impact / recommendedFix are bounded summaries and any reasoning field (chainOfThought, reasoning, rationale, …) is a 400. Findings already DISMISSED, FIX_REQUESTED or ISSUE_REQUESTED by a human keep their state; the runtime flips findings to FIXED here. `stale` when observedAt is not newer than the stored watermark.',
+        'Bearer ingestion principal scoped to the pull request project. Exactly seven distinct lane results and ≤ 50 findings (positions and externalIds unique, ≤ 10 typed evidence refs each). The body is strict: description / impact / recommendedFix are bounded summaries and any reasoning field (chainOfThought, reasoning, rationale, …) is a 400. Findings are reconciled by externalId: a finding still present keeps its server id (and so its audit trail and action URLs) and is updated in place, one absent from the snapshot is removed, new ones are added. Findings already DISMISSED, FIX_REQUESTED or ISSUE_REQUESTED by a human keep their state; the runtime flips findings to FIXED here. `stale` when observedAt is not newer than the stored watermark.',
         'ReviewIngest',
         'Invalid body (unknown key, bound exceeded, lane missing or duplicated)',
         'Review is not accepting a replacement (concurrent replacement in progress)',
       ),
       '/ingest/pull-requests/{externalId}/cycles/{cycle}': cycleIngest(
         'Runtime reports the progress of a fix cycle (AS-4, FR-036)',
-        'Bearer ingestion principal scoped to the pull request project. Upserts the cycle counts, iteration and state (RUNNING → COMPLETED | FAILED | CANCELLED); fixedCount + remainingCount ≤ findingsCount. Strict body. `stale` when observedAt is not newer than the stored watermark. 409 when the cycle is already terminal.',
+        'Bearer ingestion principal scoped to the pull request project. Upserts the cycle counts, iteration and state (RUNNING → COMPLETED | FAILED | CANCELLED); fixedCount + remainingCount ≤ findingsCount. Strict body. `stale` when observedAt is not newer than the stored watermark. 409 when the cycle is already terminal, when another cycle is still RUNNING, or when a new cycle is not the next number (cycle must equal the highest reported cycle + 1; the first cycle is 1).',
         'ReviewCycleIngest',
         'Invalid body (unknown key, inconsistent counts)',
-        'Cycle already COMPLETED, FAILED or CANCELLED',
+        'Cycle already COMPLETED, FAILED or CANCELLED; another cycle still RUNNING; new cycle is not the next number',
       ),
     },
     components: {

@@ -1,6 +1,7 @@
 /**
  * Drizzle schema mirroring migrations/0001_init.sql, 0002_workflow_detail.sql, 0003_approval_center.sql,
- * 0004_dashboard.sql (indexes only), 0005_requirements.sql, 0006_agent_decisions.sql and 0007_reviews.sql. The SQL files are the source of truth
+ * 0004_dashboard.sql (indexes only), 0005_requirements.sql, 0006_agent_decisions.sql, 0007_reviews.sql and
+ * 0008_review_findings_position_deferrable.sql (constraint attribute only). The SQL files are the source of truth
  * for triggers, partial indexes, RLS and grants, which Drizzle does not model; this file gives queries types.
  */
 import type {
@@ -666,8 +667,10 @@ export const reviews = pgTable(
 export type ReviewRow = typeof reviews.$inferSelect;
 
 /**
- * Findings of a review (0007; FR-020, FR-021). Replaced whole by the review ingest; human actions move `state`
- * OPEN → DISMISSED | FIX_REQUESTED | ISSUE_REQUESTED in place. Bounded summaries only (FR-018); evidence ≤ 10.
+ * Findings of a review (0007; FR-020, FR-021). Reconciled by (review_id, external_id) by the review ingest — matched
+ * rows keep their id, absent rows are deleted; UNIQUE (review_id, position) is DEFERRABLE since 0008 so positions
+ * can be reordered in place. Human actions move `state` OPEN → DISMISSED | FIX_REQUESTED | ISSUE_REQUESTED in place.
+ * Bounded summaries only (FR-018); evidence ≤ 10.
  */
 export const reviewFindings = pgTable(
   'review_findings',

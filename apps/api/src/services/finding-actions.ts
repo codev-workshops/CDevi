@@ -6,9 +6,11 @@
  * session user, target = the finding, details without free text beyond the dismissal reason); the 0007 triggers append
  * the inbox change for SSE.
  *
- * Lock order (same discipline as `replaceAgentDecisions`): resolve the pull request without locking, lock the
- * pull request row, then the finding row, then the RUNNING review cycle row. Apply Fix also updates the workflow's
- * Review stage through the 0001 state machine, which the per-row triggers of 0001/0002 notify on their own.
+ * Lock order (the one discipline shared with `review-ingestion.ts`, whose pull request and cycle routes lock the
+ * workflow first): resolve the pull request without locking, lock its workflow row, then the pull request row, then
+ * the finding row, then the RUNNING review cycle row. Apply Fix also updates the workflow's Review stage through
+ * the 0001 state machine (and the workflow's stage pointer), which the per-row triggers of 0001/0002 notify on
+ * their own — that write is why the workflow row comes first.
  */
 import {
   PROBLEM_TYPES,
@@ -109,6 +111,16 @@ export async function applyFindingAction(
   const notFound = () => problems.notFound("This finding isn't available to you.");
   if (projectIds.length === 0) throw notFound();
 
+  // A pull request never changes workflow, so the unlocked read is a stable key for the workflow lock.
+  const key = (
+    await client.query<{ id: string; workflow_id: string }>(
+      `SELECT id, workflow_id FROM pull_requests
+        WHERE organization_id = $1 AND id = $2 AND project_id = ANY($3::uuid[])`,
+      [user.organizationId, pullRequestId, projectIds],
+    )
+  ).rows[0];
+  if (!key) throw notFound();
+  await client.query(`SELECT id FROM workflows WHERE id = $1 FOR UPDATE`, [key.workflow_id]);
   const pr = (
     await client.query<PullRequestRow>(
       `SELECT id, project_id, workflow_id, review_stage_id FROM pull_requests
