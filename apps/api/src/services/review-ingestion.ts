@@ -5,8 +5,13 @@
  * triggers append exactly one `inbox_change_log` row per workflow per transaction — every route below touches at
  * least one review table row (the pull request, the review or the cycle) even when it replaces an empty finding set.
  *
- * Lock order (same as the finding actions): workflow row (pull request route only), pull request row, then the
- * review or cycle row; findings are replaced whole underneath the review lock.
+ * Lock order (one discipline for every writer that touches both rows — this file and the finding actions):
+ * workflow row first (`SELECT … FROM workflows … FOR UPDATE`), then the pull request row, then the review, cycle or
+ * finding rows. The pull request and cycle routes take the workflow lock (they write the workflow / its stages);
+ * the review route only writes review tables, so it takes the pull request lock alone — still a prefix-compatible
+ * order. Findings are reconciled by (review, external_id) underneath the review lock: matched rows are updated in
+ * place (the id survives — it is `audit_events.target_id` and the action routes' key), absent rows deleted, new
+ * rows inserted; UNIQUE (review_id, position) is deferred for the transaction (0008) so positions can be reordered.
  */
 import {
   canTransition,
@@ -113,16 +118,31 @@ export class ReviewIngestionService {
     );
   }
 
+  /**
+   * Resolves the pull request without locking, then locks the workflow row (when asked) before the pull request
+   * row. `workflow_id` never changes once a pull request exists (`upsertPullRequest` rejects a different workflow),
+   * so the unlocked read is a stable key for the workflow lock.
+   */
   private async lockPullRequest(
     client: pg.PoolClient,
     externalId: string,
+    opts: { workflowFirst: boolean },
   ): Promise<PullRequestRow> {
+    const key = (
+      await client.query<{ id: string; workflow_id: string }>(
+        `SELECT id, workflow_id FROM pull_requests WHERE organization_id = $1 AND external_id = $2`,
+        [this.principal.organizationId, externalId],
+      )
+    ).rows[0];
+    if (!key) throw problems.notFound(`Unknown pull request ${externalId}.`);
+    if (opts.workflowFirst)
+      await client.query(`SELECT id FROM workflows WHERE id = $1 FOR UPDATE`, [key.workflow_id]);
     const pr = (
       await client.query<PullRequestRow>(
         `SELECT pr.id, pr.project_id, pr.workflow_id, w.state AS workflow_state, pr.observed_at, pr.review_stage_id
            FROM pull_requests pr JOIN workflows w ON w.id = pr.workflow_id
-          WHERE pr.organization_id = $1 AND pr.external_id = $2 FOR UPDATE OF pr`,
-        [this.principal.organizationId, externalId],
+          WHERE pr.id = $1 FOR UPDATE OF pr`,
+        [key.id],
       )
     ).rows[0];
     if (!pr) throw problems.notFound(`Unknown pull request ${externalId}.`);
@@ -247,10 +267,11 @@ export class ReviewIngestionService {
   }
 
   /**
-   * `PUT /ingest/pull-requests/{externalId}/reviews/{cycle}` — upserts the review of that cycle and replaces its
-   * finding set whole (ids server-side). Human outcomes survive by externalId: DISMISSED and ISSUE_REQUESTED keep
-   * their state and metadata, FIX_REQUESTED keeps its cycle until the runtime reports FIXED. The cycles route owns
-   * `review_cycles`; nothing here touches them.
+   * `PUT /ingest/pull-requests/{externalId}/reviews/{cycle}` — upserts the review of that cycle and reconciles its
+   * finding set with the snapshot by externalId: matched rows are updated in place and keep their id, rows absent
+   * from the snapshot are deleted, the rest inserted (ids server-side). Human outcomes survive by externalId:
+   * DISMISSED and ISSUE_REQUESTED keep their state and metadata, FIX_REQUESTED keeps its cycle until the runtime
+   * reports FIXED. The cycles route owns `review_cycles`; nothing here touches them.
    */
   async replaceReview(
     externalId: string,
@@ -258,7 +279,7 @@ export class ReviewIngestionService {
     body: ReviewIngest,
   ): Promise<IngestResult> {
     return this.run(async (client) => {
-      const pr = await this.lockPullRequest(client, externalId);
+      const pr = await this.lockPullRequest(client, externalId, { workflowFirst: false });
       const existing = (
         await client.query<{ id: string; observed_at: Date }>(
           `SELECT id, observed_at FROM reviews WHERE pull_request_id = $1 AND cycle_number = $2 FOR UPDATE`,
@@ -326,42 +347,71 @@ export class ReviewIngestionService {
           )
         ).rows.map((f) => [f.external_id, f] as const),
       );
-      await client.query(`DELETE FROM review_findings WHERE review_id = $1`, [reviewId]);
+      const incoming = body.findings.map((f) => f.externalId);
+      const current = new Map(
+        (
+          await client.query<{ id: string; external_id: string }>(
+            `SELECT id, external_id FROM review_findings WHERE review_id = $1 FOR UPDATE`,
+            [reviewId],
+          )
+        ).rows.map((r) => [r.external_id, r.id] as const),
+      );
+      await client.query(
+        `DELETE FROM review_findings WHERE review_id = $1 AND external_id <> ALL($2::text[])`,
+        [reviewId, incoming],
+      );
+      await client.query(`SET CONSTRAINTS review_findings_review_id_position_key DEFERRED`);
       for (const f of body.findings) {
         const prev = preserved.get(f.externalId);
         const state = mergedState(prev?.state, f.status);
         const keep = prev && state === prev.state ? prev : null;
-        await client.query(
-          `INSERT INTO review_findings (organization_id, project_id, workflow_id, pull_request_id, review_id, external_id, position, lane, severity, blocking,
-                                        title, description, impact, evidence, recommended_fix, state, dismissed_reason, dismissed_by_user_id, dismissed_at,
-                                        fix_cycle_id, issue_requested_by_user_id, issue_requested_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
-          [
-            this.principal.organizationId,
-            pr.project_id,
-            pr.workflow_id,
-            pr.id,
-            reviewId,
-            f.externalId,
-            f.position,
-            f.lane,
-            f.severity,
-            f.blocking,
-            f.title,
-            f.description,
-            f.impact,
-            JSON.stringify(f.evidence),
-            f.recommendedFix,
-            state,
-            keep?.dismissed_reason ?? null,
-            keep?.dismissed_by_user_id ?? null,
-            keep?.dismissed_at ?? null,
-            prev?.fix_cycle_id ?? null,
-            keep?.issue_requested_by_user_id ?? null,
-            keep?.issue_requested_at ?? null,
-          ],
-        );
+        const content = [
+          f.position,
+          f.lane,
+          f.severity,
+          f.blocking,
+          f.title,
+          f.description,
+          f.impact,
+          JSON.stringify(f.evidence),
+          f.recommendedFix,
+          state,
+          keep?.dismissed_reason ?? null,
+          keep?.dismissed_by_user_id ?? null,
+          keep?.dismissed_at ?? null,
+          prev?.fix_cycle_id ?? null,
+          keep?.issue_requested_by_user_id ?? null,
+          keep?.issue_requested_at ?? null,
+        ];
+        const id = current.get(f.externalId);
+        if (id) {
+          await client.query(
+            `UPDATE review_findings
+                SET position = $2, lane = $3, severity = $4, blocking = $5, title = $6, description = $7, impact = $8,
+                    evidence = $9, recommended_fix = $10, state = $11, dismissed_reason = $12, dismissed_by_user_id = $13,
+                    dismissed_at = $14, fix_cycle_id = $15, issue_requested_by_user_id = $16, issue_requested_at = $17
+              WHERE id = $1`,
+            [id, ...content],
+          );
+        } else {
+          await client.query(
+            `INSERT INTO review_findings (organization_id, project_id, workflow_id, pull_request_id, review_id, external_id, position, lane, severity, blocking,
+                                          title, description, impact, evidence, recommended_fix, state, dismissed_reason, dismissed_by_user_id, dismissed_at,
+                                          fix_cycle_id, issue_requested_by_user_id, issue_requested_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
+            [
+              this.principal.organizationId,
+              pr.project_id,
+              pr.workflow_id,
+              pr.id,
+              reviewId,
+              f.externalId,
+              ...content,
+            ],
+          );
+        }
       }
+      await client.query(`SET CONSTRAINTS review_findings_review_id_position_key IMMEDIATE`);
       await this.log(client, 'accepted');
       return { outcome: 'accepted', id: reviewId, state: pr.workflow_state };
     });
@@ -369,8 +419,10 @@ export class ReviewIngestionService {
 
   /**
    * `PUT /ingest/pull-requests/{externalId}/cycles/{cycle}` — upserts the fix cycle; a cycle already terminal is a
-   * 409. COMPLETED / FAILED move the workflow's Review stage the way the stage ingest route does (state machine,
-   * `workflow_transitions` row with `principal_id`, stage pointer re-synced); CANCELLED leaves the stage alone.
+   * 409, and so is a new cycle that is not the next number (`max + 1`) — cycle numbers are the fix-loop history and
+   * decide which cycle may move the stage, so a gap is never accepted. COMPLETED / FAILED move the workflow's Review
+   * stage the way the stage ingest route does (state machine, `workflow_transitions` row with `principal_id`, stage
+   * pointer re-synced); CANCELLED leaves the stage alone.
    */
   async upsertCycle(
     externalId: string,
@@ -378,7 +430,7 @@ export class ReviewIngestionService {
     body: ReviewCycleIngest,
   ): Promise<IngestResult> {
     return this.run(async (client) => {
-      const pr = await this.lockPullRequest(client, externalId);
+      const pr = await this.lockPullRequest(client, externalId, { workflowFirst: true });
       const existing = (
         await client.query<{
           id: string;
@@ -398,6 +450,17 @@ export class ReviewIngestionService {
       }
       if (existing && TERMINAL_CYCLE_STATES.includes(existing.state))
         throw problems.invalidTransition(`Cycle ${cycle} is already ${existing.state}.`);
+      const highest =
+        (
+          await client.query<{ n: number | null }>(
+            `SELECT max(cycle_number) AS n FROM review_cycles WHERE pull_request_id = $1`,
+            [pr.id],
+          )
+        ).rows[0]!.n ?? 0;
+      if (!existing && cycle !== highest + 1)
+        throw problems.invalidTransition(
+          `Cycle ${cycle} is not the next cycle of this pull request (expected ${highest + 1}).`,
+        );
       const maxIterations =
         body.maxIterations ?? existing?.max_iterations ?? DEFAULT_MAX_ITERATIONS;
       if (body.iteration > maxIterations)
@@ -471,12 +534,7 @@ export class ReviewIngestionService {
         ).rows[0]!.id;
       }
       // The Review stage mirrors the pull request's current fix loop: only its latest cycle may move it.
-      const latest = (
-        await client.query<{ n: number }>(
-          `SELECT max(cycle_number) AS n FROM review_cycles WHERE pull_request_id = $1`,
-          [pr.id],
-        )
-      ).rows[0]!.n;
+      const latest = existing ? highest : cycle;
       if ((body.state === 'COMPLETED' || body.state === 'FAILED') && cycle === latest)
         await this.syncReviewStage(client, pr, body.state, observedAt, cycle);
       await this.log(client, 'accepted');

@@ -1,4 +1,9 @@
-import type { FindingActionResult, IngestResult, PullRequestReviewView } from '@cdevi/contracts';
+import type {
+  FindingActionResult,
+  IngestResult,
+  Problem,
+  PullRequestReviewView,
+} from '@cdevi/contracts';
 import type { FastifyInstance } from 'fastify';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -233,6 +238,86 @@ describe.skipIf(skipDb)(
       expect(await auditCount(fx.workflowId)).toBe(2);
     });
 
+    it('FR-036 FR-021 re-ingesting a review keeps finding ids: matched externalIds are updated in place (content, position, swapped positions), the dismissed one stays DISMISSED and its audit target still resolves; absent rows go, new rows appear', async () => {
+      const fx = await reviewFixture(app);
+      const p = fx.pullRequestExternalId;
+      const before = await detail(fx.pullRequestId);
+      const idOf = (d: PullRequestReviewView, ext: string) =>
+        d.findings.find((f) => f.externalId === ext)!.id;
+      const dismissed = idOf(before, `${p}-f2`);
+      const dismiss = await app.inject(
+        asUser(engineer, {
+          method: 'POST',
+          url: `/api/reviews/${fx.pullRequestId}/findings/${dismissed}/dismiss`,
+          payload: { reason: 'Known and accepted.' },
+        }),
+      );
+      expect(dismiss.statusCode, dismiss.body).toBe(200);
+
+      // f1 ↔ f2 swap positions, f3 is re-described, f4 disappears, f9 is new.
+      const snapshot = [
+        finding(2, { externalId: `${p}-f1`, lane: 'security', severity: 'CRITICAL' }),
+        finding(1, { externalId: `${p}-f2`, title: 'Re-reported with new text' }),
+        finding(3, {
+          externalId: `${p}-f3`,
+          blocking: 'NON_BLOCKING',
+          description: 'Updated description.',
+        }),
+        finding(4, { externalId: `${p}-f9`, blocking: 'SUGGESTION', severity: 'LOW' }),
+      ];
+      const r = await put(
+        `/api/ingest/pull-requests/${p}/reviews/1`,
+        reviewBody(snapshot, iso(plus(-20 * MIN))),
+      );
+      expect(r.statusCode, r.body).toBe(200);
+      expect((r.json() as IngestResult).outcome).toBe('accepted');
+
+      const after = await detail(fx.pullRequestId);
+      expect(after.findings.map((f) => [f.position, f.externalId])).toEqual([
+        [1, `${p}-f2`],
+        [2, `${p}-f1`],
+        [3, `${p}-f3`],
+        [4, `${p}-f9`],
+      ]);
+      for (const ext of [`${p}-f1`, `${p}-f2`, `${p}-f3`])
+        expect(idOf(after, ext), ext).toBe(idOf(before, ext));
+      expect(after.findings.map((f) => f.id)).not.toContain(idOf(before, `${p}-f4`));
+      const f2 = after.findings[0]!;
+      expect(f2).toMatchObject({
+        id: dismissed,
+        state: 'DISMISSED',
+        title: 'Re-reported with new text',
+        dismissedReason: 'Known and accepted.',
+      });
+      expect(after.findings[2]!.description).toBe('Updated description.');
+      expect(after.findings[3]!.state).toBe('OPEN');
+
+      // The immutable audit row still points at a current finding, and the retained id is still actionable.
+      const audit = await pool.query<{ target_id: string; current: string | null }>(
+        `SELECT a.target_id, f.id AS current FROM audit_events a
+           LEFT JOIN review_findings f ON f.id = a.target_id
+          WHERE a.target_type = 'review_finding' AND a.workflow_id = $1`,
+        [fx.workflowId],
+      );
+      expect(audit.rows).toEqual([{ target_id: dismissed, current: dismissed }]);
+      const again = await app.inject(
+        asUser(engineer, {
+          method: 'POST',
+          url: `/api/reviews/${fx.pullRequestId}/findings/${dismissed}/dismiss`,
+          payload: { reason: 'twice' },
+        }),
+      );
+      expect(again.statusCode, again.body).toBe(409);
+      const issue = await app.inject(
+        asUser(engineer, {
+          method: 'POST',
+          url: `/api/reviews/${fx.pullRequestId}/findings/${idOf(before, `${p}-f3`)}/issue`,
+          payload: {},
+        }),
+      );
+      expect(issue.statusCode, issue.body).toBe(200);
+    });
+
     it('FR-036 empty replacement still notifies exactly once', async () => {
       const fx = await reviewFixture(app);
       const before = await inboxRows(fx.workflowId);
@@ -461,6 +546,74 @@ describe.skipIf(skipDb)(
         [2, 'CANCELLED'],
         [1, 'COMPLETED'],
       ]);
+    });
+
+    it('FR-036 a new cycle must be the next number: after cycles 1..3, cycle 99 → 409 invalid-transition, cycle 4 → accepted; re-reporting cycle 2 stays allowed', async () => {
+      const fx = await reviewFixture(app, { reviewStageState: 'RUNNING' });
+      const p = fx.pullRequestExternalId;
+      const first = await put(`/api/ingest/pull-requests/${p}/cycles/3`, cycleBody());
+      expect(first.statusCode, first.body).toBe(409);
+      expect((first.json() as Problem).type).toBe('urn:cdevi:problem:invalid-transition');
+      for (const n of [1, 2, 3]) {
+        const r = await put(
+          `/api/ingest/pull-requests/${p}/cycles/${n}`,
+          cycleBody({ iteration: n, observedAt: iso(plus((-30 + n) * MIN)) }),
+        );
+        expect(r.statusCode, `cycle ${n}: ${r.body}`).toBe(200);
+      }
+      const skipped = await put(
+        `/api/ingest/pull-requests/${p}/cycles/99`,
+        cycleBody({ iteration: 4, observedAt: iso(plus(-20 * MIN)) }),
+      );
+      expect(skipped.statusCode, skipped.body).toBe(409);
+      expect(skipped.headers['content-type']).toContain('application/problem+json');
+      expect(skipped.json() as Problem).toMatchObject({
+        type: 'urn:cdevi:problem:invalid-transition',
+        status: 409,
+      });
+      expect((skipped.json() as Problem).detail).toContain('4');
+      expect(
+        await ingestionLogRows('PUT /ingest/pull-requests/{externalId}/cycles/{cycle}', p),
+      ).toEqual(['rejected', 'accepted', 'accepted', 'accepted', 'rejected']);
+      const again2 = await put(
+        `/api/ingest/pull-requests/${p}/cycles/2`,
+        cycleBody({ iteration: 2, state: 'FAILED', observedAt: iso(plus(-19 * MIN)) }),
+      );
+      expect(again2.statusCode, again2.body).toBe(409); // terminal already — the existing rule, not the ordering one
+      const next = await put(
+        `/api/ingest/pull-requests/${p}/cycles/4`,
+        cycleBody({ iteration: 4, observedAt: iso(plus(-18 * MIN)) }),
+      );
+      expect(next.statusCode, next.body).toBe(200);
+      const d = await detail(fx.pullRequestId);
+      expect(d.cycles.map((c) => c.cycleNumber)).toEqual([4, 3, 2, 1]);
+      expect(await reviewStage(fx.workflowId)).toBe('COMPLETED');
+    });
+
+    it('FR-036 FR-021 cycle ingest locks the workflow row before the pull request row (no deadlock against a workflow-first writer)', async () => {
+      const fx = await reviewFixture(app, { reviewStageState: 'RUNNING' });
+      const p = fx.pullRequestExternalId;
+      const other = await pool.connect();
+      try {
+        await other.query('BEGIN');
+        await other.query(`SELECT id FROM workflows WHERE id = $1 FOR UPDATE`, [fx.workflowId]);
+        const ingest = put(`/api/ingest/pull-requests/${p}/cycles/1`, cycleBody());
+        await new Promise((r) => setTimeout(r, 300));
+        // The request must be parked on the workflow row and hold nothing yet: the PR row is still free.
+        const pr = await other.query(
+          `SELECT id FROM pull_requests WHERE id = $1 FOR UPDATE NOWAIT`,
+          [fx.pullRequestId],
+        );
+        expect(pr.rowCount).toBe(1);
+        await other.query('COMMIT');
+        const r = await ingest;
+        expect(r.statusCode, r.body).toBe(200);
+        expect((r.json() as IngestResult).outcome).toBe('accepted');
+        expect(await reviewStage(fx.workflowId)).toBe('COMPLETED');
+      } finally {
+        await other.query('ROLLBACK').catch(() => undefined);
+        other.release();
+      }
     });
 
     it('FR-036 the Review stage is the one linked by reviewStagePosition; an unlinked pull request without a Review stage leaves stages alone', async () => {

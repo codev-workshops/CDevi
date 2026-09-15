@@ -2775,6 +2775,44 @@ describe.skipIf(skip)(
       });
     });
 
+    it('FR-036 0008: UNIQUE (review_id, position) is DEFERRABLE so a review snapshot can reorder findings in place (ids kept); still checked immediately by default', async () => {
+      const con = (
+        await admin7.query(
+          `select condeferrable, condeferred from pg_constraint where conname='review_findings_review_id_position_key'`,
+        )
+      ).rows[0];
+      expect(con).toEqual({ condeferrable: true, condeferred: false });
+      expect(
+        (await admin7.query(`select name from schema_migrations where name like '0008%'`)).rowCount,
+      ).toBe(1);
+      await tx(app7, async (client, f) => {
+        const review = (await insertReview(client, f, 4)).rows[0].id as string;
+        const a = (await insertFinding(client, f, review, 1, { external_id: 'swap-a' })).rows[0]
+          .id as string;
+        const b = (await insertFinding(client, f, review, 2, { external_id: 'swap-b' })).rows[0]
+          .id as string;
+        await expectFail(
+          client,
+          () => client.query(`update review_findings set position = 2 where id = $1`, [a]),
+          /review_findings_review_id_position_key/,
+        );
+        await client.query(`set constraints review_findings_review_id_position_key deferred`);
+        await client.query(`update review_findings set position = 2 where id = $1`, [a]);
+        await client.query(`update review_findings set position = 1 where id = $1`, [b]);
+        await client.query(`set constraints review_findings_review_id_position_key immediate`);
+        const rows = (
+          await client.query(
+            `select id, position from review_findings where review_id = $1 order by position`,
+            [review],
+          )
+        ).rows;
+        expect(rows).toEqual([
+          { id: b, position: 1 },
+          { id: a, position: 2 },
+        ]);
+      });
+    });
+
     it('AS-4 review_cycles: UNIQUE (pull_request_id, cycle_number), at most one RUNNING cycle per pull request (partial unique index), CHECK fixed + remaining ≤ findings_count, iteration ≤ max_iterations (default 5), requested_by user / agent nullable, observed_at watermark', async () => {
       const byName = await columnsByName('review_cycles', [
         'id',
