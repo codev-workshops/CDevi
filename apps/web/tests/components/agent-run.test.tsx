@@ -355,6 +355,53 @@ describe('Agent Run Inspector (specs/001 US5)', () => {
     expect(card).toHaveTextContent('2. Opening the pull request requires approval');
   });
 
+  it('a later #decision-n hash re-selects Decisions after the user chose Timeline', async () => {
+    renderApp(<AgentRunScreen initial={runRunning()} now={NOW} />);
+    await userEvent.click(timelineTab());
+    expect(timelineTab()).toHaveAttribute('aria-selected', 'true');
+
+    window.location.hash = '#decision-3';
+    act(() => window.dispatchEvent(new HashChangeEvent('hashchange')));
+    expect(decisionsTab()).toHaveAttribute('aria-selected', 'true');
+    const card = document.getElementById('decision-3')!;
+    await waitFor(() => expect(card).toHaveFocus());
+  });
+
+  it('FR-034 a late older response never overwrites a newer run snapshot', async () => {
+    const run = runRunning();
+    const older = runRunning({ summary: 'older snapshot' });
+    const newer = runRunning({ summary: 'newer snapshot' });
+    let resolveFirst: (r: Response) => void = () => {};
+    fetchMock
+      .mockImplementationOnce(() => new Promise<Response>((r) => (resolveFirst = r)))
+      .mockResolvedValueOnce(jsonResponse(newer));
+    renderApp(<AgentRunScreen initial={run} now={NOW} />);
+
+    changed(run.workflow.id);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    changed(run.workflow.id);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByText('newer snapshot')).toBeInTheDocument());
+
+    await act(async () => {
+      resolveFirst(jsonResponse(older));
+      await Promise.resolve();
+    });
+    expect(screen.getByText('newer snapshot')).toBeInTheDocument();
+    expect(screen.queryByText('older snapshot')).toBeNull();
+  });
+
+  it('timestamps with a non-UTC offset render their UTC wall clock', async () => {
+    const run = runCompleted({
+      startedAt: '2026-09-14T10:00:00+05:30',
+      timeline: [{ at: '2026-09-14T10:00:05+05:30', kind: 'note', message: 'offset event' }],
+    });
+    renderApp(<AgentRunScreen initial={run} now={NOW} />);
+    expect(screen.getByText(/2026-09-14 04:30 UTC/)).toBeInTheDocument();
+    await userEvent.click(timelineTab());
+    expect(screen.getByText(/offset event/)).toHaveTextContent('04:30:05');
+  });
+
   it('FR-032 no saffron button on the screen in any state', () => {
     for (const [name, make] of Object.entries(ALL_FIXTURES)) {
       const { container, unmount } = renderApp(<AgentRunScreen initial={make()} now={NOW} />);

@@ -81,8 +81,19 @@ const stageLabel = (s: { position: number; name: string } | null | undefined) =>
 
 type StageRuns = WorkflowDetail['stages'][number]['agentRuns'];
 
-/** US5 drill-down (ui-agent-run.md §4): one plain link per run, newest first, each followed by its state word. */
-function InspectRuns({ runs, leadingSep = true }: { runs: StageRuns; leadingSep?: boolean }) {
+/**
+ * US5 drill-down (ui-agent-run.md §4): one plain link per run, newest first. The run's state word is in the
+ * accessible name; `withPill` adds a visible `StatePill` where the row has no other state pill (Current stage).
+ */
+function InspectRuns({
+  runs,
+  leadingSep = true,
+  withPill = false,
+}: {
+  runs: StageRuns;
+  leadingSep?: boolean;
+  withPill?: boolean;
+}) {
   return (
     <>
       {runs.map((r, i) => (
@@ -93,8 +104,13 @@ function InspectRuns({ runs, leadingSep = true }: { runs: StageRuns; leadingSep?
             aria-label={`Inspect run ${i + 1} of ${runs.length} by ${r.agent}, ${stateToPill[r.state].word}`}
           >
             Inspect run{runs.length > 1 ? ` · ${r.agent}` : ''}
-          </a>{' '}
-          <StatePill state={r.state} />
+          </a>
+          {withPill ? (
+            <>
+              {' '}
+              <StatePill state={r.state} />
+            </>
+          ) : null}
         </Fragment>
       ))}
     </>
@@ -242,7 +258,7 @@ export function WorkflowDetailScreen({ initial, userRole }: WorkflowDetailScreen
               'No run recorded'
             ) : (
               <span>
-                <InspectRuns runs={currentRuns} leadingSep={false} />
+                <InspectRuns runs={currentRuns} leadingSep={false} withPill />
               </span>
             ),
         },
@@ -411,6 +427,7 @@ export function WorkflowDetailScreen({ initial, userRole }: WorkflowDetailScreen
         {stages.map((s) => (
           <Step
             key={s.id}
+            id={`stage-${s.position}`}
             state={s.state === 'COMPLETED' ? 'done' : s.current ? 'current' : 'todo'}
             title={`${s.position}. ${s.name}`}
             detail={

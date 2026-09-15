@@ -107,10 +107,9 @@ describe('Workflow Detail (specs/001 US1)', () => {
     expect(testLinks[0]).toHaveTextContent('Inspect run · Test Agent');
     expect(testLinks[1]).toHaveAttribute('href', `/agents/runs/${r2!.id}`);
     expect(testLinks[1]).toHaveAccessibleName('Inspect run 2 of 2 by Test Agent, failed');
-    const words = Array.from(test.querySelectorAll('.cd-pill[data-state]')).map(
-      (p) => p.textContent,
-    );
-    expect(words).toEqual(['completed', 'completed', 'failed']);
+    // The stage keeps exactly one visible state pill; each run's state word lives in its link's accessible name.
+    expect(test.querySelectorAll('.cd-pill[data-state]')).toHaveLength(1);
+    expect(test).toHaveAttribute('id', 'stage-5');
 
     const cur = steps[5]!;
     const [run] = d.stages[5]!.agentRuns;
@@ -126,6 +125,9 @@ describe('Workflow Detail (specs/001 US1)', () => {
       `/agents/runs/${run!.id}`,
     );
     expect(region).toHaveTextContent('Run');
+    expect(
+      within(region).getByRole('link', { name: /^Inspect run/ }).nextElementSibling,
+    ).toHaveClass('cd-pill');
     expect(within(region).getByText(/not evidence/)).toBeInTheDocument();
     expect(region).toHaveTextContent('Waiting for a human: Approval required before merge');
 

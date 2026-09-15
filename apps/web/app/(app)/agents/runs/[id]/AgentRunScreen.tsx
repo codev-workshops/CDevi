@@ -104,8 +104,11 @@ function durationLabel(ms: number): string {
   return `${mins} min ${secs} s`;
 }
 
-const absolute = (iso: string) => `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
-const clock = (iso: string) => iso.slice(11, 19);
+const absolute = (iso: string) => {
+  const utc = new Date(iso).toISOString();
+  return `${utc.slice(0, 10)} ${utc.slice(11, 16)} UTC`;
+};
+const clock = (iso: string) => new Date(iso).toISOString().slice(11, 19);
 const isExternal = (href: string) => /^https?:\/\//i.test(href);
 
 function lastActivity(run: AgentRunDetail): number {
@@ -145,14 +148,24 @@ export function AgentRunScreen({ initial, now }: AgentRunScreenProps) {
     return new Date(clockBase.current.at + (Date.now() - clockBase.current.since));
   }, [now]);
   const hashAnchor = useSyncExternalStore(subscribeHash, readHashAnchor, noHash);
-  const [chosenTab, setTab] = useState<TabValue | null>(null);
+  // A tab choice is remembered until the URL hash changes: every new `#decision-n` selects Decisions again.
+  const [chosen, setChosen] = useState<{ tab: TabValue; forHash: string | null } | null>(null);
   const tab: TabValue =
-    chosenTab ?? (hashAnchor || initial.decisions.length > 0 ? 'decisions' : 'timeline');
+    chosen && chosen.forHash === hashAnchor
+      ? chosen.tab
+      : hashAnchor || initial.decisions.length > 0
+        ? 'decisions'
+        : 'timeline';
+  const setTab = useCallback(
+    (next: TabValue) => setChosen({ tab: next, forHash: hashAnchor }),
+    [hashAnchor],
+  );
   const { setPanel } = useInboxCount();
   const tabsId = useId();
   const headerId = useId();
   const progressId = useId();
   const focusedAnchor = useRef<string | null>(null);
+  const generation = useRef(0);
 
   const id = run.id;
   const workflowHref = `/workflows/${run.workflow.id}`;
@@ -163,22 +176,26 @@ export function AgentRunScreen({ initial, now }: AgentRunScreenProps) {
   const durationMs = unfinished ? runDuration(run.startedAt, null, clockNow) : run.durationMs;
   const summary = stepsSummary(run.steps);
 
+  // Only the latest request may touch state: an older response resolving late must not restore a stale snapshot.
   const refetch = useCallback(async () => {
+    const mine = ++generation.current;
     setRefreshing(true);
     try {
       const next = await apiFetch<AgentRunDetail>(`/api/agent-runs/${encodeURIComponent(id)}`);
+      if (mine !== generation.current) return;
       setRun(next);
       setLastFetchedAt(readClock().toISOString());
       setLoadError(false);
       setUpdated(true);
     } catch (e) {
+      if (mine !== generation.current) return;
       if (e instanceof ApiError && e.status === 401 && typeof window !== 'undefined') {
         window.location.assign(`/sign-in?reason=expired&next=/agents/runs/${id}`);
         return;
       }
       setLoadError(true);
     } finally {
-      setRefreshing(false);
+      if (mine === generation.current) setRefreshing(false);
     }
   }, [id, readClock]);
 
