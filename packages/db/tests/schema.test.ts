@@ -151,6 +151,7 @@ describe.skipIf(skip)('migration 0001_init (data-model.md §2)', () => {
       'inbox_changed_approvals',
       'inbox_changed_artifacts',
       'inbox_changed_clarifications',
+      'inbox_changed_requirements',
       'inbox_changed_test_runs',
       'inbox_changed_workflow_stages',
       'inbox_changed_workflows',
@@ -684,6 +685,12 @@ describe.skipIf(skip)('migration 0004_dashboard (specs/001 data-model.md §18)',
     'audit_events',
     'schema_migrations',
   ];
+  const TABLES_ADDED_BY_0005 = [
+    'integration_project_mappings',
+    'requirements',
+    'requirement_analysis_items',
+    'requirement_transitions',
+  ];
   beforeAll(async () => {
     const { migrate } = await import('../src/migrate');
     await migrate({ log: () => {} });
@@ -738,7 +745,7 @@ describe.skipIf(skip)('migration 0004_dashboard (specs/001 data-model.md §18)',
         `select tablename from pg_tables where schemaname='public' order by tablename`,
       )
     ).rows.map((r) => r.tablename as string);
-    expect(tables).toEqual([...TABLES_AFTER_0003].sort());
+    expect(tables).toEqual([...TABLES_AFTER_0003, ...TABLES_ADDED_BY_0005].sort());
     const columnCounts = Object.fromEntries(
       (
         await admin4.query(
@@ -848,6 +855,809 @@ describe.skipIf(skip)('migration 0004_dashboard (specs/001 data-model.md §18)',
         ).toBe(true);
         expect(scans.some((n) => n['Node Type'] === 'Seq Scan')).toBe(false);
       }
+      await client.query('rollback');
+    } finally {
+      client.release();
+    }
+  });
+});
+
+describe.skipIf(skip)('migration 0005_requirements (specs/001 data-model.md §22)', () => {
+  const admin5 = new pg.Pool({ connectionString: process.env['DATABASE_MIGRATOR_URL'] });
+  const app5 = new pg.Pool({ connectionString: process.env['DATABASE_URL'] });
+  beforeAll(async () => {
+    const { migrate } = await import('../src/migrate');
+    await migrate({ log: () => {} });
+  });
+  afterAll(async () => {
+    await admin5.end();
+    await app5.end();
+  });
+
+  const columns = async (table: string) =>
+    (
+      await admin5.query(`select column_name from information_schema.columns where table_name=$1`, [
+        table,
+      ])
+    ).rows.map((r) => r.column_name as string);
+  const constraintNames = async (table: string) =>
+    (
+      await admin5.query(`select conname from pg_constraint where conrelid = $1::regclass`, [table])
+    ).rows.map((r) => r.conname as string);
+  const indexDef = async (name: string) =>
+    (await admin5.query(`select tablename, indexdef from pg_indexes where indexname=$1`, [name]))
+      .rows[0] as { tablename: string; indexdef: string } | undefined;
+  const walkPlan = (node: Record<string, unknown>, out: Record<string, unknown>[]) => {
+    out.push(node);
+    for (const child of (node['Plans'] as Record<string, unknown>[] | undefined) ?? [])
+      walkPlan(child, out);
+    return out;
+  };
+  const expectIndexScan = async (
+    client: pg.PoolClient,
+    index: string,
+    sql: string,
+    params: unknown[],
+  ) => {
+    const res = await client.query(`explain (format json) ${sql}`, params);
+    const nodes = walkPlan(res.rows[0]['QUERY PLAN'][0]['Plan'], []);
+    const scans = nodes.filter((n) => String(n['Node Type']).includes('Scan'));
+    expect(
+      scans.some((n) => n['Index Name'] === index),
+      `${index}: ${scans.map((n) => `${n['Node Type']}(${n['Index Name'] ?? n['Relation Name']})`).join(', ')}`,
+    ).toBe(true);
+    expect(scans.some((n) => n['Node Type'] === 'Seq Scan')).toBe(false);
+  };
+
+  /** Org, project, an engineer, a QUEUED workflow and one manual requirement inside the caller's transaction. */
+  async function fixture(client: pg.PoolClient, state = 'DRAFT') {
+    const org = (
+      await client.query(`insert into organizations(name) values ('r-org') returning id`)
+    ).rows[0].id as string;
+    const project = (
+      await client.query(
+        `insert into projects(organization_id, key, name) values ($1,'r','R') returning id`,
+        [org],
+      )
+    ).rows[0].id as string;
+    const user = (
+      await client.query(
+        `insert into users(organization_id, email, display_name, role, password_hash) values ($1,'e@r.io','Eng','engineer','x') returning id`,
+        [org],
+      )
+    ).rows[0].id as string;
+    const workflow = (
+      await client.query(
+        `insert into workflows(organization_id, project_id, external_id, title, state, state_observed_at) values ($1,$2,'w1','W','QUEUED',now()) returning id`,
+        [org, project],
+      )
+    ).rows[0].id as string;
+    const requirement = (
+      await client.query(
+        `insert into requirements(organization_id, project_id, external_id, title, business_objective, state, created_by_user_id)
+         values ($1,$2,'req-1','Retry queue','Retry declined cards without double charging.',$3,$4) returning id`,
+        [org, project, state, user],
+      )
+    ).rows[0].id as string;
+    return { org, project, user, workflow, requirement };
+  }
+  const item = (
+    client: pg.PoolClient,
+    f: { org: string; project: string; requirement: string },
+    kind: string,
+    position: number,
+    ai: boolean,
+  ) =>
+    client.query(
+      `insert into requirement_analysis_items(organization_id, project_id, requirement_id, kind, position, text, ai_generated, source)
+       values ($1,$2,$3,$4,$5,'text',$6,$7)`,
+      [
+        f.org,
+        f.project,
+        f.requirement,
+        kind,
+        position,
+        ai,
+        ai ? 'agent:Requirement Agent' : 'user:Eng',
+      ],
+    );
+
+  it('FR-009 0005 creates enums requirement_state (8 values), requirement_source, analysis_item_kind, external_flag and tables integration_project_mappings, requirements, requirement_analysis_items, requirement_transitions with the §22 columns and CHECK constraints', async () => {
+    const enumValues = enumValuesFrom(admin5);
+    expect(await enumValues('requirement_state')).toEqual([
+      'DRAFT',
+      'ANALYZING',
+      'NEEDS_CLARIFICATION',
+      'READY',
+      'APPROVED',
+      'IN_IMPLEMENTATION',
+      'COMPLETED',
+      'REJECTED',
+    ]);
+    expect(await enumValues('requirement_source')).toEqual(['manual', 'jira']);
+    expect(await enumValues('analysis_item_kind')).toEqual([
+      'acceptance_criterion',
+      'rule',
+      'open_question',
+    ]);
+    expect(await enumValues('external_flag')).toEqual(['deleted', 'closed']);
+
+    const expected: Record<string, string[]> = {
+      integration_project_mappings: [
+        'id',
+        'organization_id',
+        'project_id',
+        'provider',
+        'external_project_key',
+        'external_base_url',
+        'created_at',
+      ],
+      requirements: [
+        'id',
+        'organization_id',
+        'project_id',
+        'external_id',
+        'title',
+        'business_objective',
+        'state',
+        'source',
+        'external_ref',
+        'external_flag',
+        'external_flagged_at',
+        'created_by_user_id',
+        'assignee_user_id',
+        'submitted_by_user_id',
+        'submitted_at',
+        'analysis_observed_at',
+        'analysis_agent',
+        'analysis_summary',
+        'approved_by_user_id',
+        'approved_at',
+        'rejected_by_user_id',
+        'rejected_at',
+        'rejection_reason',
+        'created_at',
+        'updated_at',
+      ],
+      requirement_analysis_items: [
+        'id',
+        'organization_id',
+        'project_id',
+        'requirement_id',
+        'kind',
+        'position',
+        'text',
+        'ai_generated',
+        'source',
+        'created_at',
+      ],
+      requirement_transitions: [
+        'id',
+        'organization_id',
+        'requirement_id',
+        'from_state',
+        'to_state',
+        'actor_type',
+        'actor_id',
+        'actor_name',
+        'reason',
+        'occurred_at',
+      ],
+    };
+    for (const [table, cols] of Object.entries(expected)) {
+      expect((await columns(table)).sort(), table).toEqual([...cols].sort());
+    }
+    const reqCons = await constraintNames('requirements');
+    for (const c of [
+      'requirements_external_ref_check',
+      'requirements_flag_check',
+      'requirements_organization_id_external_id_key',
+    ])
+      expect(reqCons).toContain(c);
+    const itemCons = await constraintNames('requirement_analysis_items');
+    expect(itemCons).toContain('requirement_analysis_items_human_check');
+    expect(itemCons).toContain(
+      'requirement_analysis_items_requirement_id_kind_ai_generated_position_key',
+    );
+    const mapCons = await constraintNames('integration_project_mappings');
+    expect(mapCons).toContain('integration_project_mappings_provider_external_project_key_key');
+    expect(mapCons).toContain(
+      'integration_project_mappings_organization_id_project_id_provider_key',
+    );
+    const trCons = await constraintNames('requirement_transitions');
+    expect(trCons).toContain('requirement_transitions_actor_type_check');
+    const triggers = (
+      await admin5.query(
+        `select tgname from pg_trigger where tgrelid='requirements'::regclass and not tgisinternal order by tgname`,
+      )
+    ).rows.map((r) => r.tgname);
+    expect(triggers).toEqual(['inbox_changed_requirements', 'requirements_updated_at']);
+
+    const client = await app5.connect();
+    try {
+      await client.query('begin');
+      const f = await fixture(client);
+      await expect(
+        client.query(
+          `insert into requirements(organization_id, project_id, external_id, title, business_objective) values ($1,$2,'req-2','ab','Long enough objective.')`,
+          [f.org, f.project],
+        ),
+      ).rejects.toThrow(/check/i);
+      await client.query('rollback');
+      await client.query('begin');
+      const g = await fixture(client);
+      await expect(
+        client.query(
+          `insert into requirements(organization_id, project_id, external_id, title, business_objective, external_flag) values ($1,$2,'req-2','Title','Long enough objective.','closed')`,
+          [g.org, g.project],
+        ),
+      ).rejects.toThrow(/requirements_flag_check/);
+      await client.query('rollback');
+      await client.query('begin');
+      const h = await fixture(client);
+      await expect(
+        client.query(
+          `insert into requirement_transitions(organization_id, requirement_id, from_state, to_state, actor_type, actor_name) values ($1,$2,null,'DRAFT','integration','Jira')`,
+          [h.org, h.requirement],
+        ),
+      ).rejects.toThrow(/requirement_transitions_actor_type_check/);
+      await client.query('rollback');
+    } finally {
+      client.release();
+    }
+    const mapping = await admin5.connect();
+    try {
+      await mapping.query('begin');
+      const f = await fixture(mapping);
+      await expect(
+        mapping.query(
+          `insert into integration_project_mappings(organization_id, project_id, provider, external_project_key, external_base_url) values ($1,$2,'github','PAY','https://jira.example.invalid')`,
+          [f.org, f.project],
+        ),
+      ).rejects.toThrow(/provider_check/);
+      await mapping.query('rollback');
+      await mapping.query('begin');
+      const g = await fixture(mapping);
+      await expect(
+        mapping.query(
+          `insert into integration_project_mappings(organization_id, project_id, provider, external_project_key, external_base_url) values ($1,$2,'jira','PAY','http://jira.example.invalid')`,
+          [g.org, g.project],
+        ),
+      ).rejects.toThrow(/external_base_url_check/);
+      await mapping.query('rollback');
+    } finally {
+      mapping.release();
+    }
+  });
+
+  it('FR-009 requirement_analysis_items UNIQUE (requirement_id, kind, ai_generated, position) lets a human criterion and an AI criterion both hold position 1, rejects a duplicate AI position and rejects a human row of kind rule or position 21', async () => {
+    const client = await app5.connect();
+    try {
+      await client.query('begin');
+      const f = await fixture(client);
+      await item(client, f, 'acceptance_criterion', 1, false);
+      await item(client, f, 'acceptance_criterion', 1, true);
+      await item(client, f, 'rule', 1, true);
+      await item(client, f, 'open_question', 1, true);
+      expect(
+        Number(
+          (
+            await client.query(
+              `select count(*) c from requirement_analysis_items where requirement_id=$1`,
+              [f.requirement],
+            )
+          ).rows[0].c,
+        ),
+      ).toBe(4);
+      await expect(item(client, f, 'acceptance_criterion', 1, true)).rejects.toThrow(
+        /requirement_analysis_items_requirement_id_kind_ai_generated_position_key/,
+      );
+      await client.query('rollback');
+      await client.query('begin');
+      const g = await fixture(client);
+      await expect(item(client, g, 'rule', 1, false)).rejects.toThrow(
+        /requirement_analysis_items_human_check/,
+      );
+      await client.query('rollback');
+      await client.query('begin');
+      const h = await fixture(client);
+      await item(client, h, 'acceptance_criterion', 20, false);
+      await item(client, h, 'acceptance_criterion', 21, true);
+      await expect(item(client, h, 'acceptance_criterion', 21, false)).rejects.toThrow(
+        /requirement_analysis_items_human_check/,
+      );
+      await client.query('rollback');
+    } finally {
+      client.release();
+    }
+  });
+
+  it('FR-010 0005 adds workflows.requirement_id with a partial unique index and workflows_list_idx', async () => {
+    expect(await columns('workflows')).toContain('requirement_id');
+    const fk = (
+      await admin5.query(
+        `select confdeltype from pg_constraint where conrelid='workflows'::regclass and contype='f' and confrelid='requirements'::regclass`,
+      )
+    ).rows;
+    expect(fk).toHaveLength(1);
+    expect(fk[0].confdeltype).toBe('n');
+    const unique = await indexDef('workflows_requirement_idx');
+    expect(unique?.tablename).toBe('workflows');
+    expect(unique?.indexdef).toMatch(/^CREATE UNIQUE INDEX/);
+    expect(unique?.indexdef).toMatch(/\(requirement_id\) WHERE \(requirement_id IS NOT NULL\)/);
+    const list = await indexDef('workflows_list_idx');
+    expect(list?.tablename).toBe('workflows');
+    expect(list?.indexdef).toMatch(/\(organization_id, state_observed_at DESC, id DESC\)/);
+    const client = await app5.connect();
+    try {
+      await client.query('begin');
+      const f = await fixture(client);
+      await client.query(`update workflows set requirement_id=$1 where id=$2`, [
+        f.requirement,
+        f.workflow,
+      ]);
+      await expect(
+        client.query(
+          `insert into workflows(organization_id, project_id, external_id, title, state, state_observed_at, requirement_id) values ($1,$2,'w2','W2','QUEUED',now(),$3)`,
+          [f.org, f.project, f.requirement],
+        ),
+      ).rejects.toThrow(/workflows_requirement_idx/);
+      await client.query('rollback');
+      await client.query('begin');
+      const g = await fixture(client);
+      await client.query(`update workflows set requirement_id=$1 where id=$2`, [
+        g.requirement,
+        g.workflow,
+      ]);
+      await client.query(`delete from requirements where id=$1`, [g.requirement]);
+      expect(
+        (await client.query(`select requirement_id from workflows where id=$1`, [g.workflow]))
+          .rows[0].requirement_id,
+      ).toBeNull();
+      await client.query('rollback');
+    } finally {
+      client.release();
+    }
+  });
+
+  it('FR-008 requirements enforce one Jira key per organization (requirements_jira_key_idx) and external_ref/source consistency', async () => {
+    const idx = await indexDef('requirements_jira_key_idx');
+    expect(idx?.indexdef).toMatch(/^CREATE UNIQUE INDEX/);
+    expect(idx?.indexdef).toMatch(/WHERE \(source = 'jira'::requirement_source\)/);
+    const client = await app5.connect();
+    const jira = (f: { org: string; project: string }, externalId: string, key: string) =>
+      client.query(
+        `insert into requirements(organization_id, project_id, external_id, title, business_objective, source, external_ref)
+         values ($1,$2,$3,'Jira title','Imported from Jira with objective.','jira',$4::jsonb)`,
+        [
+          f.org,
+          f.project,
+          externalId,
+          JSON.stringify({
+            provider: 'jira',
+            key,
+            url: `https://jira.example.invalid/browse/${key}`,
+          }),
+        ],
+      );
+    try {
+      await client.query('begin');
+      const f = await fixture(client);
+      await jira(f, 'req-j1', 'PAY-231');
+      await expect(jira(f, 'req-j2', 'PAY-231')).rejects.toThrow(/requirements_jira_key_idx/);
+      await client.query('rollback');
+      await client.query('begin');
+      const g = await fixture(client);
+      await jira(g, 'req-j1', 'PAY-231');
+      const other = (
+        await client.query(`insert into organizations(name) values ('r-org-2') returning id`)
+      ).rows[0].id as string;
+      const otherProject = (
+        await client.query(
+          `insert into projects(organization_id, key, name) values ($1,'r2','R2') returning id`,
+          [other],
+        )
+      ).rows[0].id as string;
+      await jira({ org: other, project: otherProject }, 'req-j1', 'PAY-231');
+      await client.query('rollback');
+      await client.query('begin');
+      const h = await fixture(client);
+      await expect(
+        client.query(
+          `insert into requirements(organization_id, project_id, external_id, title, business_objective, source, external_ref)
+           values ($1,$2,'req-m','Manual','Manual rows carry no external_ref.','manual','{"provider":"jira","key":"PAY-1","url":"https://j/x"}')`,
+          [h.org, h.project],
+        ),
+      ).rejects.toThrow(/requirements_external_ref_check/);
+      await expect(
+        client.query(
+          `insert into requirements(organization_id, project_id, external_id, title, business_objective, source, external_ref)
+           values ($1,$2,'req-j','Jira','Jira rows need key and url.','jira','{"provider":"jira","key":"PAY-1"}')`,
+          [h.org, h.project],
+        ),
+      ).rejects.toThrow(/requirements_external_ref_check/);
+      await expect(
+        client.query(
+          `insert into requirements(organization_id, project_id, external_id, title, business_objective, source)
+           values ($1,$2,'req-j','Jira','Jira rows need an external_ref.','jira')`,
+          [h.org, h.project],
+        ),
+      ).rejects.toThrow(/requirements_external_ref_check/);
+      await client.query('rollback');
+    } finally {
+      client.release();
+    }
+  });
+
+  it("FR-002 requirement_transitions rejects UPDATE and DELETE with 'requirement_transitions is append-only' (requirement_transitions_append_only trigger)", async () => {
+    const trg = await admin5.query(
+      `select tgname from pg_trigger where tgrelid='requirement_transitions'::regclass and not tgisinternal`,
+    );
+    expect(trg.rows.map((r) => r.tgname)).toEqual(['requirement_transitions_append_only']);
+    const client = await admin5.connect();
+    try {
+      await client.query('begin');
+      const f = await fixture(client);
+      const id = (
+        await client.query(
+          `insert into requirement_transitions(organization_id, requirement_id, from_state, to_state, actor_type, actor_id, actor_name)
+           values ($1,$2,null,'DRAFT','user',$3,'Eng') returning id`,
+          [f.org, f.requirement, f.user],
+        )
+      ).rows[0].id as string;
+      await expect(
+        client.query(`update requirement_transitions set reason='x' where id=$1`, [id]),
+      ).rejects.toThrow('requirement_transitions is append-only');
+      await client.query('rollback');
+      await client.query('begin');
+      const g = await fixture(client);
+      const id2 = (
+        await client.query(
+          `insert into requirement_transitions(organization_id, requirement_id, from_state, to_state, actor_type, actor_name)
+           values ($1,$2,null,'DRAFT','system','jira') returning id`,
+          [g.org, g.requirement],
+        )
+      ).rows[0].id as string;
+      await expect(
+        client.query(`delete from requirement_transitions where id=$1`, [id2]),
+      ).rejects.toThrow('requirement_transitions is append-only');
+      await client.query('rollback');
+    } finally {
+      client.release();
+    }
+  });
+
+  it('FR-010 updating a linked workflow QUEUED→RUNNING moves an APPROVED requirement to IN_IMPLEMENTATION and →COMPLETED to COMPLETED, writing a system requirement_transitions row; QUEUED→CANCELLED and QUEUED→BLOCKED leave APPROVED', async () => {
+    const client = await app5.connect();
+    const run = async (
+      states: readonly string[],
+      initial = 'APPROVED',
+    ): Promise<{ state: string; transitions: Record<string, unknown>[] }> => {
+      await client.query('begin');
+      const f = await fixture(client, initial);
+      await client.query(`update workflows set requirement_id=$1 where id=$2`, [
+        f.requirement,
+        f.workflow,
+      ]);
+      for (const s of states)
+        await client.query(
+          `update workflows set state=$1, state_observed_at=now(), state_reason='r' where id=$2`,
+          [s, f.workflow],
+        );
+      const state = (
+        await client.query(`select state from requirements where id=$1`, [f.requirement])
+      ).rows[0].state as string;
+      const transitions = (
+        await client.query(
+          `select from_state, to_state, actor_type, actor_id, actor_name, reason from requirement_transitions where requirement_id=$1 order by id`,
+          [f.requirement],
+        )
+      ).rows;
+      await client.query('rollback');
+      return { state, transitions };
+    };
+    try {
+      const running = await run(['RUNNING']);
+      expect(running.state).toBe('IN_IMPLEMENTATION');
+      expect(running.transitions).toEqual([
+        {
+          from_state: 'APPROVED',
+          to_state: 'IN_IMPLEMENTATION',
+          actor_type: 'system',
+          actor_id: null,
+          actor_name: 'workflow',
+          reason: 'workflow w1 → RUNNING',
+        },
+      ]);
+      // Later stage moves while IN_IMPLEMENTATION write nothing more.
+      const waiting = await run(['RUNNING', 'WAITING_FOR_HUMAN', 'RUNNING']);
+      expect(waiting.state).toBe('IN_IMPLEMENTATION');
+      expect(waiting.transitions).toHaveLength(1);
+      const completed = await run(['RUNNING', 'COMPLETED']);
+      expect(completed.state).toBe('COMPLETED');
+      expect(completed.transitions.map((t) => t.to_state)).toEqual([
+        'IN_IMPLEMENTATION',
+        'COMPLETED',
+      ]);
+      expect(completed.transitions[1]).toMatchObject({
+        from_state: 'IN_IMPLEMENTATION',
+        actor_type: 'system',
+        actor_name: 'workflow',
+        reason: 'workflow w1 → COMPLETED',
+      });
+      const direct = await run(['COMPLETED']);
+      expect(direct.state).toBe('COMPLETED');
+      expect(direct.transitions).toEqual([
+        expect.objectContaining({
+          from_state: 'APPROVED',
+          to_state: 'COMPLETED',
+          actor_type: 'system',
+        }),
+      ]);
+      for (const s of ['CANCELLED', 'BLOCKED']) {
+        const r = await run([s]);
+        expect(r.state, s).toBe('APPROVED');
+        expect(r.transitions, s).toEqual([]);
+      }
+      // Only the trigger's state list matters: a READY requirement is never moved by its workflow.
+      const ready = await run(['RUNNING'], 'READY');
+      expect(ready.state).toBe('READY');
+      expect(ready.transitions).toEqual([]);
+      // Updating a column other than state (or an unlinked workflow) does not fire the trigger.
+      await client.query('begin');
+      const f = await fixture(client, 'APPROVED');
+      await client.query(`update workflows set requirement_id=$1 where id=$2`, [
+        f.requirement,
+        f.workflow,
+      ]);
+      await client.query(`update workflows set title='renamed' where id=$1`, [f.workflow]);
+      const unlinked = (
+        await client.query(
+          `insert into workflows(organization_id, project_id, external_id, title, state, state_observed_at) values ($1,$2,'w9','W9','QUEUED',now()) returning id`,
+          [f.org, f.project],
+        )
+      ).rows[0].id as string;
+      await client.query(`update workflows set state='RUNNING' where id=$1`, [unlinked]);
+      expect(
+        (await client.query(`select state from requirements where id=$1`, [f.requirement])).rows[0]
+          .state,
+      ).toBe('APPROVED');
+      await client.query('rollback');
+    } finally {
+      client.release();
+    }
+    const trg = (
+      await admin5.query(
+        `select tgname from pg_trigger where tgrelid='workflows'::regclass and not tgisinternal order by tgname`,
+      )
+    ).rows.map((r) => r.tgname);
+    expect(trg).toContain('workflows_follow_requirement');
+  });
+
+  it('FR-034 inserting or updating a requirement writes exactly one inbox_change_log row with requirement_id and NULL workflow_id and NOTIFYs inbox_changed with requirementId; inserting or deleting requirement_analysis_items writes no inbox_change_log row (no trigger on that table)', async () => {
+    const cons = await constraintNames('inbox_change_log');
+    expect(cons).toContain('inbox_change_log_target_check');
+    const nullable = (
+      await admin5.query(
+        `select column_name, is_nullable from information_schema.columns where table_name='inbox_change_log' and column_name in ('workflow_id','requirement_id') order by column_name`,
+      )
+    ).rows;
+    expect(nullable).toEqual([
+      { column_name: 'requirement_id', is_nullable: 'YES' },
+      { column_name: 'workflow_id', is_nullable: 'YES' },
+    ]);
+    const itemTriggers = await admin5.query(
+      `select tgname from pg_trigger where tgrelid='requirement_analysis_items'::regclass and not tgisinternal`,
+    );
+    expect(itemTriggers.rows).toEqual([]);
+
+    const client = await app5.connect();
+    try {
+      await client.query('begin');
+      const f = await fixture(client);
+      const rows = async () =>
+        (
+          await client.query(
+            `select workflow_id, requirement_id, project_id from inbox_change_log where requirement_id=$1`,
+            [f.requirement],
+          )
+        ).rows;
+      expect(await rows()).toEqual([
+        { workflow_id: null, requirement_id: f.requirement, project_id: f.project },
+      ]);
+      await item(client, f, 'acceptance_criterion', 1, true);
+      await item(client, f, 'open_question', 1, true);
+      await client.query(`delete from requirement_analysis_items where requirement_id=$1`, [
+        f.requirement,
+      ]);
+      expect(await rows()).toHaveLength(1);
+      await client.query(
+        `update requirements set state='ANALYZING', submitted_at=now() where id=$1`,
+        [f.requirement],
+      );
+      expect(await rows()).toHaveLength(2);
+      await expect(
+        client.query(`insert into inbox_change_log(organization_id, project_id) values ($1,$2)`, [
+          f.org,
+          f.project,
+        ]),
+      ).rejects.toThrow(/inbox_change_log_target_check/);
+      await client.query('rollback');
+    } finally {
+      client.release();
+    }
+
+    // NOTIFY is transactional, so delivery needs a committed insert; the rows are removed afterwards.
+    const listener = await admin5.connect();
+    const writer = await admin5.connect();
+    try {
+      const payloads: string[] = [];
+      listener.on('notification', (n) => {
+        if (n.payload) payloads.push(n.payload);
+      });
+      await listener.query('listen inbox_changed');
+      await writer.query('begin');
+      const f = await fixture(writer);
+      await writer.query('commit');
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline && !payloads.some((p) => p.includes(f.requirement)))
+        await new Promise((r) => setTimeout(r, 50));
+      const mine = payloads
+        .map((p) => JSON.parse(p))
+        .filter((p) => p.requirementId === f.requirement);
+      expect(mine).toHaveLength(1);
+      expect(mine[0]).toMatchObject({
+        organizationId: f.org,
+        projectId: f.project,
+        workflowId: null,
+        requirementId: f.requirement,
+      });
+      expect(typeof mine[0].seq).toBe('number');
+      await writer.query(`delete from inbox_change_log where organization_id=$1`, [f.org]);
+      await writer.query(`delete from requirements where id=$1`, [f.requirement]);
+      await writer.query(`delete from workflows where id=$1`, [f.workflow]);
+      await writer.query(`delete from inbox_change_log where organization_id=$1`, [f.org]);
+      await writer.query(`delete from users where id=$1`, [f.user]);
+      await writer.query(`delete from projects where id=$1`, [f.project]);
+      await writer.query(`delete from organizations where id=$1`, [f.org]);
+      await listener.query('unlisten inbox_changed');
+    } finally {
+      listener.release();
+      writer.release();
+    }
+  });
+
+  it('FR-032 RLS policies exist on the four tables and app_user has SELECT/INSERT/UPDATE/DELETE on requirements and requirement_analysis_items, SELECT on integration_project_mappings, SELECT/INSERT on requirement_transitions', async () => {
+    const grants: Record<string, string[]> = {
+      requirements: ['SELECT', 'INSERT', 'UPDATE', 'DELETE'],
+      requirement_analysis_items: ['SELECT', 'INSERT', 'UPDATE', 'DELETE'],
+      integration_project_mappings: ['SELECT'],
+      requirement_transitions: ['SELECT', 'INSERT'],
+    };
+    for (const [table, expected] of Object.entries(grants)) {
+      expect(await columns(table), table).toContain('organization_id');
+      const pol = (
+        await admin5.query(`select policyname, qual from pg_policies where tablename=$1`, [table])
+      ).rows;
+      expect(
+        pol.map((p) => p.policyname),
+        table,
+      ).toEqual([`${table}_org_isolation`]);
+      expect(pol[0].qual, table).toContain("current_setting('app.organization_id'");
+      const privs = (
+        await admin5.query(
+          `select privilege_type from information_schema.role_table_grants where grantee='app_user' and table_name=$1`,
+          [table],
+        )
+      ).rows.map((r) => r.privilege_type as string);
+      expect(privs.sort(), table).toEqual([...expected].sort());
+    }
+    // 0005 does not toggle RLS itself: the CDEVI_RLS loop in migrate.ts owns it (off by default here).
+    const sql = readFileSync(
+      resolve(import.meta.dirname, '../migrations/0005_requirements.sql'),
+      'utf8',
+    );
+    expect(sql).not.toMatch(/ROW LEVEL SECURITY/i);
+    const seq = (
+      await admin5.query(
+        `select privilege_type from information_schema.role_usage_grants where grantee='app_user' and object_name='requirement_transitions_id_seq'`,
+      )
+    ).rows.map((r) => r.privilege_type);
+    expect(seq).toContain('USAGE');
+  });
+
+  it('SC-007 EXPLAIN of the list query filtered by project, by state (READY and also the terminal COMPLETED) and by assignee uses requirements_list_idx / requirements_state_idx / requirements_assignee_idx at 2 000 requirements', async () => {
+    const client = await admin5.connect();
+    try {
+      await client.query('begin');
+      const org = (
+        await client.query(`insert into organizations(name) values ('sc7-req') returning id`)
+      ).rows[0].id as string;
+      const projects = (
+        await client.query(
+          `insert into projects(organization_id, key, name) select $1, 'sc7r-'||g, 'SC7R '||g from generate_series(1,4) g returning id`,
+          [org],
+        )
+      ).rows.map((r) => r.id as string);
+      const users = (
+        await client.query(
+          `insert into users(organization_id, email, display_name, role, password_hash) select $1, 'u'||g||'@sc7.io', 'U '||g, 'engineer', 'x' from generate_series(1,20) g returning id`,
+          [org],
+        )
+      ).rows.map((r) => r.id as string);
+      await client.query(
+        `insert into requirements(organization_id, project_id, external_id, title, business_objective, state, assignee_user_id, created_at)
+         select $1, ($2::uuid[])[(g % 4) + 1], 'sc7-req-'||g, 'Requirement '||g, 'Objective for requirement '||g,
+                (enum_range(null::requirement_state))[(g % 8) + 1],
+                case when g % 3 = 0 then null else ($3::uuid[])[(g % 20) + 1] end,
+                now() - (g % 400) * interval '1 hour'
+         from generate_series(1,2000) g`,
+        [org, projects, users],
+      );
+      await client.query('analyze requirements');
+      const select = `select id, external_id, title, state, created_at from requirements`;
+      const order = `order by created_at desc, id desc limit 51`;
+      await expectIndexScan(
+        client,
+        'requirements_list_idx',
+        `${select} where organization_id=$1 and project_id=$2 ${order}`,
+        [org, projects[0]],
+      );
+      for (const state of ['READY', 'COMPLETED'])
+        await expectIndexScan(
+          client,
+          'requirements_state_idx',
+          `${select} where organization_id=$1 and state=$2 ${order}`,
+          [org, state],
+        );
+      await expectIndexScan(
+        client,
+        'requirements_assignee_idx',
+        `${select} where organization_id=$1 and assignee_user_id=$2 ${order}`,
+        [org, users[0]],
+      );
+      const assignee = await indexDef('requirements_assignee_idx');
+      expect(assignee?.indexdef).toMatch(/WHERE \(assignee_user_id IS NOT NULL\)/);
+      const state = await indexDef('requirements_state_idx');
+      expect(state?.indexdef).not.toContain('WHERE');
+      await client.query('rollback');
+    } finally {
+      client.release();
+    }
+  });
+
+  it('FR-003 EXPLAIN of GET /workflows ordering uses workflows_list_idx at 500 workflows', async () => {
+    const client = await admin5.connect();
+    try {
+      await client.query('begin');
+      const org = (
+        await client.query(`insert into organizations(name) values ('sc7-wf') returning id`)
+      ).rows[0].id as string;
+      const project = (
+        await client.query(
+          `insert into projects(organization_id, key, name) values ($1,'sc7w','SC7W') returning id`,
+          [org],
+        )
+      ).rows[0].id as string;
+      await client.query(
+        `insert into workflows(organization_id, project_id, external_id, title, state, state_observed_at)
+         select $1, $2, 'sc7-wl'||g, 'W '||g, (enum_range(null::workflow_state))[(g % 9) + 1], now() - g * interval '1 minute'
+         from generate_series(1,500) g`,
+        [org, project],
+      );
+      await client.query('analyze workflows');
+      await expectIndexScan(
+        client,
+        'workflows_list_idx',
+        `select id, external_id, state, state_observed_at from workflows where organization_id=$1 order by state_observed_at desc, id desc limit 51`,
+        [org],
+      );
+      await expectIndexScan(
+        client,
+        'workflows_list_idx',
+        `select id, external_id, state, state_observed_at from workflows where organization_id=$1 and (state_observed_at, id) < ($2, $3) order by state_observed_at desc, id desc limit 51`,
+        [org, new Date(), '00000000-0000-0000-0000-000000000000'],
+      );
       await client.query('rollback');
     } finally {
       client.release();
