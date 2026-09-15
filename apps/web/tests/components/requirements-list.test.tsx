@@ -77,9 +77,11 @@ describe('Requirements list (specs/001 US4, ui-requirements.md §2/§5.1)', () =
     for (const r of SEED_ROWS) {
       const li = items.find((el) => el.textContent?.includes(r.externalId))!;
       expect(within(li).getByRole('link', { name: r.title })).toHaveAttribute('href', r.href);
-      const pill = within(li).getByText(requirementStateToPill[r.state].word);
+      // req-seed-007 and its workflow both read "completed"; the requirement pill carries data-state.
+      const pill = within(li)
+        .getAllByText(requirementStateToPill[r.state].word)
+        .find((el) => el.getAttribute('data-state') === r.state)!;
       expect(pill).toHaveClass('cd-pill');
-      expect(pill).toHaveAttribute('data-state', r.state);
       expect(requirementStateToPill[r.state].word).toBe(REQUIREMENT_STATE_WORDS[r.state]);
       expect(li).toHaveTextContent(PROJECT.key);
       expect(li).toHaveTextContent(r.assignee?.name ?? 'Unassigned');
