@@ -1,6 +1,6 @@
-# Tasks: SDLC Control Plane MVP — User Story 1 (Workflow Detail) and User Story 2 (Approval Center)
+# Tasks: SDLC Control Plane MVP — User Story 1 (Workflow Detail), User Story 2 (Approval Center) and User Story 3 (Dashboard)
 
-> Phases 1–4 are User Story 1 as landed on `feature/US1`. **Phase 5–6 (User Story 2, `feature/US2`) are appended at the end** — append-only, earlier tasks unchanged.
+> Phases 1–4 are User Story 1 as landed on `feature/US1`. **Phase 5–6 (User Story 2, `feature/US2`) are appended after them**, and **Phase 7–8 (User Story 3, `feature/US3`) at the end** — append-only, earlier tasks unchanged.
 
 **Input**: Design documents from `/specs/001-sdlc-control-plane-mvp/` — plan.md (US1 scope), spec.md (US1, lines 20–35; FR-001…FR-006, FR-034, SC-001, SC-003), research.md (R1–R10), data-model.md, contracts/{openapi.yaml, ui-workflow-detail-screen.md}, quickstart.md §2
 
@@ -225,3 +225,84 @@ US1 is the MVP for this branch and the only story tasked. Deliver bottom-up so e
 | SC-006 | T043, T046, T059 |
 | SC-007 | T047, T048, T059 |
 | SC-010 | T055, T056, T059 |
+
+---
+
+## Phase 7: User Story 3 — See the state of the engineering system at a glance (Priority: P2)
+
+**Input**: plan.md Part C, spec.md US3 (lines 58–75; FR-023, FR-025, FR-026, FR-034, FR-035, SC-002/003/007/010), research.md R21–R30, data-model.md §18–21, contracts/{openapi.yaml, ui-dashboard.md}, quickstart.md §4.
+
+**Goal**: `/dashboard` renders header counts (active workflows, running agents, PRs generated, open failures), a stage 1–7 pipeline, the "What needs me" counts (approvals, clarifications, failed, blocked), health rates for a selected window (`24h|7d|30d`, default `7d`), HIGH/CRITICAL risk counts with an explicit "security findings — not connected yet" state, and ≤ 12 active workflow cards — every figure a link to the filtered list behind it, scoped by the project selector ("All projects" allowed), refetched on `inbox.changed`. One read route `GET /api/dashboard?project=all|uuid&window=24h|7d|30d` over the existing tables; migration `0004_dashboard.sql` adds indexes only; the seed gains the administrator-only project `dashboard-demo`.
+
+**Independent Test** (quickstart §4.2): as administrator select **Dashboard Demo**: 18 active workflows, 4 approvals, 2 clarifications, test pass rate 97.4 %, security findings "not connected yet"; every figure opens its filtered list.
+
+**Scope guards** (approved, not reopened): no review/finding tables (US6); `/workflows`, `/testing`, `/agents`, `/audit`, `/reviews` stay placeholders — links carry the query params those screens will honour; no new tables.
+
+### 7a. Contracts (`packages/contracts`) — tests first
+
+- [ ] T064 [P] [US3] Write failing pure-model tests in `packages/contracts/tests/dashboard-model.test.ts` against data-model §20 and research R24/R25: `FR-023 ACTIVE_STATES equals WORKFLOW_STATES minus terminal states and SDLC_STAGES has the seven stage names in order`; `FR-023 windowFor returns from = now − 24h|7d|30d and to = now`; `FR-023 dashboardHrefs('7d') returns the R25 table (stage n → /workflows?stage=n, /approvals, /approvals?kind=clarification, /workflows?state=FAILED, /approvals?risk=HIGH,CRITICAL, /audit?risk=HIGH,CRITICAL&window=7d, /reviews)`; `FR-023 ratePercent returns null for denominator 0 and 97.4 for 974/1000`; `FR-023 stageProgress maps index 4 of 7 to 3/7 and null index to 0/7`; `FR-023 elapsedMs is null without startedAt and never negative`; `FR-023 orderActiveCards sorts stateObservedAt desc then workflowId asc`; `FR-023 pipelineFrom returns exactly seven ascending stages with names plus unstaged`; `FR-023 buildDashboardSnapshot keeps Σ pipeline + unstaged = activeWorkflows, failed + blocked = openFailures, pendingHighCritical ≤ approvals, numerator ≤ denominator, ≤ 12 cards with href /workflows/{id}`; `FR-026 securityFindings is { connected: false, count: null, href: '/reviews' }`
+- [ ] T065 [P] [US3] Write failing schema tests in `packages/contracts/tests/schemas.test.ts`: `FR-025 DashboardQuery accepts all|uuid and defaults project to all and window to 7d`; `FR-023 DashboardQuery rejects window=90d and project=foo`; `FR-023 DashboardSnapshot requires exactly seven pipeline stages, ≤ 12 activeWorkflows, hrefs starting with / and rates with numerator ≤ denominator`; `FR-026 SecurityFindings accepts connected:false/count:null and connected:true/count:n and rejects connected:false with a count`
+- [ ] T066 [P] [US3] Extend `packages/contracts/tests/openapi.test.ts`: the 001 fragment's paths now also include `/dashboard` with query params `project` (default `all`) and `window` (enum `24h|7d|30d`, default `7d`); schemas include `DashboardSnapshot`, `DashboardQuery`; every 003 and US1/US2 route is still present; snapshot equality of `specs/001-sdlc-control-plane-mvp/contracts/openapi.yaml`
+- [ ] T067 [US3] Create `packages/contracts/src/dashboard-model.ts` (zod-free) per data-model §20: `ACTIVE_STATES`, `RUNNING_AGENT_STATES`, `FAILURE_STATES`, `SDLC_STAGES`, `ACTIVE_CARD_LIMIT = 12`, `WINDOW_MS`, `windowFor`, `dashboardHrefs`, `ratePercent`, `stageProgress`, `elapsedMs`, `orderActiveCards`, `pipelineFrom`, `buildDashboardSnapshot(rows, now, windowKey, project)` with the `DashboardRows` type; add `"./dashboard-model": "./src/dashboard-model.ts"` to `packages/contracts/package.json` `exports` (T064 passes)
+- [ ] T068 [US3] Create `packages/contracts/src/dashboard.ts` (Zod) per data-model §19: `WindowKey`, `DashboardQuery`, `Window`, `Href`, `Figure`, `Rate` (refine numerator ≤ denominator), `PipelineStage`, `SdlcStageName`, `DashboardCounts`, `DashboardPipeline` (length 7), `DashboardNeedsMe`, `DashboardHealth`, `SecurityFindings` (discriminated on `connected`), `DashboardRisk`, `ActiveWorkflowCard`, `DashboardSnapshot` (`activeWorkflows.max(12)`); export from `src/index.ts` together with `dashboard-model` (T065 passes)
+- [ ] T069 [US3] Extend `packages/contracts/src/openapi.ts` `buildWorkflowDetailOpenApi()` (title "CDevi API — Workflow Detail, Approval Center and Dashboard (specs/001 US1–US3)", tag `dashboard`): `GET /dashboard` (query `DashboardQuery`; 200 `DashboardSnapshot`, 400 `Problem`, 401 `Problem`); register schemas; run `pnpm -F @cdevi/contracts openapi` (T066 passes; the 003 yaml is unchanged)
+
+### 7b. Database (`packages/db`) — tests first
+
+- [ ] T070 [P] [US3] Write failing migration tests in `packages/db/tests/schema.test.ts` (`describe('migration 0004_dashboard (specs/001 data-model.md §18)')`): `SC-007 0004 creates test_runs_org_project_finished_idx, agent_runs_org_project_finished_idx, audit_events_org_risk_time_idx (partial on HIGH/CRITICAL), approvals_workflow_idx, clarifications_workflow_idx and no table or column changes`; `SC-007 EXPLAIN of the windowed test_runs, agent_runs and HIGH/CRITICAL audit_events aggregates uses an index scan at 500 workflows / 5 000 agent runs / 50 000 audit events` (fixture inserted with `generate_series` inside the test transaction)
+- [ ] T071 [P] [US3] Write failing seed tests in `packages/db/tests/seed.test.ts`: pure — `FR-023 buildDashboardShowcase is deterministic: project dashboard-demo, 24 workflows s500-d01…d24, 18 active with stage_index 3/2/1/4/3/3/2 across stages 1–7, 4 pending approvals (CRITICAL, HIGH, MEDIUM, LOW), 2 pending clarifications, 1 FAILED, 1 BLOCKED, 7 RUNNING/RETRYING, 6 workflows with a pull_request_ref` and `FR-023 dashboard showcase test runs sum to 974 passed of 1000 and finished agent runs to 35 of 37, all finished 1–3 days before base`; database — `FR-023 seeding writes EXPECTED_DASHBOARD rows for dashboard-demo without memberships and keeps audit_events empty`; update `SC-005 seed inserts …` totals to `EXPECTED_BUCKETS.total + EXPECTED_DASHBOARD.workflows`, `24 + EXPECTED_DASHBOARD.approvals`, `12 + EXPECTED_DASHBOARD.clarifications`, `EXPECTED_SHOWCASE.stages|runs|testRuns + EXPECTED_DASHBOARD.stages|runs|testRuns` (quickstart §4.3 table; every `buildS500` assertion unchanged)
+- [ ] T072 [US3] Write `packages/db/migrations/0004_dashboard.sql` exactly as data-model §18 (five `CREATE INDEX`, three partial; no tables, columns, triggers, RLS or grants) (T070 passes)
+- [ ] T073 [US3] Mirror the five indexes in `packages/db/src/schema.ts` (`index().on().where()` on `testRuns`, `agentRuns`, `auditEvents`, `approvals`, `clarifications`)
+- [ ] T074 [US3] Create `packages/db/src/seed/dashboard.ts`: `DASHBOARD_PROJECT = { key: 'dashboard-demo', name: 'Dashboard Demo' }`, `EXPECTED_DASHBOARD = { workflows: 24, active: 18, approvals: 4, clarifications: 2, stages: 43, runs: 44, testRuns: 6 }`, `buildDashboardShowcase(base)` per data-model §21 using `mulberry32(SEED_RNG + 1)` and the `SeedWorkflow`/`SeedShowcase` types from `s500.ts`; extend `packages/db/src/seed/index.ts` to insert the project (no memberships) and its workflows, transitions, approvals, clarifications, stages, agent runs and test runs after the S-500 pass with the existing insert helpers; export `EXPECTED_DASHBOARD` (T071 passes; `buildS500` untouched)
+
+### 7c. API (`apps/api`) — tests first
+
+- [ ] T075 [P] [US3] Write failing tests `apps/api/tests/dashboard.test.ts` (fixed clock, seeded database, `dashboard-demo` id looked up by key): `FR-023 GET /dashboard?project=<dashboard-demo> returns 18 active, 7 running agents, 6 PRs, 2 open failures, pipeline 3/2/1/4/3/3/2, needsMe 4/2/1/1, testPassRate 974/1000, agentSuccessRate 35/37, humanInterventionRate 8/24, pendingHighCritical 2, auditHighCritical 0`; `FR-023 every figure and card carries the R25 href and cards are 12 of 18 ordered stateObservedAt desc`; `FR-026 securityFindings is connected:false with href /reviews`; `FR-025 project=all aggregates every visible project (≥ 118 active for the administrator) and is the default`; `FR-025 a viewer sees only member projects and an unknown or invisible uuid yields zeros, not 404`; `FR-023 window=24h empties the health denominators and window=30d equals 7d for dashboard-demo`; `FR-023 window=90d and project=foo return 400 problem+json validation without internals`; `FR-023 unauthenticated returns 401`; `FR-034 an ingested WAITING_FOR_HUMAN transition changes runningAgents and needsMe on the next call`; `SC-007 GET /dashboard p95 ≤ 300 ms and payload ≤ 8 KB over 20 calls at 500 workflows / 5 000 agent runs / 50 000 audit events` (fixture builder `seedSc007Org()` added to `apps/api/tests/helpers.ts`, inserting with `generate_series` into a fresh organization)
+- [ ] T076 [US3] Create `apps/api/src/services/dashboard.ts`: `dashboardSnapshot(client, scope, query, now)` — resolve `$projects` from `visibleProjects(scope)` (or the single requested visible project, else `[]`), run statements Q1–Q8 of research R22 (aggregates + `LIMIT 12`) and return `buildDashboardSnapshot(rows, now, query.window, query.project)`; no per-row work in SQL beyond the 12 cards
+- [ ] T077 [US3] Create `apps/api/src/routes/dashboard.ts`: `GET /dashboard` with `preHandler: app.requireUser`, `querystring: DashboardQuery`, `app.tx({ organizationId, userId, isolation: 'REPEATABLE READ' })`, `Server-Timing: db;dur=`, `response: { 200: DashboardSnapshot }`; register in `apps/api/src/app.ts` and add `DashboardSnapshot` to the swagger components (T075 passes)
+
+### 7d. Web (`apps/web`) — tests first
+
+- [ ] T078 [P] [US3] Create typed fixtures `apps/web/tests/fixtures/dashboard.ts` from `DashboardSnapshot` (T068): `populated` (the quickstart §4.2 figures incl. `unstaged: 1`, `pendingHighCritical: 2`, 12 cards, `activeWorkflowsTotal: 18`), `zeroDenominators` (24h), `empty` (all zeros, no cards), `allProjects`; then write failing component tests `apps/web/tests/components/dashboard.test.tsx` (`renderThemed`, `vi.useFakeTimers`, mocked `fetch` and `subscribeInboxStream`): `FR-035 renders four header Stats whose values are links named "18 active workflows", "7 running agents", "6 PRs generated · Last 7 days", "2 open failures" with the R25 hrefs`; `FR-023 pipeline list has seven rows Requirement…PR linking to /workflows?stage=1…7 with counts 3/2/1/4/3/3/2, a Bars img with a text summary, and a "without a stage" row only when unstaged > 0`; `FR-023 What needs me links 4 approvals → /approvals, 2 clarifications → /approvals?kind=clarification, 1 failed workflows → /workflows?state=FAILED, 1 blocked workflows → /workflows?state=BLOCKED (SC-002)`; `FR-023 health meters show 97.4 %, 94.6 %, 33.3 % with fractions and window hrefs; zero denominators render — with the reason text and a muted meter`; `FR-026 risk region shows RiskBadge HIGH and CRITICAL, 2 pending approvals → /approvals?risk=HIGH,CRITICAL, 0 audit events → /audit?risk=HIGH,CRITICAL&window=7d, and security findings — with the neutral not-connected notice linking /reviews (no saffron, no done pill)`; `FR-023 active workflows list renders 12 rows with Mono identifier, title link /workflows/{id}, stage/agent/elapsed meta, Progress meter, StatePill word, and a ghost "Show all 18"`; `FR-025 project select lists All projects + me.projects, writes the cdevi_project cookie and refetches with ?project=; window select refetches with ?window= and relabels windowed figures`; `FR-034 inbox.changed triggers one debounced refetch within 300 ms and rows keep focus`; `FR-023 error state shows alert "Couldn't load the dashboard." with Retry that refetches and moves focus to the h1`; `FR-023 empty state offers Show all projects for a single project`; `SC-010 no .cd-saffron element in any state`; `SC-010 axe passes for populated, zero-denominator, empty, error and refreshing states`
+- [ ] T079 [US3] Create `apps/web/app/(app)/dashboard/DashboardScreen.tsx` (client) per ui-dashboard.md §2/§4/§5 with `Topbar`, `PageMeta`, `Field`/`Select` ×2, `StatGrid`/`Stat`, `Card`, `List`/`ListRow`, `Bars`, `Meter`, `Mono`, `StatePill`, `RiskBadge`, `Notice`, `Button variant="ghost"` from `apps/web/lib/ds.ts`; imports only `@cdevi/contracts/dashboard-model`, `/read-model`, `/vocabulary`; `subscribeInboxStream` debounced refetch; cookie + `?project=`/`?window=` handling as in `ApprovalCenterScreen.tsx` (T078 passes)
+- [ ] T080 [US3] Create `apps/web/app/(app)/dashboard/page.tsx` (server: cookie + `?window=` → `getDashboardSnapshot(project, window)` added to `apps/web/lib/session.ts` → `<DashboardScreen initial me />`, error → contract §4 error); remove `dashboard` from the `[section]` fall-through in `apps/web/app/(app)/[section]/page.tsx`; confirm `pnpm check:size` (route JS ≤ 200 KB gzip)
+
+### 7e. End-to-end (`apps/web/tests/e2e`) — test first, then wire-up
+
+- [ ] T081 [US3] Write failing `apps/web/tests/e2e/dashboard.spec.ts` (Independent Test, administrator, project **Dashboard Demo**): `FR-023 dashboard shows 18 active workflows, 4 approvals, 2 clarifications, 97.4 % test pass rate and security findings not connected yet`; `FR-023 every figure links to its filtered list: stage 1 → /workflows?stage=1 (query preserved on the placeholder), 4 approvals → Approval Center listing the four Dashboard Demo items, a card → Workflow Detail`; `FR-025 All projects shows the organization-wide counts equal to the header count`; `FR-026 HIGH and CRITICAL badges are visible in the risk region`; `FR-034 an ingested WAITING_FOR_HUMAN transition updates running agents and the card pill within 5 s without reload (SC-003)`; `SC-002 an ingested BLOCKED transition raises the blocked workflows count in What needs me within 5 s`; `SC-007 initial content within 2 s p95 over 10 runs at the seeded database plus the SC-007 fixture`; `SC-010 page-level axe passes and Tab reaches every figure link in the §5 order, Enter on Requirement navigates to /workflows?stage=1`
+- [ ] T082 [US3] Wire-up until T081 is green (route registration, cookie handling, seed ids); refresh the administrator "Needs you" visual baselines `apps/web/tests/e2e/__screenshots__/00-inbox-visual.spec.ts/inbox-needs-you-{light,dark}.png` with `pnpm -F @cdevi/web exec playwright test 00-inbox-visual --update-snapshots` in the same commit as the seed change (research R30; `toHaveCount(50)` and `inbox-journey.spec.ts` assertions stay untouched); run `pnpm check && pnpm test:api && pnpm test:e2e`
+
+**Checkpoint**: quickstart §4.2 walk-through passes by hand against `pnpm dev`.
+
+---
+
+## Phase 8: Polish & Cross-Cutting Concerns (US3)
+
+- [ ] T083 [P] Update `docs/architecture.md`: §4 "Dashboard" marked landed (`GET /api/dashboard?project=&window=`, read model only); §6 query contracts the placeholder screens must honour (`/workflows?stage=n|state=A,B|hasPr=true|intervention=human`, `/approvals?kind=clarification|risk=HIGH,CRITICAL`, `/testing?window=`, `/agents?window=`, `/audit?risk=HIGH,CRITICAL&window=`, `/reviews`); §8 layout adds `0004_dashboard.sql`, `seed/dashboard.ts`, `services/dashboard.ts`, `routes/dashboard.ts`, `apps/web/app/(app)/dashboard/`
+- [ ] T084 [P] Update `AGENTS.md` "Backend and web app work": `GET /api/dashboard` (aggregate read model, `project=all|uuid`, `window=24h|7d|30d`, indexes in 0004) and the zod-free `@cdevi/contracts/dashboard-model` subpath in the browser-import list; note the `dashboard-demo` seed project (administrator-only) under `pnpm db:seed`
+- [ ] T085 Review the diff against `develop`, run `pnpm check && pnpm test:api && pnpm test:e2e` once more, open the PR `feature/US3 → develop` with the quickstart §4.2 scenario→test table, then iterate on Devin Review findings until none remain
+
+## Dependencies & Execution Order (Phase 7–8)
+
+- **7a**: T064, T065, T066 parallel → T067 → T068 → T069.
+- **7b**: T070, T071 parallel (need nothing from 7a or 7c) → T072 → T073 → T074. Independent of 7c.
+- **7c**: T075 (after T068 for the schema and T074 for the seeded figures) → T076 → T077.
+- **7d**: T078 (after T068 only — typed fixtures, no API or database) → T079 → T080; runs alongside 7b and 7c.
+- **7e**: T081 (after T074, T077, T080) → T082.
+- **Phase 8**: T083, T084 parallel; T085 last.
+
+**Parallel example**: after T069, one engineer runs 7b (T070 → T074) while another runs 7d (T078 → T080) and a third starts T075 against the schema; 7c implementation (T076–T077) begins when T074 lands; 7e integrates all three.
+
+## Traceability (US3)
+
+| Spec id | Tasks |
+|---------|-------|
+| FR-023 | T064, T065, T066, T067, T068, T069, T071, T074, T075, T076, T077, T078, T079, T080, T081, T083 |
+| FR-025 | T065, T068, T075, T076, T078, T079, T081 |
+| FR-026 | T064, T065, T068, T075, T078, T079, T081 |
+| FR-034 | T075, T078, T079, T081 |
+| FR-035 | T078, T079, T081 |
+| SC-002 | T064, T075, T078, T081 |
+| SC-003 | T081 |
+| SC-007 | T070, T072, T073, T075, T076, T081 |
+| SC-010 | T078, T079, T081 |
