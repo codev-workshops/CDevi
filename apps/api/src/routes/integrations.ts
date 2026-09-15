@@ -8,8 +8,8 @@ export interface IntegrationRouteOptions {
   jiraWebhookSecret?: string | undefined;
 }
 
-export const JIRA_WEBHOOK_BODY_LIMIT = 256 * 1024;
-export const JIRA_WEBHOOK_RATE_MAX = 120;
+const JIRA_WEBHOOK_BODY_LIMIT = 256 * 1024;
+const JIRA_WEBHOOK_RATE_MAX = 120;
 
 /**
  * Encapsulated: the raw-buffer JSON parser below applies only to routes in this plugin so the HMAC is
