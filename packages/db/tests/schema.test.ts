@@ -1056,14 +1056,10 @@ describe.skipIf(skip)('migration 0005_requirements (specs/001 data-model.md §22
       expect(reqCons).toContain(c);
     const itemCons = await constraintNames('requirement_analysis_items');
     expect(itemCons).toContain('requirement_analysis_items_human_check');
-    expect(itemCons).toContain(
-      'requirement_analysis_items_requirement_id_kind_ai_generated_position_key',
-    );
+    expect(itemCons).toContain('requirement_analysis_items_position_key');
     const mapCons = await constraintNames('integration_project_mappings');
     expect(mapCons).toContain('integration_project_mappings_provider_external_project_key_key');
-    expect(mapCons).toContain(
-      'integration_project_mappings_organization_id_project_id_provider_key',
-    );
+    expect(mapCons).toContain('integration_project_mappings_project_provider_key');
     const trCons = await constraintNames('requirement_transitions');
     expect(trCons).toContain('requirement_transitions_actor_type_check');
     const triggers = (
@@ -1103,6 +1099,7 @@ describe.skipIf(skip)('migration 0005_requirements (specs/001 data-model.md §22
       ).rejects.toThrow(/requirement_transitions_actor_type_check/);
       await client.query('rollback');
     } finally {
+      await client.query('rollback').catch(() => undefined);
       client.release();
     }
     const mapping = await admin5.connect();
@@ -1126,6 +1123,7 @@ describe.skipIf(skip)('migration 0005_requirements (specs/001 data-model.md §22
       ).rejects.toThrow(/external_base_url_check/);
       await mapping.query('rollback');
     } finally {
+      await mapping.query('rollback').catch(() => undefined);
       mapping.release();
     }
   });
@@ -1150,7 +1148,7 @@ describe.skipIf(skip)('migration 0005_requirements (specs/001 data-model.md §22
         ),
       ).toBe(4);
       await expect(item(client, f, 'acceptance_criterion', 1, true)).rejects.toThrow(
-        /requirement_analysis_items_requirement_id_kind_ai_generated_position_key/,
+        /requirement_analysis_items_position_key/,
       );
       await client.query('rollback');
       await client.query('begin');
@@ -1168,6 +1166,7 @@ describe.skipIf(skip)('migration 0005_requirements (specs/001 data-model.md §22
       );
       await client.query('rollback');
     } finally {
+      await client.query('rollback').catch(() => undefined);
       client.release();
     }
   });
@@ -1216,6 +1215,7 @@ describe.skipIf(skip)('migration 0005_requirements (specs/001 data-model.md §22
       ).toBeNull();
       await client.query('rollback');
     } finally {
+      await client.query('rollback').catch(() => undefined);
       client.release();
     }
   });
@@ -1269,22 +1269,29 @@ describe.skipIf(skip)('migration 0005_requirements (specs/001 data-model.md §22
           [h.org, h.project],
         ),
       ).rejects.toThrow(/requirements_external_ref_check/);
+      await client.query('rollback');
+      await client.query('begin');
+      const i = await fixture(client);
       await expect(
         client.query(
           `insert into requirements(organization_id, project_id, external_id, title, business_objective, source, external_ref)
            values ($1,$2,'req-j','Jira','Jira rows need key and url.','jira','{"provider":"jira","key":"PAY-1"}')`,
-          [h.org, h.project],
+          [i.org, i.project],
         ),
       ).rejects.toThrow(/requirements_external_ref_check/);
+      await client.query('rollback');
+      await client.query('begin');
+      const j = await fixture(client);
       await expect(
         client.query(
           `insert into requirements(organization_id, project_id, external_id, title, business_objective, source)
            values ($1,$2,'req-j','Jira','Jira rows need an external_ref.','jira')`,
-          [h.org, h.project],
+          [j.org, j.project],
         ),
       ).rejects.toThrow(/requirements_external_ref_check/);
       await client.query('rollback');
     } finally {
+      await client.query('rollback').catch(() => undefined);
       client.release();
     }
   });
@@ -1323,6 +1330,7 @@ describe.skipIf(skip)('migration 0005_requirements (specs/001 data-model.md §22
       ).rejects.toThrow('requirement_transitions is append-only');
       await client.query('rollback');
     } finally {
+      await client.query('rollback').catch(() => undefined);
       client.release();
     }
   });
@@ -1424,6 +1432,7 @@ describe.skipIf(skip)('migration 0005_requirements (specs/001 data-model.md §22
       ).toBe('APPROVED');
       await client.query('rollback');
     } finally {
+      await client.query('rollback').catch(() => undefined);
       client.release();
     }
     const trg = (
@@ -1484,6 +1493,7 @@ describe.skipIf(skip)('migration 0005_requirements (specs/001 data-model.md §22
       ).rejects.toThrow(/inbox_change_log_target_check/);
       await client.query('rollback');
     } finally {
+      await client.query('rollback').catch(() => undefined);
       client.release();
     }
 
@@ -1622,6 +1632,7 @@ describe.skipIf(skip)('migration 0005_requirements (specs/001 data-model.md §22
       expect(state?.indexdef).not.toContain('WHERE');
       await client.query('rollback');
     } finally {
+      await client.query('rollback').catch(() => undefined);
       client.release();
     }
   });
@@ -1660,6 +1671,7 @@ describe.skipIf(skip)('migration 0005_requirements (specs/001 data-model.md §22
       );
       await client.query('rollback');
     } finally {
+      await client.query('rollback').catch(() => undefined);
       client.release();
     }
   });
