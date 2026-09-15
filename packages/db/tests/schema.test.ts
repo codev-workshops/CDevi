@@ -2053,6 +2053,30 @@ describe.skipIf(skip)(
       }
     });
 
+    it('FR-017 app_user may UPDATE only agent_decisions.stage_id (column grant), so decisions can follow their run to another stage without any content edit', async () => {
+      const cols = (
+        await admin6.query(
+          `select column_name from information_schema.role_column_grants where grantee='app_user' and table_name='agent_decisions' and privilege_type='UPDATE'`,
+        )
+      ).rows.map((r) => r.column_name as string);
+      expect(cols).toEqual(['stage_id']);
+      const client = await app6.connect();
+      try {
+        await client.query('BEGIN');
+        const f = await fixture(client);
+        const id = (await insertDecision(client, f, 1)).rows[0].id as string;
+        await expect(
+          client.query(`update agent_decisions set stage_id=$2 where id=$1`, [id, f.stage]),
+        ).resolves.toMatchObject({ rowCount: 1 });
+        await expect(
+          client.query(`update agent_decisions set position=99 where id=$1`, [id]),
+        ).rejects.toThrow(/permission denied/);
+        await client.query('ROLLBACK');
+      } finally {
+        client.release();
+      }
+    });
+
     it("FR-034 inbox_changed_agent_decisions(_deleted) are statement-level AFTER INSERT / AFTER DELETE triggers: a replace-whole (DELETE + batch INSERT) in one transaction writes exactly one inbox_change_log row carrying the run's workflow_id, an empty replacement (DELETE only) still writes one, and NOTIFYs inbox_changed once", async () => {
       const trg = (
         await admin6.query(

@@ -1,4 +1,6 @@
 import {
+  AgentDecisionsIngest,
+  AgentDecisionsIngestResult,
   AgentRunUpsert,
   ApprovalUpsert,
   ArtifactUpsert,
@@ -135,6 +137,25 @@ export default async function ingestRoutes(app: FastifyInstance) {
         request.params.externalId,
         request.body,
       ),
+  );
+
+  r.put(
+    '/ingest/agent-runs/:externalId/decisions',
+    {
+      schema: {
+        tags: ['ingest'],
+        params: ExternalIdParams,
+        body: AgentDecisionsIngest,
+        response: { 200: AgentDecisionsIngestResult },
+      },
+      preHandler: app.requirePrincipal,
+    },
+    async (request) =>
+      svc(
+        request,
+        'PUT /ingest/agent-runs/{externalId}/decisions',
+        request.params.externalId,
+      ).replaceAgentDecisions(request.params.externalId, request.body),
   );
 
   r.put(
