@@ -25,6 +25,7 @@ const stage = (position: number, state: WorkflowState, current = false): Stage =
     errorSummary: state === 'FAILED' ? 'Unit tests failed: 3 of 120' : null,
     requiresApproval: position === 6,
     current,
+    agentRuns: [],
   };
 };
 const ref = (s: Stage) => ({ id: s.id, position: s.position, name: s.name });

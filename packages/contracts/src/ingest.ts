@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { ExternalId, IsoDateTime, line, StageInput, Uuid } from './common';
+import { AgentDecision, RunStep } from './agent-runs';
+import { DecisionLink, ExternalId, IsoDateTime, line, StageInput, Uuid } from './common';
 import { RequirementState } from './requirements';
 import { RiskLevel, WorkflowState } from './vocabulary';
 import { AgentRunEvent, ArtifactType, TestRunStatus } from './workflow-detail';
@@ -24,17 +25,7 @@ export const Transition = z.object({
 });
 export type Transition = z.infer<typeof Transition>;
 
-/**
- * http(s) URL or app-relative path, ≤ 500 chars (data-model.md §13). A relative path must start with a single `/`:
- * `//host` and `/\host` are protocol-relative and would leave the app.
- */
-export const DecisionLink = z
-  .string()
-  .trim()
-  .max(500)
-  .refine((s) => /^https?:\/\//.test(s) || /^\/(?![/\\])/.test(s), {
-    message: 'must be an http(s) URL or an app-relative path',
-  });
+export { DecisionLink };
 export const DECISION_LINK_KEYS = [
   'requirement',
   'pullRequest',
@@ -178,8 +169,37 @@ export const AgentRunUpsert = z.object({
   finishedAt: IsoDateTime.nullable().optional(),
   summary: line(400).nullable().optional(),
   timeline: z.array(AgentRunEvent).max(50).default([]),
+  steps: z.array(RunStep).max(20).default([]),
 });
 export type AgentRunUpsert = z.infer<typeof AgentRunUpsert>;
+
+/**
+ * `PUT /ingest/agent-runs/{externalId}/decisions` — the runtime replaces a run's decisions as a whole
+ * (specs/001 US5, FR-017/FR-018). Strict: a free-form reasoning field (`chainOfThought`, `reasoning`,
+ * `thoughts`, …) is rejected by the contract; `reason` is the bounded summary. `stale` when `observedAt`
+ * is not newer than the stored watermark (nothing written).
+ */
+export const AgentDecisionIngest = AgentDecision.omit({ id: true }).strict();
+export type AgentDecisionIngest = z.infer<typeof AgentDecisionIngest>;
+
+export const AgentDecisionsIngest = z
+  .object({
+    observedAt: IsoDateTime,
+    decisions: z
+      .array(AgentDecisionIngest)
+      .max(50)
+      .refine((d) => new Set(d.map((x) => x.position)).size === d.length, {
+        message: 'decision positions must be unique',
+      }),
+  })
+  .strict();
+export type AgentDecisionsIngest = z.infer<typeof AgentDecisionsIngest>;
+
+export const AgentDecisionsIngestResult = z.object({
+  result: z.enum(['accepted', 'stale']),
+  count: z.number().int().min(0).max(50),
+});
+export type AgentDecisionsIngestResult = z.infer<typeof AgentDecisionsIngestResult>;
 
 export const ArtifactUpsert = z.object({
   workflowExternalId: ExternalId,

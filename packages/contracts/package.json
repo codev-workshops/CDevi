@@ -13,7 +13,8 @@
     "./decision-rules": "./src/decision-rules.ts",
     "./dashboard-model": "./src/dashboard-model.ts",
     "./vocabulary": "./src/vocabulary.ts",
-    "./requirement-rules": "./src/requirement-rules.ts"
+    "./requirement-rules": "./src/requirement-rules.ts",
+    "./agent-run-model": "./src/agent-run-model.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",

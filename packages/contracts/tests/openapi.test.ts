@@ -59,7 +59,7 @@ type Doc = {
 const us1 = () => buildWorkflowDetailOpenApi() as unknown as Doc;
 const ref = (name: string) => ({ $ref: `#/components/schemas/${name}` });
 
-describe('specs/001 US1–US4 contracts/openapi.yaml snapshot', () => {
+describe('specs/001 US1–US5 contracts/openapi.yaml snapshot', () => {
   it('FR-001 equals the fragment generated from the Zod schemas', () => {
     const committed = parse(readFileSync(US1_YAML, 'utf8'));
     expect(committed).toEqual(JSON.parse(JSON.stringify(buildWorkflowDetailOpenApi())));
@@ -71,6 +71,7 @@ describe('specs/001 US1–US4 contracts/openapi.yaml snapshot', () => {
       '/workflows/{id}/actions',
       '/ingest/workflows/{externalId}/stages/{position}',
       '/ingest/agent-runs/{externalId}',
+      '/ingest/agent-runs/{externalId}/decisions',
       '/ingest/artifacts/{externalId}',
       '/ingest/test-runs/{externalId}',
       '/approvals',
@@ -86,15 +87,80 @@ describe('specs/001 US1–US4 contracts/openapi.yaml snapshot', () => {
       '/requirements/{id}/approve',
       '/requirements/{id}/reject',
       '/ingest/requirements/{externalId}/analysis',
+      '/agent-runs/{id}',
       '/integrations/jira/webhook',
     ]);
   });
 
-  it('FR-007 FR-025 documents GET /requirements with project (default all), state, assignee and cursor and returns RequirementListPage', () => {
+  it('FR-016 FR-032 documents GET /agent-runs/{id} with the session cookie → 200 AgentRunDetail and 401/404 problems, tagged agent-runs', () => {
+    const doc = us1();
+    expect(doc.tags.map((t) => t.name)).toContain('agent-runs');
+    const get = doc.paths['/agent-runs/{id}']!['get']!;
+    expect(get.tags).toEqual(['agent-runs']);
+    expect(get.security).toEqual([{ sessionCookie: [] }]);
+    expect(get.parameters).toEqual([
+      expect.objectContaining({ name: 'id', in: 'path', required: true }),
+    ]);
+    expect(get.requestBody).toBeUndefined();
+    expect(Object.keys(get.responses)).toEqual(['200', '401', '404']);
+    expect(get.responses['200']).toMatchObject({
+      content: { 'application/json': { schema: ref('AgentRunDetail') } },
+    });
+    for (const code of ['401', '404'])
+      expect(get.responses[code]).toMatchObject({
+        content: { 'application/problem+json': { schema: ref('Problem') } },
+      });
+  });
+
+  it('FR-017 FR-018 FR-036 documents PUT /ingest/agent-runs/{externalId}/decisions with the bearer ingestion token, AgentDecisionsIngest → AgentDecisionsIngestResult and 400/401/403/404/409', () => {
+    const put = us1().paths['/ingest/agent-runs/{externalId}/decisions']!['put']!;
+    expect(put.tags).toEqual(['ingest']);
+    expect(put.security).toEqual([{ ingestionToken: [] }]);
+    expect(put.parameters).toEqual([
+      expect.objectContaining({ name: 'externalId', in: 'path', required: true }),
+    ]);
+    expect(put.requestBody).toMatchObject({
+      content: { 'application/json': { schema: ref('AgentDecisionsIngest') } },
+    });
+    expect(Object.keys(put.responses)).toEqual(['200', '400', '401', '403', '404', '409']);
+    expect(put.responses['200']).toMatchObject({
+      content: { 'application/json': { schema: ref('AgentDecisionsIngestResult') } },
+    });
+  });
+
+  it('FR-016 FR-017 registers every US5 component schema, the strict ingest schemas forbid additional properties and the title names US1–US5', () => {
     const doc = us1();
     expect(doc.info.title).toBe(
-      'CDevi API — Workflow Detail, Approval Center, Dashboard and Requirements (specs/001 US1–US4)',
+      'CDevi API — Workflow Detail, Approval Center, Dashboard, Requirements and Agent Runs (specs/001 US1–US5)',
     );
+    for (const name of [
+      'StageAgentRunRef',
+      'ConfidenceLevel',
+      'PolicyOutcome',
+      'EvidenceRef',
+      'RunStep',
+      'AgentDecision',
+      'AgentRunDetail',
+      'AgentDecisionIngest',
+      'AgentDecisionsIngest',
+      'AgentDecisionsIngestResult',
+    ])
+      expect(doc.components.schemas, name).toHaveProperty(name);
+    const strict = (name: string) =>
+      (doc.components.schemas[name] as { additionalProperties?: unknown }).additionalProperties;
+    expect(strict('AgentDecisionsIngest')).toBe(false);
+    expect(strict('AgentDecisionIngest')).toBe(false);
+    const stage = (
+      doc.components.schemas['WorkflowDetail'] as {
+        properties: { stages: { items: { properties: Record<string, unknown> } } };
+      }
+    ).properties.stages.items.properties;
+    expect(stage).toHaveProperty('agentRuns');
+  });
+
+  it('FR-007 FR-025 documents GET /requirements with project (default all), state, assignee and cursor and returns RequirementListPage', () => {
+    const doc = us1();
+    expect(doc.info.title).toMatch(/specs\/001 US1–US5\)$/);
     expect(doc.tags.map((t) => t.name)).toEqual(
       expect.arrayContaining(['requirements', 'integrations', 'workflows']),
     );
@@ -317,5 +383,10 @@ describe('specs/001 US1–US4 contracts/openapi.yaml snapshot', () => {
     expect(full.tags.map((t) => t.name)).toContain('requirements');
     expect(full.components.schemas).toHaveProperty('DashboardSnapshot');
     expect(full.components.schemas).toHaveProperty('RequirementDetail');
+    expect(paths).toContain('/agent-runs/{id}');
+    expect(paths).toContain('/ingest/agent-runs/{externalId}/decisions');
+    expect(full.tags.map((t) => t.name)).toContain('agent-runs');
+    expect(full.components.schemas).toHaveProperty('AgentRunDetail');
+    expect(full.components.schemas).toHaveProperty('AgentDecisionsIngest');
   });
 });
