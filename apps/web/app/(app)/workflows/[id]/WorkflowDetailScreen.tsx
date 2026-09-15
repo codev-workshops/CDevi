@@ -489,6 +489,7 @@ export function WorkflowDetailScreen({ initial, userRole }: WorkflowDetailScreen
         {artifacts.map((a) => (
           <ListRow
             key={a.id}
+            id={`artifact-${a.externalId}`}
             title={a.title}
             {...(a.href ? { href: a.href } : {})}
             trailing={<Pill variant="neutral">{ARTIFACT_WORD[a.type]}</Pill>}

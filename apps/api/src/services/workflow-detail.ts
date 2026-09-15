@@ -209,6 +209,7 @@ export async function workflowDetail(
   const artifacts = (
     await client.query<{
       id: string;
+      external_id: string;
       stage_id: string;
       type: ArtifactType;
       title: string;
@@ -216,12 +217,13 @@ export async function workflowDetail(
       summary: string | null;
       produced_at: Date;
     }>(
-      `SELECT id, stage_id, type, title, href, summary, produced_at FROM artifacts
+      `SELECT id, external_id, stage_id, type, title, href, summary, produced_at FROM artifacts
         WHERE workflow_id = $1 ORDER BY produced_at, id LIMIT 100`,
       [w.id],
     )
   ).rows.map<ArtifactRow>((a) => ({
     id: a.id,
+    externalId: a.external_id,
     stageId: a.stage_id,
     type: a.type,
     title: a.title,

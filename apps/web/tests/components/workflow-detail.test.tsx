@@ -174,7 +174,9 @@ describe('Workflow Detail (specs/001 US1)', () => {
     ]);
     for (const [i, row] of artifacts.entries()) {
       expect(row).toHaveTextContent(`Stage ${d.artifacts[i]!.stage.position}`);
+      expect(row).toHaveAttribute('id', `artifact-${d.artifacts[i]!.externalId}`);
     }
+    expect(document.getElementById('artifact-s500-001-art3')).toBe(artifacts[2]);
     expect(within(artifacts[5]!).getByRole('link', { name: 'PR #412' })).toHaveAttribute(
       'href',
       'https://example.test/pr/412',

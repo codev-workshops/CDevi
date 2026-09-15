@@ -94,6 +94,7 @@ export type ActivityEvent = z.infer<typeof ActivityEvent>;
 
 export const ArtifactView = z.object({
   id: Uuid,
+  externalId: z.string(),
   type: ArtifactType,
   title: z.string(),
   href: z.string().nullable(),
