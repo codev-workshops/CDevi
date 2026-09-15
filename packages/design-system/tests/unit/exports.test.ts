@@ -23,6 +23,7 @@ export const CONTRACT_COMPONENTS = [
   'Button',
   'Pill',
   'StatePill',
+  'RequirementStatePill',
   'RiskBadge',
   'Notice',
   'RuntimeGlyph',
@@ -82,6 +83,7 @@ describe('public exports (contracts/components.md)', () => {
 
   it('exports the state and risk mapping tables', () => {
     expect(ds.stateToPill).toBeTypeOf('object');
+    expect(ds.requirementStateToPill).toBeTypeOf('object');
     expect(ds.riskToVariant).toBeTypeOf('object');
   });
 });

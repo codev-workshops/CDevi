@@ -29,6 +29,7 @@ States legend: **H** hover, **A** active, **F** focus-visible, **S** selected/cu
 | `Button` | `<button type="button">` or `<a>` when `href` | `variant: 'primary' \| 'saffron' \| 'ghost' \| 'danger'`, `size: 'md' \| 'sm'`, `disabled`, `loading` | H A F D L | Enter/Space | `aria-disabled` on link variant; `aria-busy` when loading |
 | `Pill` | `<span class="cd-pill">` | `variant: PillVariant`, `pulse?` (only `run`), `children` | — | — | text is the name; dot `aria-hidden` |
 | `StatePill` | `Pill` | `state: WorkflowState` (maps via `stateToPill`) | — | — | word from mapping |
+| `RequirementStatePill` | `Pill` | `state: RequirementState` (maps via `requirementStateToPill`) | — | — | word from mapping; `data-state` |
 | `RiskBadge` | `<span class="cd-risk">` | `level: RiskLevel` | — | — | word "`<level> risk`" |
 | `RuntimeGlyph` | `<span class="cd-rt">` | `kind: 'cloud' \| 'laptop'`, `label?` | — | — | svg `aria-hidden`, text label required |
 | `KeyFingerprint` | `<code class="cd-key">` | `children` | — | — | `aria-label="key ending in …"` |

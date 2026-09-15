@@ -52,6 +52,40 @@ export const stateToPill: Record<WorkflowState, StatePresentation> = {
   CANCELLED: { variant: 'neutral', word: 'cancelled', pulse: false, modifier: 'cd-cancelled' },
 };
 
+/** Requirement lifecycle states from specs/001 FR-009. Distinct from workflow states. */
+export type RequirementState =
+  | 'DRAFT'
+  | 'ANALYZING'
+  | 'NEEDS_CLARIFICATION'
+  | 'READY'
+  | 'APPROVED'
+  | 'IN_IMPLEMENTATION'
+  | 'COMPLETED'
+  | 'REJECTED';
+
+export const REQUIREMENT_STATES: readonly RequirementState[] = [
+  'DRAFT',
+  'ANALYZING',
+  'NEEDS_CLARIFICATION',
+  'READY',
+  'APPROVED',
+  'IN_IMPLEMENTATION',
+  'COMPLETED',
+  'REJECTED',
+];
+
+/** Normative mapping — DESIGN.md §4 "Requirement lifecycle"; reuses the `Pill` variants, no new CSS. */
+export const requirementStateToPill: Record<RequirementState, StatePresentation> = {
+  DRAFT: { variant: 'neutral', word: 'draft', pulse: false },
+  ANALYZING: { variant: 'run', word: 'analyzing', pulse: true },
+  NEEDS_CLARIFICATION: { variant: 'needs-you', word: 'needs clarification', pulse: false },
+  READY: { variant: 'neutral', word: 'ready', pulse: false },
+  APPROVED: { variant: 'done', word: 'approved', pulse: false },
+  IN_IMPLEMENTATION: { variant: 'run', word: 'in implementation', pulse: true },
+  COMPLETED: { variant: 'done', word: 'completed', pulse: false },
+  REJECTED: { variant: 'fail', word: 'rejected', pulse: false },
+};
+
 /** Risk levels from specs/001 FR-026. */
 export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 export type RiskVariant = 'low' | 'medium' | 'high' | 'critical';

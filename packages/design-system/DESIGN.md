@@ -14,7 +14,7 @@ CDevi is a control center for supervising autonomous engineering agents, not a c
 
 ### DR-01 — State is always a word in a pill
 
-Every run, stage, workflow, requirement or gate state MUST be rendered as a visible word inside `Pill` (or `StatePill` for workflow states). Colour and icons MAY reinforce the word but MUST NOT replace it.
+Every run, stage, workflow, requirement or gate state MUST be rendered as a visible word inside `Pill` (or `StatePill` for workflow states, `RequirementStatePill` for requirement states). Colour and icons MAY reinforce the word but MUST NOT replace it.
 
 ```tsx
 // Do
@@ -99,7 +99,7 @@ Every component: forwards `className` and unknown props to its root; forwards `r
 | `Main`, `Panel`, `PanelBlock`                  | `<main>`, `<aside aria-label="Details">`, `<section aria-labelledby>` | content and right rail                                                                            | —         | headings label blocks                                                                                                                  |
 | `Topbar`, `Crumbs`, `PageMeta`, `ActionBar`    | `<h1>` row; `<nav aria-label="Breadcrumb"><ol>`; `<ul>`; actions row  | page header, path, metadata line, end-of-form actions                                             | H F       | last crumb `aria-current="page"`; `ActionBar help` explains disabled primaries                                                         |
 | `Button`                                       | `<button type="button">` or `<a>`                                     | actions; `saffron` only per DR-02                                                                 | H A F D L | Enter/Space; `aria-busy` when loading; disabled links `aria-disabled` + no `href`                                                      |
-| `Pill`, `StatePill`                            | `<span>`                                                              | any state word (DR-01)                                                                            | —         | text is the name; dot `aria-hidden`                                                                                                    |
+| `Pill`, `StatePill`, `RequirementStatePill`    | `<span>`                                                              | any state word (DR-01); workflow states / requirement states via their normative mapping          | —         | text is the name; dot `aria-hidden`; `data-state` carries the enum                                                                     |
 | `RiskBadge`                                    | `<span>`                                                              | LOW/MEDIUM/HIGH/CRITICAL                                                                          | —         | word ends in "risk"                                                                                                                    |
 | `RuntimeGlyph`, `KeyFingerprint`, `Mono`       | `<span>`, `<code>`                                                    | runtime, credential tail, identifiers                                                             | —         | svg `aria-hidden` + visible label; key → `aria-label="key ending in …"`                                                                |
 | `Card`, `List`, `ListRow`                      | `div`, `role=list`, `role=listitem`                                   | surfaces and row lists                                                                            | H F E L   | gate row `aria-describedby` its `ask`; title is `<a>` when `href`; `List loading` → `aria-busy` + skeleton rows (never the empty text) |
@@ -145,7 +145,19 @@ Source: `specs/001-sdlc-control-plane-mvp/spec.md` FR-002/FR-026 · Contract: `s
 | `HIGH`     | saffron-soft / saffron-ink, bold                  | high risk     | **yes**                       |
 | `CRITICAL` | saffron-strong fill, white text, red border, bold | critical risk | **yes** (not the failed look) |
 
-Requirement lifecycle: `Needs Clarification` → needs-you; `Analyzing` / `In Implementation` → run; `Approved` / `Completed` → done; `Rejected` → fail; `Draft` / `Ready` → neutral.
+Requirement lifecycle (specs/001 FR-009 · Code: `src/tokens.ts` `requirementStateToPill`, rendered by `RequirementStatePill`):
+
+| Requirement state     | `RequirementStatePill` variant | Word                | Pulse | Prominent              |
+| --------------------- | ------------------------------ | ------------------- | ----- | ---------------------- |
+| `DRAFT`               | neutral                        | draft               | no    |                        |
+| `ANALYZING`           | run                            | analyzing           | yes   |                        |
+| `NEEDS_CLARIFICATION` | needs-you                      | needs clarification | no    | **yes — never hidden** |
+| `READY`               | neutral                        | ready               | no    |                        |
+| `APPROVED`            | done                           | approved            | no    |                        |
+| `IN_IMPLEMENTATION`   | run                            | in implementation   | yes   |                        |
+| `COMPLETED`           | done                           | completed           | no    |                        |
+| `REJECTED`            | fail                           | rejected            | no    |                        |
+
 Finding severity: CRITICAL → blocked, HIGH → fail, MEDIUM → wait, LOW/INFO → neutral. Blocking class: BLOCKING → needs-you, otherwise neutral.
 Policy outcome (agent decision): allowed → done "allowed"; approval required → needs-you "approval required"; denied → blocked "denied".
 
@@ -162,6 +174,7 @@ Policy outcome (agent decision): allowed → done "allowed"; approval required �
 | Agent decision              | `Card` + `KeyValue` (action, reason, confidence) + `Pill` for policy outcome + `GateList` for evidence |
 | Artifact                    | `ListRow` in a `List`, or `KeyValue` in a `PanelBlock`                                                 |
 | Workflow / stage state      | `StatePill`                                                                                            |
+| Requirement state           | `RequirementStatePill`                                                                                 |
 | Stage pipeline              | `Stepper`                                                                                              |
 | Risk level                  | `RiskBadge`                                                                                            |
 | Review finding              | `FindingRow`                                                                                           |
