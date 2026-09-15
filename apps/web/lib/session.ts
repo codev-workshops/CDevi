@@ -1,5 +1,13 @@
 import 'server-only';
-import type { ApprovalCenterSnapshot, InboxSnapshot, Me, Tab } from '@cdevi/contracts';
+import type {
+  ApprovalCenterSnapshot,
+  DashboardSnapshot,
+  InboxSnapshot,
+  Me,
+  Tab,
+  WindowKey,
+} from '@cdevi/contracts';
+import { WINDOW_KEYS } from '@cdevi/contracts/dashboard-model';
 import { cookies, headers } from 'next/headers';
 import { cache } from 'react';
 import { ApiError, apiFetch } from './api';
@@ -30,6 +38,23 @@ export const getInboxSnapshot = cache(async (tab: Tab, project: string): Promise
   const qs = new URLSearchParams({ tab, project });
   return apiFetch<InboxSnapshot>(`/api/inbox?${qs}`, { cookie: await cookieHeader() });
 });
+
+/** `?window=` as a WindowKey; anything else (missing, unknown) is the default `7d` (ui-dashboard.md §1). */
+export function selectedWindow(explicit?: string | undefined): WindowKey {
+  return (WINDOW_KEYS as readonly string[]).includes(explicit ?? '')
+    ? (explicit as WindowKey)
+    : '7d';
+}
+
+/** Dashboard snapshot per (project, window) per request (specs/001 US3; ui-dashboard.md §1). */
+export const getDashboardSnapshot = cache(
+  async (project: string, window: WindowKey): Promise<DashboardSnapshot> => {
+    const qs = new URLSearchParams({ project, window });
+    return apiFetch<DashboardSnapshot>(`/api/dashboard?${qs}`, {
+      cookie: await cookieHeader(),
+    });
+  },
+);
 
 /** Approval Center snapshot per project per request; layout (nav count) and page share it (specs/001 US2 scenario 6). */
 export const getApprovalCenterSnapshot = cache(
