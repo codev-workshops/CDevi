@@ -103,7 +103,8 @@ describe.skipIf(skipDb)('GET /api/workflows (specs/001 US4, FR-003, SC-007)', ()
         (i) => i.project.id === payments && i.state === 'COMPLETED' && i.stage?.index === 7,
       ),
     ).toBe(true);
-    expect(combined.total).toBe(combined.items.length);
+    expect(combined.total).toBeGreaterThanOrEqual(combined.items.length);
+    expect(combined.nextCursor === null).toBe(combined.total <= 50);
 
     // engineer1 is a member of payments-api only
     const invisible = await list(engineer, `?project=${platform}`);
