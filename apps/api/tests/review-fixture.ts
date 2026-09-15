@@ -12,6 +12,7 @@ export const STAGES = [
   'PR',
 ] as const;
 export const REVIEW_STAGE_POSITION = 6;
+let nextPullRequestNumber = 4000;
 
 export const lanes = (over: Record<string, 'PASS' | 'WARN' | 'FAIL'> = {}) =>
   (
@@ -124,7 +125,7 @@ export async function reviewFixture(
   }
 
   const pr = await put(`/api/ingest/pull-requests/${pullRequestExternalId}`, {
-    number: 4000 + Math.floor(Math.random() * 1000),
+    number: nextPullRequestNumber++,
     title: 'US6 fixture pull request',
     href: 'https://git.cdevi.demo/payments-api/pull/4001',
     status: 'OPEN',
