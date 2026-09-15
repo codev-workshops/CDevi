@@ -211,7 +211,9 @@ export function AgentRunScreen({ initial, now }: AgentRunScreenProps) {
     el.focus({ preventScroll: true });
   }, [hashAnchor, tab, run.decisions]);
 
-  const approvalRequired = run.decisions.filter((d) => d.policyOutcome === 'APPROVAL_REQUIRED').length;
+  const approvalRequired = run.decisions.filter(
+    (d) => d.policyOutcome === 'APPROVAL_REQUIRED',
+  ).length;
   const denied = run.decisions.filter((d) => d.policyOutcome === 'DENIED').length;
   const highestRisk = run.decisions.reduce<RiskLevel | null>((acc, d) => {
     if (!d.riskLevel) return acc;
@@ -247,7 +249,16 @@ export function AgentRunScreen({ initial, now }: AgentRunScreenProps) {
       </>,
     );
     return () => setPanel(undefined);
-  }, [setPanel, run.decisions.length, approvalRequired, denied, highestRisk, livePill, lastFetchedAt, clockNow]);
+  }, [
+    setPanel,
+    run.decisions.length,
+    approvalRequired,
+    denied,
+    highestRisk,
+    livePill,
+    lastFetchedAt,
+    clockNow,
+  ]);
 
   const stalePill = freshness === 'stale' && liveState;
 
@@ -257,7 +268,10 @@ export function AgentRunScreen({ initial, now }: AgentRunScreenProps) {
         items={[
           { label: 'Workflows', href: '/workflows' },
           { label: run.workflow.title, href: workflowHref },
-          { label: `Stage ${run.stage.position} · ${run.stage.name}`, href: `${workflowHref}#stage-${run.stage.position}` },
+          {
+            label: `Stage ${run.stage.position} · ${run.stage.name}`,
+            href: `${workflowHref}#stage-${run.stage.position}`,
+          },
           { label: `Run · ${run.agent}` },
         ]}
       />
@@ -281,9 +295,9 @@ export function AgentRunScreen({ initial, now }: AgentRunScreenProps) {
 
       {freshness === 'stale' ? (
         <Notice tone="info">
-          No activity for {humanDuration(clockNow.getTime() - lastActivity(run))} — the runtime has not
-          reported progress. The run&apos;s state is unchanged; see the workflow if it stays quiet.{' '}
-          <a href={workflowHref}>Open workflow</a>
+          No activity for {humanDuration(clockNow.getTime() - lastActivity(run))} — the runtime has
+          not reported progress. The run&apos;s state is unchanged; see the workflow if it stays
+          quiet. <a href={workflowHref}>Open workflow</a>
         </Notice>
       ) : null}
 
@@ -328,7 +342,9 @@ export function AgentRunScreen({ initial, now }: AgentRunScreenProps) {
               term: 'Duration',
               detail: (
                 <>
-                  <time dateTime={`PT${Math.floor(durationMs / 1000)}S`}>{durationLabel(durationMs)}</time>
+                  <time dateTime={`PT${Math.floor(durationMs / 1000)}S`}>
+                    {durationLabel(durationMs)}
+                  </time>
                   {unfinished && liveState ? (
                     <>
                       {' '}
