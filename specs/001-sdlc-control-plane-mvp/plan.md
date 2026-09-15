@@ -438,3 +438,187 @@ Re-evaluated after Phase 1 (research R21–R30, data-model §18–21, contracts/
 | IV | Eight budgets with methods; cards ≤ 12, pipeline fixed, one transaction, `Server-Timing`, payload bound. **PASS** |
 
 **Gate result (post-design)**: PASS.
+
+---
+
+# Part D — User Story 4 (Requirements)
+
+**Branch**: `feature/US4` (from `develop`; PR targets `develop`) | **Date**: 2026-09-15 | **Spec**: [spec.md](spec.md) — User Story 4 (Manage requirements and start workflows, P2), FR-007, FR-008, FR-009, FR-010, plus FR-002 (workflow/stage states and recorded transitions), FR-025 (project selector), FR-032 (roles on every action), FR-034 (live propagation), FR-036 (control plane triggers and observes agent runs). Success criteria SC-003, SC-007, SC-008, SC-010. Edge case: a linked Jira ticket deleted/closed externally flags the requirement and pauses the linked workflow in `BLOCKED`. Other stories remain out of scope — in particular the Workflow Center list page (`/workflows` stays the `[section]` placeholder) and the Integrations screen (`/integrations` stays the placeholder; US8) — approved scope decisions 1–3 in research.md Part D (R31).
+
+**Input**: research.md R31–R45, data-model.md §22–§30, contracts/ui-requirements.md, quickstart.md §5, tasks.md Phases 9–10.
+
+## Summary
+
+Replace the `/requirements` placeholder and the `/requirements/new` stub with the **Requirements** screens — a bounded, filterable **list** (state / project / assignee, 50 per page, keyset cursor), a **detail** screen (business objective, the agent's analysis — acceptance criteria, AI-identified rules, open questions — every AI item visibly labelled, the requirement state as a word in a pill, the linked workflow, the role- and state-gated actions *Submit for analysis* / *Approve* / *Reject*) and a **create form** (title, business objective, optional acceptance criteria, within the selected project). Behind them, the **first migration that adds tables**: `0005_requirements.sql` creates `requirements`, `requirement_analysis_items` (criteria / rules / open questions with an `ai_generated` flag and a `source`), `requirement_transitions` (append-only), `integration_project_mappings`, adds `workflows.requirement_id` and extends `inbox_change_log` with a nullable `requirement_id` so requirement changes ride the existing `inbox_changed` NOTIFY → SSE path (FR-034). **Analysis is produced by the agent runtime, not the API** (decision 1): `POST /api/requirements/{id}/submit` moves `Draft → Analyzing` and the runtime delivers results through `PUT /api/ingest/requirements/{externalId}/analysis` (same principal auth, `observedAt` idempotency and `ingestion_log` conventions as `/api/ingest/*`); the state becomes `Ready` when there are no open questions, otherwise `Needs Clarification`. **Jira is inbound-only** (decision 2): `POST /api/integrations/jira/webhook` verifies an HMAC-SHA256 signature over the raw body with a constant-time compare (secret from `JIRA_WEBHOOK_SECRET`), maps the Jira project key through `integration_project_mappings`, creates/updates the requirement with `external_ref` (key + url), and on a deleted/closed issue flags the requirement and moves its active workflow to `BLOCKED`. **Approving a `Ready` requirement** reuses the US2 decision path (`SELECT … FOR UPDATE`, exactly once, `audit_events`, NOTIFY) and creates the workflow with its seven stages in one transaction, first stage `QUEUED` (FR-010, SC-008). "Appears in the Workflow Center" is verified through `/workflows/{id}`, the Dashboard active-workflow card and a new bounded **`GET /api/workflows`** list (decision 3). Requirement states are not workflow states: the design system gains `RequirementStatePill` (1.4.0) so DR-01 holds without app-side markup (R41).
+
+## Technical Context
+
+**Language/Version**: unchanged (TypeScript 5.9 strict, Node 26, React 19.2, ES modules)
+
+**Primary Dependencies**: unchanged — nothing is added to any `package.json` except the new zod-free subpath `@cdevi/contracts/requirement-rules` (`exports` entry, like `/decision-rules`) and the design-system minor bump to **1.4.0** (`RequirementStatePill`, `requirementStateToPill`). HMAC uses `node:crypto` (`createHmac`, `timingSafeEqual`). The webhook route reads the raw body through Fastify's `addContentTypeParser(…, { parseAs: 'buffer' })` in an encapsulated plugin — no raw-body dependency
+
+**Storage**: PostgreSQL 17. `0005_requirements.sql` (data-model §22): enums `requirement_state`, `requirement_source`, `analysis_item_kind`, `external_flag`; tables `requirements`, `requirement_analysis_items`, `requirement_transitions` (own `requirement_transitions_append_only()` trigger, per-table message like 0001/0003), `integration_project_mappings`; `ALTER TABLE workflows ADD COLUMN requirement_id uuid REFERENCES requirements(id) ON DELETE SET NULL` + partial unique index (one workflow per requirement in US4); `ALTER TABLE inbox_change_log ALTER COLUMN workflow_id DROP NOT NULL, ADD COLUMN requirement_id uuid`; one NOTIFY trigger `inbox_changed_requirements` on `requirements` only (`notify_requirement_changed()`; no trigger on `requirement_analysis_items` — R40); trigger `requirements_follow_workflow()` (`Approved → In Implementation → Completed` derived from the linked workflow's state — R33); indexes for the list filters (`requirements_state_idx` is full because the state filter accepts terminal states; the assignee index is partial); RLS policies and grants like 0001–0003 (enabling RLS stays with the `CDEVI_RLS` loop in `packages/db/src/migrate.ts`, whose `RLS_TABLES` gains the four tables); all mirrored in `packages/db/src/schema.ts`
+
+**Requirement state machine** (R32, `@cdevi/contracts/requirement-rules`): `DRAFT → ANALYZING` (submit; creator roles), `NEEDS_CLARIFICATION → ANALYZING` (resubmit; creator roles), `ANALYZING | NEEDS_CLARIFICATION → READY | NEEDS_CLARIFICATION` (agent, analysis ingest), `READY → APPROVED` (approve; decider roles), `DRAFT | NEEDS_CLARIFICATION | READY → REJECTED` (reject; decider roles), `APPROVED → IN_IMPLEMENTATION → COMPLETED` (system, from the linked workflow). Roles: `canCreateRequirement` (engineer, approver, administrator) for create/submit; `canDecide` (approver, administrator) for approve/reject; viewer read-only (FR-032). The pure `requirementActions(state, role)` drives both API enforcement and web affordances
+
+**Routes** (data-model §23–§26; all Problems are `application/problem+json`): `GET /requirements`, `POST /requirements`, `GET /requirements/{id}`, `POST /requirements/{id}/submit`, `POST /requirements/{id}/approve`, `POST /requirements/{id}/reject` (session, `preHandler: app.requireUser`); `PUT /ingest/requirements/{externalId}/analysis` (`app.requirePrincipal`); `POST /integrations/jira/webhook` (signature, no session); `GET /workflows` (session). `contracts/openapi.yaml` is regenerated in Phase 9a from `src/openapi.ts`
+
+**Testing**: Vitest — `contracts` (Zod schemas incl. rejects; pure rules: transitions, actions per role × state, resulting state from analysis, cursor encode/decode, hrefs, Jira event mapping and ADF → text, signature helper; OpenAPI snapshot), `db` (0005 objects, RLS policies, grants, append-only trigger, follow-workflow trigger, `EXPLAIN` on the list filters; seed requirements and `EXPECTED_REQUIREMENTS`; S-500 / dashboard-demo invariants and the `audit_events = 0` seed assertions unchanged; exactly two existing `schema.test.ts` assertions — the `inbox_changed_%` trigger list and the 0004 `pg_tables` list — are updated for 0005's objects, quickstart §5.5), `api` (integration on real Postgres, fixed clock: every route × role × state, exactly-once approve under concurrency, one-transaction workflow creation with seven stages, ingest idempotency and `ingestion_log`, webhook signature (valid / wrong / missing / replayed) and event mapping, BLOCKED edge case, `GET /workflows` filters and cursor, `Server-Timing` at the SC-007 fixture), `web` (component + axe in every ui-requirements.md §5 state; role/state gating of actions; exactly one `.cd-saffron` where allowed and zero elsewhere; AI-generated labels; refetch on `inbox.changed`; design-system `RequirementStatePill` behaviour + axe + gallery). Playwright `apps/web/tests/e2e/requirements.spec.ts` = the Independent Test (create → submit → analysis with open questions → resubmit → analysis without → approve → workflow visible at `/workflows/{id}`, on the Dashboard and in `GET /api/workflows?requirement=`; list filters; live update ≤ 5 s; keyboard walk; page axe; initial content ≤ 2 s). Test names start with the FR/SC id; red → green order in tasks.md Phase 9
+
+**Target Platform / Project Type**: unchanged (web app in the existing monorepo). CI: `.github/workflows/ci.yml` is **not edited** — its `e2e` job sets only `DATABASE_URL`/`SESSION_SECRET`, so the webhook secret the FR-008 e2e scenarios sign with is a **test-only constant** `E2E.jiraWebhookSecret` in `apps/web/playwright.config.ts`, injected as `JIRA_WEBHOOK_SECRET` into the API `webServer` `sharedEnv` (the same pattern as `CDEVI_SIGNIN_RATE_MAX` and the `SESSION_SECRET` fallback there); the `api` Vitest project passes its own `JIRA_TEST_SECRET` (`apps/api/tests/helpers.ts`) through the `buildApp` option, so no CI environment variable is added anywhere. Runtime: `apps/api/src/main.ts` reads `process.env['JIRA_WEBHOOK_SECRET']` and passes it as `BuildOptions.jiraWebhookSecret` (no `env.ts` module — the API has none); `.env.example` gains a placeholder — never a real value
+
+**Performance Goals** (Principle IV; workload = SC-007 organization extended with 2 000 requirements / 20 000 analysis items; measured on CI `ubuntu-latest` with the Postgres service; and the seeded database for e2e):
+- Requirements list initial content (filters + first rows visible) ≤ 2 s p95 (SC-007) — Playwright trace over 10 runs in `requirements.spec.ts`; server first paint carries the first page
+- `GET /api/requirements` ≤ 200 ms p95 at the fixture — `Server-Timing` asserted over 20 calls; one index-backed statement + one count, one transaction, ≤ 50 rows
+- `GET /api/requirements/{id}` ≤ 150 ms p95 — one `REPEATABLE READ` transaction, ≤ 6 statements, analysis items ≤ 120 rows, audit ≤ 20 rows
+- `GET /api/workflows` ≤ 200 ms p95 at the SC-007 fixture (500 workflows) — `Server-Timing` over 20 calls; keyset on `workflows_list_idx`; ≤ 50 rows
+- `POST …/approve` ≤ 300 ms p95 — one transaction: lock, 1 workflow + 7 stages + 8 transitions + 1 audit row
+- Ingest analysis `PUT` ≤ 200 ms p95 for ≤ 120 items — one transaction, delete + batch insert
+- Webhook ≤ 100 ms p95 excluding network — signature check O(body), one transaction
+- `inbox.changed` → refetched list/detail rendered ≤ 5 s p95, ≤ 1 s median (SC-003, FR-034) — `requirements.spec.ts` measures the state pill after an ingested analysis; debounce 300 ms
+- Payloads: list ≤ 40 KB (50 rows), detail ≤ 32 KB, workflow list ≤ 40 KB — asserted on `content-length`
+- Route JS ≤ 200 KB gzip (`check:size`; browser imports only `@cdevi/contracts/requirement-rules`, `/vocabulary`, `/read-model`)
+- Seed growth: 8 requirements, 28 analysis items, 1 mapping, 0 new workflows — no change to any Inbox, Approval Center or Dashboard figure (R44)
+
+**Constraints**: at most one `Button variant="saffron"` per screen — list: none; detail: *Approve* (READY, decider) or *Resubmit for analysis* (NEEDS_CLARIFICATION, creator), otherwise none; create form: *Create requirement* (R41, ui-requirements.md §7); every requirement state a word in `RequirementStatePill`, every workflow state a `StatePill`; `Needs Clarification` (needs-you) is never hidden or collapsed; AI-generated items carry a visible "AI-generated" label and sit in `Message variant="summary"` (not evidence, DR-03); HIGH/CRITICAL nowhere on these screens (no risk vocabulary in US4); WCAG 2.2 AA; Problems without internals; webhook secret from the environment only; `.env` never committed
+
+**Scale/Scope**: 3 screens, 9 routes (8 new + 1 ingest), 1 migration with 4 tables, 1 design-system component, ~14 pure functions, ≈ 95 tests
+
+## Constitution Check
+
+| Principle | Check | Result |
+|-----------|-------|--------|
+| I — Specification and contracts first | `Requirement*`, `WorkflowList*`, `JiraWebhookEvent`, `RequirementAnalysisIngest` Zod schemas + pure `requirement-rules` in `@cdevi/contracts` → OpenAPI fragment (snapshot-tested) → API validation → web types; ui-requirements.md written before code; `0005_requirements.sql` hand-written and mirrored in `schema.ts` | PASS |
+| II — Tests before behaviour | Every task in tasks.md Phase 9 has a failing test first (9a–9e); pure rules tested without a DB; live suites identified (`db`, `api`, e2e); exactly-once and one-transaction properties are tests; fixed clock; signature tests use test-only constants (`JIRA_TEST_SECRET` in `apps/api/tests/helpers.ts`, `E2E.jiraWebhookSecret` in `apps/web/playwright.config.ts`) injected through `BuildOptions.jiraWebhookSecret`, never a real secret in the repo or CI | PASS |
+| III — Design system, defined states, accessibility | Every region maps to a component (below); the missing pattern (`RequirementStatePill`) is added to the package per DESIGN.md §8 before it is consumed; §5 of the screen contract defines loading / populated / empty / error / submitting / disabled per screen; axe in component tests and Playwright; keyboard/focus contract §6; one saffron per screen justified in §7 | PASS |
+| IV — Performance budgets | Eleven numeric budgets with measurement methods above; every list bounded to 50 with a keyset cursor; one transaction per read/write; indexes proven by `EXPLAIN` in a test | PASS |
+| Security (constitution §Security) | Session auth + `visibleProjects` on every read; role checks on every mutating route (`canCreateRequirement`, `canDecide`); ingestion principal scoped to the project; webhook: HMAC over the raw body, `timingSafeEqual`, secret from env, unmapped keys ignored without leaking existence, body size capped at 256 KB, rate-limited; Problems carry no SQL/stack/body; Jira URLs rendered with `rel="noopener noreferrer"` and only `https:` accepted | PASS |
+
+**Gate result (pre-design)**: PASS — no violations to justify.
+
+## Project Structure
+
+### Documentation (this feature)
+
+```
+specs/001-sdlc-control-plane-mvp/
+├── plan.md              # Part A (US1) + Part B (US2) + Part C (US3) + Part D (US4, this section)
+├── research.md          # R1–R10 (US1) + R11–R20 (US2) + R21–R30 (US3) + R31–R45 (US4)
+├── data-model.md        # §1–9 (US1) + §10–17 (US2) + §18–21 (US3) + §22–30 (US4)
+├── quickstart.md        # §2 US1 + §3 US2 + §4 US3 + §5 US4
+├── tasks.md             # Phases 1–4 (US1) + 5–6 (US2) + 7–8 (US3) + 9–10 (US4)
+└── contracts/
+    ├── openapi.yaml               # generated fragment: US1–US3 routes + the nine US4 routes (regenerated in Phase 9a)
+    ├── ui-workflow-detail-screen.md
+    ├── ui-approval-center.md
+    ├── decision-rules.md
+    ├── ui-dashboard.md
+    └── ui-requirements.md         # US4 screens (NEW)
+```
+
+### Source Code (repository root) — NEW vs EXTENDED
+
+```
+packages/contracts/
+├── src/common.ts                # EXTENDED: splitCsv (comma-separated query → string[] preprocess); line(n) already here
+├── src/requirements.ts          # NEW: RequirementState, RequirementSource, ExternalFlag, ExternalRef, AnalysisItem, Requirement, RequirementDetail, RequirementListQuery, RequirementListPage, CreateRequirementRequest, RejectRequirementRequest, RequirementActions, RequirementIdParams (Zod)
+├── src/workflow-list.ts         # NEW: WorkflowListQuery, WorkflowListItem, WorkflowListPage (Zod; FR-003 shape)
+├── src/integrations.ts          # NEW: JiraWebhookEvent, JiraWebhookResult (Zod)
+├── src/ingest.ts                # EXTENDED: RequirementAnalysisIngest, RequirementIngestResult
+├── src/approval-center.ts       # EXTENDED: AUDIT_ACTIONS += requirement.submitted / approved / rejected / flagged / workflow_created
+├── src/requirement-rules.ts     # NEW (zod-free): REQUIREMENT_STATES, REQUIREMENT_TRANSITIONS, canTransitionRequirement, requirementActions, stateAfterAnalysis, requirementStateForWorkflow, requirementHrefs, encodeRequirementCursor/decodeRequirementCursor, encodeWorkflowCursor/decodeWorkflowCursor, REQUIREMENTS_PAGE_SIZE, WORKFLOWS_PAGE_SIZE, mapJiraEvent, adfToPlainText, isSafeExternalUrl
+├── src/index.ts                 # EXTENDED: export * from './requirements', './workflow-list', './integrations', './requirement-rules'
+├── src/openapi.ts               # EXTENDED: nine paths + schemas (title "… (specs/001 US1–US4)", tags requirements, integrations, workflows)
+├── package.json                 # EXTENDED: exports["./requirement-rules"]
+└── tests/requirement-rules.test.ts (NEW), tests/schemas.test.ts (EXTENDED), tests/openapi.test.ts (EXTENDED)
+
+packages/design-system/
+├── css/components.css                                   # EXTENDED: none required — RequirementStatePill reuses .cd-pill variants (no new pair)
+├── src/tokens.ts                                        # EXTENDED: RequirementState, REQUIREMENT_STATES, requirementStateToPill: Record<RequirementState, StatePresentation>
+├── src/components/Pill/RequirementStatePill.tsx         # NEW
+├── src/components/Pill/RequirementStatePill.test.tsx    # NEW (behaviour + expectAccessible)
+├── src/index.ts                                         # EXTENDED: export RequirementStatePill
+├── gallery/entries.tsx, tests/visual/entries.ts         # EXTENDED: requirement-state-pill entry
+├── DESIGN.md                                            # EXTENDED: §3 row, §4 requirement-state table, §5 glossary row
+├── CHANGELOG.md, package.json                           # EXTENDED: 1.4.0
+└── specs/002-adopt-design-system/contracts/components.md # EXTENDED: RequirementStatePill
+
+packages/db/
+├── migrations/0005_requirements.sql   # NEW (data-model §22)
+├── src/schema.ts                      # EXTENDED: enums, four tables, workflows.requirementId, inboxChangeLog.requirementId, indexes
+├── src/migrate.ts                     # EXTENDED: RLS_TABLES += integration_project_mappings, requirements, requirement_analysis_items, requirement_transitions
+├── src/seed/requirements.ts           # NEW: buildRequirements(base), EXPECTED_REQUIREMENTS, REQUIREMENT_SHOWCASE, JIRA_MAPPING
+├── src/seed/index.ts                  # EXTENDED: TRUNCATE list; insert mapping + requirements + analysis items + transitions after dashboard-demo; link three S-500 workflows (requirement_id); export EXPECTED_REQUIREMENTS
+└── tests/schema.test.ts (EXTENDED: 0005), tests/seed.test.ts (EXTENDED: requirements; S-500/dashboard totals unchanged)
+
+apps/api/
+├── src/services/requirements.ts        # NEW: listRequirements, requirementDetail, createRequirement, submitRequirement, approveRequirement (workflow + 7 stages), rejectRequirement
+├── src/services/requirement-analysis.ts # NEW: ingestRequirementAnalysis (principal path, stale/accepted)
+├── src/services/jira-webhook.ts        # NEW: verifyJiraSignature, handleJiraEvent (create/update/flag → BLOCKED)
+├── src/services/workflow-list.ts       # NEW: listWorkflows (keyset)
+├── src/routes/requirements.ts          # NEW: six session routes
+├── src/routes/integrations.ts          # NEW: POST /integrations/jira/webhook (raw-body parser, encapsulated)
+├── src/routes/ingest.ts                # EXTENDED: PUT /ingest/requirements/:externalId/analysis
+├── src/routes/workflows.ts             # EXTENDED: GET /workflows
+├── src/routes/inbox.ts, src/plugins/notify.ts # EXTENDED: InboxChange.requirementId (nullable) in NOTIFY parsing, replay and SSE frame
+├── src/app.ts                          # EXTENDED: BuildOptions.jiraWebhookSecret?: string; register requirementsRoutes, integrationsRoutes ({ secret: opts.jiraWebhookSecret }); schemas in swagger components
+├── src/main.ts                         # EXTENDED: jiraWebhookSecret: process.env['JIRA_WEBHOOK_SECRET'] passed to buildApp (next to rateLimit.signInMax)
+└── tests/requirements.test.ts, tests/ingest-requirements.test.ts, tests/jira-webhook.test.ts, tests/workflows-list.test.ts (NEW); tests/helpers.ts (EXTENDED: seedSc007Org grows requirements; JIRA_TEST_SECRET, signJira)
+
+apps/web/
+├── app/(app)/requirements/page.tsx                    # NEW: server — cookie + filters → apiFetch('/api/requirements…')
+├── app/(app)/requirements/RequirementsListScreen.tsx  # NEW: client — filters, list, cursor, SSE refetch
+├── app/(app)/requirements/[id]/page.tsx               # NEW
+├── app/(app)/requirements/[id]/RequirementDetailScreen.tsx # NEW: client — analysis, actions, SSE refetch
+├── app/(app)/requirements/new/page.tsx                # REPLACED: the stub becomes the create form page
+├── app/(app)/requirements/new/CreateRequirementForm.tsx # NEW: client — validation, submit, redirect to /requirements/{id}
+├── lib/navigation.ts                                  # EXTENDED: BUILT_SECTIONS += '/requirements'
+├── lib/session.ts                                     # EXTENDED: getRequirementList(filters), getRequirementDetail(id) (cached)
+├── lib/inbox-stream.ts                                # EXTENDED: `requirementId` filter option (frameId(data, key))
+├── lib/ds.ts                                          # EXTENDED: re-export RequirementStatePill
+├── playwright.config.ts                               # EXTENDED: E2E.jiraWebhookSecret constant; sharedEnv.JIRA_WEBHOOK_SECRET = E2E.jiraWebhookSecret (test-only value, CI needs no new env)
+├── tests/fixtures/requirements.ts                     # NEW: typed RequirementListPage / RequirementDetail fixtures per state
+├── tests/components/requirements-list.test.tsx, requirement-detail.test.tsx, requirement-create.test.tsx # NEW
+├── tests/components/new-requirement.test.tsx          # UNCHANGED (Inbox button)
+└── tests/e2e/requirements.spec.ts                     # NEW; tests/e2e/inbox-a11y.spec.ts UNCHANGED (/requirements/new still axe-clean)
+
+docs/architecture.md   # EXTENDED: §4 Requirements landed, §6 requirements/integrations query contracts, §8 layout
+AGENTS.md              # EXTENDED: US4 routes in "Backend and web app work"; requirement-rules subpath; JIRA_WEBHOOK_SECRET
+.env.example           # EXTENDED: JIRA_WEBHOOK_SECRET=change-me (placeholder)
+.github/workflows/ci.yml  # UNCHANGED (test secrets live in playwright.config.ts / tests/helpers.ts, see Technical Context)
+```
+
+**Structure Decision**: the existing monorepo; no new package, no new workspace script. The requirements seed is data in `packages/db/src/seed/requirements.ts`, not a fixture file. The webhook lives under `routes/integrations.ts` so US8 (Integrations screen, outbound Jira) extends the same module.
+
+## Design System Compliance
+
+- **Components used** (1.3.0 → 1.4.0): `Topbar`, `PageMeta`, `Crumbs`, `Field`, `Select`, `Input`, `TextArea`, `Help`, `ActionBar`, `Button` (`primary`, `ghost`, `saffron`), `Card`, `List`, `ListRow`, `KeyValue`, `Pill`, `StatePill`, `Message` (`variant="summary"`), `Notice`, `Mono`, `AuditTable`, **`RequirementStatePill` (NEW)**.
+- **Components proposed**: `RequirementStatePill` — `StatePill` is typed on `WorkflowState` and its words/pulse are normative for workflow states only; requirement states have their own DESIGN.md §4 mapping (`Needs Clarification` → needs-you, `Analyzing`/`In Implementation` → run, `Approved`/`Completed` → done, `Rejected` → fail, `Draft`/`Ready` → neutral). Rendering `Pill` with an app-side switch would put vocabulary in the app (against `tokens.ts` being the single mapping) and miss the pulse rule. Added per DESIGN.md §8: no new CSS (existing `.cd-pill` variants), `requirementStateToPill: Record<RequirementState, StatePresentation>` in `src/tokens.ts` (same shape as `stateToPill`), component + test + gallery entry + §3/§4/§5 rows + CHANGELOG 1.4.0 (R41). Lives in tasks 9d. No other design-system change: the Jira flag on Requirement Detail uses the existing `Notice tone="error"` (role `alert`; `NoticeTone` is `info | error`, no `warning` tone exists or is added — R36, ui-requirements.md §3.3).
+- **Saffron rule (DR-02)**: list — none (no direct action; "New requirement" is a `primary` link here because the Inbox already carries the saffron entry point). Detail — exactly one when a person is needed: *Approve* when `READY` and `canDecide`; *Resubmit for analysis* when `NEEDS_CLARIFICATION` and `canCreateRequirement`; otherwise none (*Submit for analysis* on a `DRAFT` is `primary`, *Reject* is `ghost`, disabled actions carry `ActionBar help`). Create form — *Create requirement* is the single saffron control (the action that turns a person's input into new work; the Inbox's "New requirement" that leads here is saffron for the same reason). Tests assert `.cd-saffron` count per state (ui-requirements.md §7).
+- **Vocabulary mapping**: requirement state via `RequirementStatePill` everywhere (list rows, detail header, live updates); linked workflow state via `StatePill`; `Needs Clarification` is never collapsed; no risk vocabulary on these screens.
+- **Claims vs evidence (DR-03)**: AI-generated acceptance criteria, rules and open questions render inside `Message who="{agent} · analysis" variant="summary"` (labelled "not evidence") with a `Pill variant="neutral"` "AI-generated" on every AI item; human-authored acceptance criteria render in a plain `Card` list with the author's name; the platform facts (state, dates, decider, linked workflow) render as `KeyValue` and are never inside a `Message`.
+- **States**: contract §5 — list: loading / populated / empty (with and without filters) / error (+ Retry); detail: loading / populated / not-available / submitting (`aria-busy`) / action-disabled (with help) / error; create: idle / invalid (field errors) / submitting / error — each with a component and copy.
+- **Accessibility verification**: component axe in every §5 state; Playwright page axe on the three screens; keyboard contract §6 (Tab order filters → rows → pager; row title is the link; actions reachable; focus moves to the field error on invalid submit and to the `Notice` on error); names asserted per §8.
+- **UI performance budgets**: see Performance Goals.
+
+## Complexity Tracking
+
+| Item | Why it is needed | Simpler alternative rejected because |
+|------|------------------|--------------------------------------|
+| `inbox_change_log.workflow_id` becomes nullable + `requirement_id` column | FR-034: an analysis arriving must reach the open Requirement Detail without a page refresh; the only live channel is `inbox_changed` | A second NOTIFY channel would duplicate the LISTEN client, replay table and SSE endpoint; polling would break SC-003 |
+| Trigger `requirements_follow_workflow()` | `Approved → In Implementation → Completed` must follow the linked workflow whoever writes it (ingestion, US2 decisions, US1 actions) | Calling a service from three writers couples 9c to every existing path and can be forgotten by the next writer |
+| Design-system minor (1.4.0) | DR-01 for requirement states; DESIGN.md §4 already prescribes the mapping | App-side `Pill` switch violates DR-09/`tokens.ts` single-mapping rule (R41) |
+| **Open item — webhook mapping lookup under RLS** (R36, data-model §22 Notes) | `integration_project_mappings` is read on `app.pool` before `app.organization_id` is known (the webhook carries no organization); with `CDEVI_RLS=on` the org-isolation policy hides every row and the webhook answers `202 ignored`. Dev, test and CI run with RLS off, which US4 depends on exactly as the sessions bootstrap in `apps/api/src/plugins/db.ts` already does | Widening the policy (`OR current_setting('app.organization_id', true) IS NULL`) or a bypass role is a deployment-story decision that also covers the sessions bootstrap; deciding it inside US4 would silently change RLS semantics for an existing table. **Tracked**: carried into the deployment/RLS story; T118 records it in `docs/architecture.md` §6 so it is not lost |
+
+## Post-Design Constitution Re-check
+
+Re-evaluated after Phase 1 (research R31–R45, data-model §22–§30, contracts/ui-requirements.md, quickstart §5):
+
+| Principle | Re-check |
+|-----------|----------|
+| I | One source: Zod + pure `requirement-rules` → OpenAPI fragment (snapshot test) → API → web. Every transition, action gate, resulting state, cursor and href is a pure function with a test; the SQL only stores and lists. Migration mirrored in `schema.ts`. **PASS** |
+| II | tasks.md Phase 9 lists the failing test before each implementation task in every layer (9a–9e); exactly-once approve, one-transaction creation, ingest idempotency, signature verification and the BLOCKED edge case are tests; the Independent Test is one Playwright spec; seed invariants of US1–US3 are asserted unchanged. **PASS** |
+| III | Every region in ui-requirements.md §2–§4 names a component; the one missing pattern is added to the package first (9d, DESIGN.md §8); DR-02 justified per screen and per state in §7; defined states in §5; axe + keyboard contract. **PASS** |
+| IV | Eleven budgets with methods; lists ≤ 50 with cursors, analysis items ≤ 120, audit ≤ 20; one transaction per operation; indexes proven by `EXPLAIN`. **PASS** |
+
+**Gate result (post-design)**: PASS.

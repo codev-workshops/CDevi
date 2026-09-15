@@ -8,6 +8,7 @@ export const E2E = {
   base: '2026-09-14T09:00:00Z',
   password: 'cdevi-demo-e2e-password',
   ingestToken: 'cdvi_e2e_ingest_token_00000000000000000',
+  jiraWebhookSecret: 'cdvi_e2e_jira_webhook_secret_000000000',
 } as const;
 
 const webOrigin = `http://localhost:${E2E.webPort}`;
@@ -21,6 +22,7 @@ const sharedEnv = {
   CDEVI_FIXED_NOW: E2E.base,
   // Sign-in rate limiting is covered by apps/api tests; the e2e suite signs in many times per minute.
   CDEVI_SIGNIN_RATE_MAX: '1000',
+  JIRA_WEBHOOK_SECRET: E2E.jiraWebhookSecret,
   SESSION_SECRET: process.env['SESSION_SECRET'] ?? 'e2e-session-secret-000000000000000000',
 };
 

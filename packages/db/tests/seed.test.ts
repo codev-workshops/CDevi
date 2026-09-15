@@ -16,6 +16,12 @@ import {
   DASHBOARD_PROJECT,
   EXPECTED_DASHBOARD,
 } from '../src/seed/dashboard';
+import {
+  buildRequirements,
+  EXPECTED_REQUIREMENTS,
+  JIRA_MAPPING,
+  REQUIREMENT_SHOWCASE,
+} from '../src/seed/requirements';
 import { seed, SeedRefusedError } from '../src/seed/index';
 
 const BASE = new Date('2026-09-14T09:00:00Z');
@@ -563,6 +569,413 @@ describe('dashboard-demo seed (specs/001 US3, data-model.md §21)', () => {
       ).rows;
       expect(links).toHaveLength(EXPECTED_DASHBOARD.approvals + EXPECTED_DASHBOARD.clarifications);
       for (const l of links) expect(l.link).toBe(`/workflows/${l.workflow_id}`);
+    });
+  });
+});
+
+describe('requirements seed (specs/001 US4, data-model.md §30, research R44)', () => {
+  const LIFECYCLE = [
+    'DRAFT',
+    'ANALYZING',
+    'NEEDS_CLARIFICATION',
+    'READY',
+    'APPROVED',
+    'IN_IMPLEMENTATION',
+    'COMPLETED',
+    'REJECTED',
+  ];
+
+  it('FR-009 buildRequirements is deterministic: eight requirements req-seed-001…008, one per state in lifecycle order, req-seed-003 is source jira PAY-231 with 2 open questions, 28 analysis items of which 26 ai_generated, human items carry source user:Engineer 1', () => {
+    const a = buildRequirements(BASE);
+    const b = buildRequirements(BASE);
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+    expect(JSON.stringify(buildS500(BASE))).toBe(JSON.stringify(buildS500(BASE)));
+    const { requirements, mapping } = a;
+    expect(requirements).toHaveLength(EXPECTED_REQUIREMENTS.total);
+    expect(requirements.map((r) => r.externalId)).toEqual(
+      Array.from({ length: 8 }, (_, i) => `req-seed-${String(i + 1).padStart(3, '0')}`),
+    );
+    expect(requirements.map((r) => r.state)).toEqual(LIFECYCLE);
+    expect(Object.values(REQUIREMENT_SHOWCASE).every((id) => id.startsWith('req-seed-'))).toBe(
+      true,
+    );
+    expect(REQUIREMENT_SHOWCASE).toEqual({
+      draft: 'req-seed-001',
+      analyzing: 'req-seed-002',
+      needsClarification: 'req-seed-003',
+      ready: 'req-seed-004',
+      approved: 'req-seed-005',
+      inImplementation: 'req-seed-006',
+      completed: 'req-seed-007',
+      rejected: 'req-seed-008',
+      jira: 'req-seed-003',
+    });
+    for (const r of requirements) expect(r.project).toBe('payments-api');
+    requirements.forEach((r, i) => {
+      expect(r.createdAt.getTime(), r.externalId).toBe(BASE.getTime() - (9 - (i + 1)) * DAY);
+      expect(r.title.length).toBeGreaterThanOrEqual(3);
+      expect(r.businessObjective.length).toBeGreaterThanOrEqual(10);
+    });
+
+    const jira = requirements.find((r) => r.externalId === REQUIREMENT_SHOWCASE.jira)!;
+    expect(jira.state).toBe('NEEDS_CLARIFICATION');
+    expect(jira.source).toBe('jira');
+    expect(jira.externalRef).toMatchObject({
+      provider: 'jira',
+      key: 'PAY-231',
+      url: 'https://jira.example.invalid/browse/PAY-231',
+    });
+    expect(jira.externalRef!.updatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(jira.assignee).toBe('approver1@cdevi.demo');
+    expect(jira.createdBy).toBeNull();
+    expect(jira.items.filter((i) => i.kind === 'open_question')).toHaveLength(2);
+    expect(requirements.filter((r) => r.source === 'jira')).toHaveLength(
+      EXPECTED_REQUIREMENTS.jiraLinked,
+    );
+    for (const r of requirements.filter((r) => r.source === 'manual'))
+      expect(r.externalRef, r.externalId).toBeNull();
+
+    const items = requirements.flatMap((r) => r.items.map((i) => ({ ...i, req: r.externalId })));
+    expect(items).toHaveLength(EXPECTED_REQUIREMENTS.analysisItems);
+    expect(items.filter((i) => i.aiGenerated)).toHaveLength(EXPECTED_REQUIREMENTS.aiGenerated);
+    expect(items.filter((i) => i.kind === 'open_question')).toHaveLength(
+      EXPECTED_REQUIREMENTS.openQuestions,
+    );
+    const human = items.filter((i) => !i.aiGenerated);
+    expect(human).toHaveLength(2);
+    for (const h of human) {
+      expect(h.source).toBe('user:Engineer 1');
+      expect(h.kind).toBe('acceptance_criterion');
+      expect(h.req).toBe(REQUIREMENT_SHOWCASE.draft);
+    }
+    for (const i of items.filter((i) => i.aiGenerated))
+      expect(i.source).toBe('agent:Requirement Agent');
+    // Positions are 1..n per (requirement, kind, ai_generated) — the 0005 unique key.
+    for (const r of requirements) {
+      const groups = new Map<string, number[]>();
+      for (const i of r.items) {
+        const k = `${i.kind}:${i.aiGenerated}`;
+        groups.set(k, [...(groups.get(k) ?? []), i.position]);
+      }
+      for (const [k, positions] of groups)
+        expect(positions, `${r.externalId} ${k}`).toEqual(positions.map((_, n) => n + 1));
+    }
+    // Items only where the state implies analysis happened (or a human authored criteria).
+    expect(requirements.find((r) => r.state === 'ANALYZING')!.items).toEqual([]);
+    expect(requirements.find((r) => r.state === 'REJECTED')!.items).toEqual([]);
+    expect(
+      requirements
+        .find((r) => r.state === 'READY')!
+        .items.filter((i) => i.kind === 'open_question'),
+    ).toEqual([]);
+
+    expect(mapping).toEqual(JIRA_MAPPING);
+    expect(JIRA_MAPPING).toEqual({
+      provider: 'jira',
+      externalProjectKey: 'PAY',
+      projectKey: 'payments-api',
+      baseUrl: 'https://jira.example.invalid',
+    });
+  });
+
+  it('FR-009 buildRequirements records 26 requirement_transitions in lifecycle order with system actors for the workflow-driven ones and three S-500 workflow links', () => {
+    const { requirements } = buildRequirements(BASE);
+    const per = Object.fromEntries(requirements.map((r) => [r.externalId, r.transitions.length]));
+    expect(per).toEqual({
+      'req-seed-001': 1,
+      'req-seed-002': 2,
+      'req-seed-003': 3,
+      'req-seed-004': 3,
+      'req-seed-005': 4,
+      'req-seed-006': 5,
+      'req-seed-007': 6,
+      'req-seed-008': 2,
+    });
+    expect(requirements.reduce((n, r) => n + r.transitions.length, 0)).toBe(
+      EXPECTED_REQUIREMENTS.transitions,
+    );
+    for (const r of requirements) {
+      expect(r.transitions[0]!.fromState).toBeNull();
+      expect(r.transitions[0]!.toState).toBe('DRAFT');
+      expect(r.transitions.at(-1)!.toState).toBe(r.state);
+      for (let i = 1; i < r.transitions.length; i++) {
+        expect(r.transitions[i]!.fromState, r.externalId).toBe(r.transitions[i - 1]!.toState);
+        expect(r.transitions[i]!.occurredAt.getTime(), r.externalId).toBeGreaterThan(
+          r.transitions[i - 1]!.occurredAt.getTime(),
+        );
+      }
+      expect(r.transitions[0]!.occurredAt.getTime()).toBe(r.createdAt.getTime());
+      expect(r.transitions.at(-1)!.occurredAt.getTime()).toBeLessThanOrEqual(BASE.getTime());
+    }
+    const byId = (id: string) => requirements.find((r) => r.externalId === id)!;
+    expect(byId('req-seed-003').transitions.map((t) => t.toState)).toEqual([
+      'DRAFT',
+      'ANALYZING',
+      'NEEDS_CLARIFICATION',
+    ]);
+    expect(byId('req-seed-003').transitions[2]).toMatchObject({
+      actorType: 'agent',
+      actorName: 'Requirement Agent',
+    });
+    expect(byId('req-seed-006').transitions.at(-1)).toMatchObject({
+      fromState: 'APPROVED',
+      toState: 'IN_IMPLEMENTATION',
+      actorType: 'system',
+      actorName: 'workflow',
+    });
+    const completed = byId('req-seed-007').transitions;
+    expect(completed.map((t) => t.toState)).toEqual([
+      'DRAFT',
+      'ANALYZING',
+      'READY',
+      'APPROVED',
+      'IN_IMPLEMENTATION',
+      'COMPLETED',
+    ]);
+    expect(completed.slice(-2).map((t) => t.actorType)).toEqual(['system', 'system']);
+    expect(byId('req-seed-008').transitions.map((t) => t.toState)).toEqual(['DRAFT', 'REJECTED']);
+    expect(byId('req-seed-008').rejectionReason).toBe('Duplicate of req-seed-004');
+    expect(byId('req-seed-008').transitions[1]!.reason).toBe('Duplicate of req-seed-004');
+    expect(byId('req-seed-008').rejectedBy).toBe('approver1@cdevi.demo');
+    expect(byId('req-seed-005').approvedBy).toBe('approver1@cdevi.demo');
+    expect(byId('req-seed-002').submittedBy).toBe('engineer1@cdevi.demo');
+    expect(byId('req-seed-001').createdBy).toBe('engineer1@cdevi.demo');
+
+    // Links stay inside payments-api (the requirements' project): first S-500 row of that state by external_id.
+    const s500 = buildS500(BASE).workflows;
+    const first = (state: string) =>
+      [...s500]
+        .filter((w) => w.state === state && w.project === 'payments-api')
+        .sort((x, y) => x.externalId.localeCompare(y.externalId))[0]!.externalId;
+    const linked = requirements.filter((r) => r.linkedWorkflow !== null);
+    expect(linked.map((r) => r.externalId)).toEqual([
+      'req-seed-005',
+      'req-seed-006',
+      'req-seed-007',
+    ]);
+    expect(linked).toHaveLength(EXPECTED_REQUIREMENTS.linkedWorkflows);
+    expect(byId('req-seed-005').linkedWorkflow).toBe(first('QUEUED'));
+    expect(byId('req-seed-006').linkedWorkflow).toBe(SHOWCASE_WAITING);
+    expect(byId('req-seed-007').linkedWorkflow).toBe(first('COMPLETED'));
+  });
+
+  describe.skipIf(Boolean(process.env['CDEVI_SKIP_DB_TESTS']))('written to the database', () => {
+    const pool = new pg.Pool({ connectionString: process.env['DATABASE_MIGRATOR_URL'] });
+    afterAll(() => pool.end());
+    const run = () =>
+      seed({
+        base: BASE,
+        password: 'cdevi-demo-test-pass',
+        ingestToken: 'cdvi_test_token',
+        log: () => {},
+      });
+    const n = async (sql: string, params: unknown[] = []) =>
+      Number((await pool.query(sql, params)).rows[0].c);
+
+    it('FR-009 seed has one requirement per state and EXPECTED_REQUIREMENTS (total 8, analysisItems 28, aiGenerated 26, jiraLinked 1, linkedWorkflows 3, mappings 1) in payments-api', async () => {
+      const r = await run();
+      expect(r.counts.requirements).toEqual(EXPECTED_REQUIREMENTS);
+      const project = (await pool.query(`select id from projects where key='payments-api'`)).rows[0]
+        .id as string;
+      expect(await n(`select count(*) c from requirements`)).toBe(EXPECTED_REQUIREMENTS.total);
+      expect(await n(`select count(*) c from requirements where project_id=$1`, [project])).toBe(
+        EXPECTED_REQUIREMENTS.total,
+      );
+      const byState = (
+        await pool.query(`select state, count(*)::int c from requirements group by state`)
+      ).rows;
+      expect(Object.fromEntries(byState.map((x) => [x.state, x.c]))).toEqual(
+        EXPECTED_REQUIREMENTS.byState,
+      );
+      expect(await n(`select count(*) c from requirement_analysis_items`)).toBe(
+        EXPECTED_REQUIREMENTS.analysisItems,
+      );
+      expect(await n(`select count(*) c from requirement_analysis_items where ai_generated`)).toBe(
+        EXPECTED_REQUIREMENTS.aiGenerated,
+      );
+      expect(
+        await n(`select count(*) c from requirement_analysis_items where kind='open_question'`),
+      ).toBe(EXPECTED_REQUIREMENTS.openQuestions);
+      expect(
+        await n(
+          `select count(*) c from requirement_analysis_items where not ai_generated and source <> 'user:Engineer 1'`,
+        ),
+      ).toBe(0);
+      expect(await n(`select count(*) c from requirements where source='jira'`)).toBe(
+        EXPECTED_REQUIREMENTS.jiraLinked,
+      );
+      expect(await n(`select count(*) c from workflows where requirement_id is not null`)).toBe(
+        EXPECTED_REQUIREMENTS.linkedWorkflows,
+      );
+      expect(await n(`select count(*) c from integration_project_mappings`)).toBe(
+        EXPECTED_REQUIREMENTS.mappings,
+      );
+      const rows = (
+        await pool.query(
+          `select r.external_id, r.state, r.source, r.external_ref, r.created_at, r.title,
+                  a.email assignee, c.email created_by, s.email submitted_by, ap.email approved_by, rj.email rejected_by, r.rejection_reason,
+                  (select count(*)::int from requirement_analysis_items i where i.requirement_id = r.id and i.kind='open_question') open_questions
+             from requirements r
+             left join users a on a.id = r.assignee_user_id
+             left join users c on c.id = r.created_by_user_id
+             left join users s on s.id = r.submitted_by_user_id
+             left join users ap on ap.id = r.approved_by_user_id
+             left join users rj on rj.id = r.rejected_by_user_id
+            order by r.external_id`,
+        )
+      ).rows;
+      expect(rows.map((x) => x.external_id)).toEqual(
+        buildRequirements(BASE).requirements.map((x) => x.externalId),
+      );
+      rows.forEach((x, i) =>
+        expect(new Date(x.created_at).getTime(), x.external_id).toBe(
+          BASE.getTime() - (9 - (i + 1)) * DAY,
+        ),
+      );
+      const jira = rows.find((x) => x.external_id === REQUIREMENT_SHOWCASE.jira)!;
+      expect(jira).toMatchObject({
+        state: 'NEEDS_CLARIFICATION',
+        source: 'jira',
+        assignee: 'approver1@cdevi.demo',
+        created_by: null,
+        open_questions: 2,
+      });
+      expect(jira.external_ref).toMatchObject({
+        provider: 'jira',
+        key: 'PAY-231',
+        url: 'https://jira.example.invalid/browse/PAY-231',
+      });
+      expect(rows.find((x) => x.external_id === REQUIREMENT_SHOWCASE.draft)).toMatchObject({
+        created_by: 'engineer1@cdevi.demo',
+      });
+      expect(rows.find((x) => x.external_id === REQUIREMENT_SHOWCASE.approved)).toMatchObject({
+        approved_by: 'approver1@cdevi.demo',
+      });
+      expect(rows.find((x) => x.external_id === REQUIREMENT_SHOWCASE.rejected)).toMatchObject({
+        rejected_by: 'approver1@cdevi.demo',
+        rejection_reason: 'Duplicate of req-seed-004',
+      });
+    });
+
+    it('FR-010 seed links req-seed-005 to a QUEUED S-500 workflow, req-seed-006 to SHOWCASE_WAITING and req-seed-007 to a COMPLETED S-500 workflow and inserts no new workflows', async () => {
+      const r = await run();
+      expect(r.counts.workflows).toBe(EXPECTED_BUCKETS.total + EXPECTED_DASHBOARD.workflows);
+      expect(await n(`select count(*) c from workflows`)).toBe(
+        EXPECTED_BUCKETS.total + EXPECTED_DASHBOARD.workflows,
+      );
+      const links = (
+        await pool.query(
+          `select r.external_id requirement, r.state requirement_state, w.external_id workflow, w.state, p.key project
+             from requirements r join workflows w on w.requirement_id = r.id join projects p on p.id = w.project_id
+            order by r.external_id`,
+        )
+      ).rows;
+      const first = (state: string) =>
+        [...buildS500(BASE).workflows]
+          .filter((w) => w.state === state && w.project === 'payments-api')
+          .sort((x, y) => x.externalId.localeCompare(y.externalId))[0]!.externalId;
+      expect(links).toEqual([
+        {
+          requirement: 'req-seed-005',
+          requirement_state: 'APPROVED',
+          workflow: first('QUEUED'),
+          state: 'QUEUED',
+          project: 'payments-api',
+        },
+        {
+          requirement: 'req-seed-006',
+          requirement_state: 'IN_IMPLEMENTATION',
+          workflow: SHOWCASE_WAITING,
+          state: 'WAITING_FOR_HUMAN',
+          project: 'payments-api',
+        },
+        {
+          requirement: 'req-seed-007',
+          requirement_state: 'COMPLETED',
+          workflow: first('COMPLETED'),
+          state: 'COMPLETED',
+          project: 'payments-api',
+        },
+      ]);
+      // The links do not disturb S-500: buckets, showcase rows and the Dashboard project are as before.
+      expect(await n(`select count(*) c from workflows where state='QUEUED'`)).toBe(
+        EXPECTED_BUCKETS.running.QUEUED + 2,
+      );
+      expect(await n(`select count(*) c from workflow_stages`)).toBe(
+        EXPECTED_SHOWCASE.stages + EXPECTED_DASHBOARD.stages,
+      );
+    });
+
+    it('FR-008 seed maps Jira project PAY to payments-api with base URL https://jira.example.invalid', async () => {
+      await run();
+      const rows = (
+        await pool.query(
+          `select m.provider, m.external_project_key, m.external_base_url, p.key project, m.organization_id = p.organization_id same_org
+             from integration_project_mappings m join projects p on p.id = m.project_id`,
+        )
+      ).rows;
+      expect(rows).toEqual([
+        {
+          provider: 'jira',
+          external_project_key: 'PAY',
+          external_base_url: 'https://jira.example.invalid',
+          project: 'payments-api',
+          same_org: true,
+        },
+      ]);
+    });
+
+    it('FR-009 seed writes 26 requirement_transitions rows (system actor for the workflow-driven ones) and no audit_events rows, and inbox_change_log is empty after seeding', async () => {
+      await run();
+      expect(await n(`select count(*) c from requirement_transitions`)).toBe(
+        EXPECTED_REQUIREMENTS.transitions,
+      );
+      expect(await n(`select count(*) c from requirement_transitions`)).toBe(26);
+      const system = (
+        await pool.query(
+          `select r.external_id, t.from_state, t.to_state, t.actor_name
+             from requirement_transitions t join requirements r on r.id = t.requirement_id
+            where t.actor_type = 'system' and t.actor_name = 'workflow' order by r.external_id, t.id`,
+        )
+      ).rows;
+      expect(system).toEqual([
+        {
+          external_id: 'req-seed-006',
+          from_state: 'APPROVED',
+          to_state: 'IN_IMPLEMENTATION',
+          actor_name: 'workflow',
+        },
+        {
+          external_id: 'req-seed-007',
+          from_state: 'APPROVED',
+          to_state: 'IN_IMPLEMENTATION',
+          actor_name: 'workflow',
+        },
+        {
+          external_id: 'req-seed-007',
+          from_state: 'IN_IMPLEMENTATION',
+          to_state: 'COMPLETED',
+          actor_name: 'workflow',
+        },
+      ]);
+      const userActors = await n(
+        `select count(*) c from requirement_transitions where actor_type='user' and actor_id is null`,
+      );
+      expect(userActors).toBe(0);
+      expect(
+        await n(
+          `select count(*) c from requirement_transitions t where t.actor_type='user' and not exists (select 1 from users u where u.id::text = t.actor_id)`,
+        ),
+      ).toBe(0);
+      const last = (
+        await pool.query(
+          `select r.external_id, r.state, (select to_state from requirement_transitions t where t.requirement_id = r.id order by t.occurred_at desc, t.id desc limit 1) last
+             from requirements r`,
+        )
+      ).rows;
+      for (const row of last) expect(row.last, row.external_id).toBe(row.state);
+      expect(await n(`select count(*) c from audit_events`)).toBe(0);
+      expect(await n(`select count(*) c from inbox_change_log`)).toBe(0);
     });
   });
 });

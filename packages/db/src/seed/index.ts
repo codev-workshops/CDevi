@@ -3,10 +3,12 @@ import pg from 'pg';
 import { hashPassword } from '../password';
 import { generateToken, hashToken } from '../token';
 import { buildDashboardShowcase, DASHBOARD_PROJECT, EXPECTED_DASHBOARD } from './dashboard';
+import { buildRequirements, EXPECTED_REQUIREMENTS, type RequirementsSeed } from './requirements';
 import { buildS500, PROJECTS, type SeedShowcase, type SeedWorkflow } from './s500';
 
 export { DECISION_SHOWCASE, SHOWCASE_FAILED, SHOWCASE_WAITING } from './s500';
 export { DASHBOARD_FIGURES, DASHBOARD_PROJECT, EXPECTED_DASHBOARD } from './dashboard';
+export { EXPECTED_REQUIREMENTS, JIRA_MAPPING, REQUIREMENT_SHOWCASE } from './requirements';
 
 export class SeedRefusedError extends Error {}
 
@@ -45,8 +47,15 @@ export interface SeedResult {
     artifacts: number;
     testRuns: number;
     dashboard: Record<keyof typeof EXPECTED_DASHBOARD, number>;
+    /** specs/001 US4 requirements seed (research R44); compare with EXPECTED_REQUIREMENTS. */
+    requirements: RequirementCounts;
   };
 }
+
+type RequirementCounts = Omit<
+  { -readonly [K in keyof typeof EXPECTED_REQUIREMENTS]: number },
+  'byState'
+> & { byState: Record<string, number> };
 
 /** Any SeedWorkflow-shaped row whose `project` is a key present in the seeded project map. */
 type WorkflowRow = Omit<SeedWorkflow, 'project'> & { project: string };
@@ -270,7 +279,131 @@ async function insertShowcase(
   return counts;
 }
 
-/** Truncates every table and loads S-500 plus the dashboard-demo project. Refuses to run in production (FR-022). */
+/**
+ * Requirements, analysis items, transitions, workflow links and the Jira mapping (specs/001 US4, R44).
+ * Workflow links are plain UPDATEs of `requirement_id` (the follow-workflow trigger fires on state changes only),
+ * so the state history is written explicitly, including the system rows the trigger would have produced.
+ */
+async function insertRequirements(
+  { client, org, projectIds }: InsertContext,
+  { requirements, mapping }: RequirementsSeed,
+  userIds: Map<string, string>,
+  workflowRefs: Map<string, WorkflowRef>,
+): Promise<RequirementCounts> {
+  const counts: RequirementCounts = {
+    total: 0,
+    byState: {},
+    analysisItems: 0,
+    aiGenerated: 0,
+    openQuestions: 0,
+    jiraLinked: 0,
+    linkedWorkflows: 0,
+    mappings: 0,
+    transitions: 0,
+  };
+  const userId = (email: string | null) => {
+    if (email === null) return null;
+    const id = userIds.get(email);
+    if (!id) throw new Error(`requirements seed references unknown user ${email}`);
+    return id;
+  };
+  await client.query(
+    `INSERT INTO integration_project_mappings (organization_id, project_id, provider, external_project_key, external_base_url) VALUES ($1,$2,$3,$4,$5)`,
+    [
+      org,
+      projectIds.get(mapping.projectKey),
+      mapping.provider,
+      mapping.externalProjectKey,
+      mapping.baseUrl,
+    ],
+  );
+  counts.mappings++;
+  for (const r of requirements) {
+    const projectId = projectIds.get(r.project)!;
+    const id = (
+      await client.query<{ id: string }>(
+        `INSERT INTO requirements (organization_id, project_id, external_id, title, business_objective, state, source, external_ref,
+           created_by_user_id, assignee_user_id, submitted_by_user_id, submitted_at, analysis_observed_at, analysis_agent, analysis_summary,
+           approved_by_user_id, approved_at, rejected_by_user_id, rejected_at, rejection_reason, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING id`,
+        [
+          org,
+          projectId,
+          r.externalId,
+          r.title,
+          r.businessObjective,
+          r.state,
+          r.source,
+          r.externalRef ? JSON.stringify(r.externalRef) : null,
+          userId(r.createdBy),
+          userId(r.assignee),
+          userId(r.submittedBy),
+          r.submittedAt,
+          r.analysisObservedAt,
+          r.analysisAgent,
+          r.analysisSummary,
+          userId(r.approvedBy),
+          r.approvedAt,
+          userId(r.rejectedBy),
+          r.rejectedAt,
+          r.rejectionReason,
+          r.createdAt,
+          r.transitions.at(-1)!.occurredAt,
+        ],
+      )
+    ).rows[0]!.id;
+    counts.total++;
+    counts.byState[r.state] = (counts.byState[r.state] ?? 0) + 1;
+    if (r.source === 'jira') counts.jiraLinked++;
+    for (const item of r.items) {
+      await client.query(
+        `INSERT INTO requirement_analysis_items (organization_id, project_id, requirement_id, kind, position, text, ai_generated, source, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [
+          org,
+          projectId,
+          id,
+          item.kind,
+          item.position,
+          item.text,
+          item.aiGenerated,
+          item.source,
+          item.aiGenerated ? r.analysisObservedAt : r.createdAt,
+        ],
+      );
+      counts.analysisItems++;
+      if (item.aiGenerated) counts.aiGenerated++;
+      if (item.kind === 'open_question') counts.openQuestions++;
+    }
+    for (const t of r.transitions) {
+      await client.query(
+        `INSERT INTO requirement_transitions (organization_id, requirement_id, from_state, to_state, actor_type, actor_id, actor_name, reason, occurred_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [
+          org,
+          id,
+          t.fromState,
+          t.toState,
+          t.actorType,
+          userId(t.actorEmail),
+          t.actorName,
+          t.reason,
+          t.occurredAt,
+        ],
+      );
+      counts.transitions++;
+    }
+    if (r.linkedWorkflow) {
+      const ref = workflowRefs.get(r.linkedWorkflow);
+      if (!ref) throw new Error(`requirements seed links unknown workflow ${r.linkedWorkflow}`);
+      await client.query(`UPDATE workflows SET requirement_id = $1 WHERE id = $2`, [id, ref.id]);
+      counts.linkedWorkflows++;
+    }
+  }
+  return counts;
+}
+
+/** Truncates every table and loads S-500, the dashboard-demo project and the US4 requirements. Refuses to run in production (FR-022). */
 export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
   const env = opts.env ?? process.env;
   if (env['NODE_ENV'] === 'production' || env['CDEVI_ENV'] === 'production') {
@@ -287,6 +420,7 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
 
   const { users, workflows, showcase } = buildS500(base);
   const dashboard = buildDashboardShowcase(base);
+  const requirementsSeed = buildRequirements(base);
   const passwordHash = await hashPassword(password);
 
   const client = new pg.Client({ connectionString });
@@ -294,7 +428,7 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
   try {
     await client.query('BEGIN');
     await client.query(
-      `TRUNCATE audit_events, inbox_change_log, ingestion_log, test_runs, artifacts, agent_runs, workflow_stages, workflow_transitions, approvals, clarifications, workflows, sessions, project_memberships, ingestion_principals, users, projects, organizations RESTART IDENTITY CASCADE`,
+      `TRUNCATE requirement_transitions, requirement_analysis_items, requirements, integration_project_mappings, audit_events, inbox_change_log, ingestion_log, test_runs, artifacts, agent_runs, workflow_stages, workflow_transitions, approvals, clarifications, workflows, sessions, project_memberships, ingestion_principals, users, projects, organizations RESTART IDENTITY CASCADE`,
     );
     const org = (
       await client.query<{ id: string }>(
@@ -321,11 +455,13 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
       ).rows[0]!.id,
     );
 
+    const userIds = new Map<string, string>();
     for (const u of users) {
       const r = await client.query<{ id: string }>(
         `INSERT INTO users (organization_id, email, display_name, password_hash, role) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
         [org, u.email, u.displayName, passwordHash, u.role],
       );
+      userIds.set(u.email, r.rows[0]!.id);
       for (const key of u.projects) {
         await client.query(
           `INSERT INTO project_memberships (user_id, project_id, organization_id) VALUES ($1,$2,$3)`,
@@ -348,6 +484,8 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
     // specs/001 US3 dashboard-demo (research R30): written after S-500 so S-500 row order is unchanged.
     const dash = await insertWorkflows(ctx, dashboard.workflows);
     const dashCounts = await insertShowcase(ctx, dashboard.showcase, dash.refs);
+    // specs/001 US4 requirements (research R44): links point at S-500 rows, so they come last.
+    const requirementCounts = await insertRequirements(ctx, requirementsSeed, userIds, s500.refs);
     const approvals = s500.approvals + dash.approvals;
     const clarifications = s500.clarifications + dash.clarifications;
     const counts = {
@@ -369,6 +507,13 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
     );
     log(
       `  ${DASHBOARD_PROJECT.key}: workflows ${dashboard.workflows.length}  approvals ${dash.approvals}  clarifications ${dash.clarifications}  stages ${dashCounts.stages}  runs ${dashCounts.runs}  test runs ${dashCounts.testRuns}`,
+    );
+    log(
+      `  requirements: ${requirementCounts.total} (${Object.entries(requirementCounts.byState)
+        .map(([s, c]) => `${s} ${c}`)
+        .join(
+          ', ',
+        )})  analysis items ${requirementCounts.analysisItems} (${requirementCounts.aiGenerated} AI-generated)  transitions ${requirementCounts.transitions}  linked workflows ${requirementCounts.linkedWorkflows}  Jira mappings ${requirementCounts.mappings}`,
     );
     log(
       '  Demo credentials (shown once): admin@cdevi.demo, approver1@cdevi.demo, engineer1@cdevi.demo, viewer1@cdevi.demo',
@@ -396,6 +541,7 @@ export async function seed(opts: SeedOptions = {}): Promise<SeedResult> {
           runs: dashCounts.runs,
           testRuns: dashCounts.testRuns,
         },
+        requirements: requirementCounts,
       },
     };
   } catch (e) {

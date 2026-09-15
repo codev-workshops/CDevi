@@ -3,7 +3,7 @@ import { E2E } from '../../playwright.config';
 
 export const API = `http://localhost:${E2E.apiPort}`;
 
-export async function signIn(page: Page, email: string, password = E2E.password) {
+export async function signIn(page: Page, email: string, password: string = E2E.password) {
   await page.goto('/sign-in');
   await page.getByLabel('Email').fill(email);
   await page.getByLabel('Password').fill(password);
@@ -64,4 +64,37 @@ export async function ingestNeedsYou(
   });
   expect(t.ok(), await t.text()).toBeTruthy();
   return { ext, title, workflowId: (await w.json()).id as string };
+}
+
+export interface AnalysisInput {
+  agent?: string;
+  observedAt?: string;
+  summary?: string | null;
+  acceptanceCriteria?: string[];
+  rules?: string[];
+  openQuestions?: string[];
+}
+
+/** Simulates the agent runtime delivering a requirement analysis (US4 scope decision 1) and returns the ingest result. */
+export async function ingestAnalysis(
+  request: APIRequestContext,
+  externalId: string,
+  input: AnalysisInput = {},
+) {
+  const res = await request.put(`${API}/api/ingest/requirements/${externalId}/analysis`, {
+    headers: {
+      authorization: `Bearer ${E2E.ingestToken}`,
+      'content-type': 'application/json',
+    },
+    data: {
+      agent: input.agent ?? 'Requirement Agent',
+      observedAt: input.observedAt ?? new Date(Date.now() + 60_000).toISOString(),
+      summary: input.summary ?? null,
+      acceptanceCriteria: input.acceptanceCriteria ?? [],
+      rules: input.rules ?? [],
+      openQuestions: input.openQuestions ?? [],
+    },
+  });
+  expect(res.ok(), await res.text()).toBeTruthy();
+  return (await res.json()) as { outcome: 'accepted' | 'stale'; id: string; state: string };
 }

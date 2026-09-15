@@ -3,6 +3,22 @@
 Tokens, CSS variable names, `cd-` class names, component names and props are the public API. Additive
 changes bump the minor version; renames or removals bump the major version and carry a migration note.
 
+## 1.4.0 — 2026-09-15
+
+### Added
+
+- `RequirementStatePill` (`state: RequirementState`) and the normative `requirementStateToPill` mapping plus
+  `REQUIREMENT_STATES` / `RequirementState` in `src/tokens.ts`: the eight specs/001 FR-009 requirement lifecycle
+  states as a word in a pill (Draft / Ready → neutral, Analyzing / In Implementation → run with pulse,
+  Needs Clarification → needs-you, Approved / Completed → done, Rejected → fail). Requirement states are not
+  workflow states, so `StatePill` stays typed on `WorkflowState`. Reuses the existing `.cd-pill` variant classes; no
+  new CSS. Gallery entry `RequirementStatePill`, DESIGN.md §3/§4/§5 rows.
+
+### Fixed
+
+- `Button` no longer drops an explicit `aria-disabled` on `<button>` (it was overwritten by the `loading` flag), so an
+  action a role/state does not allow can stay focusable with `aria-describedby` pointing at the reason.
+
 ## 1.3.0 — 2026-09-14
 
 ### Added

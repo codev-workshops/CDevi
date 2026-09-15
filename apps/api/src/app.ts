@@ -17,6 +17,8 @@ import workflowRoutes from './routes/workflows';
 import approvalRoutes from './routes/approvals';
 import clarificationRoutes from './routes/clarifications';
 import dashboardRoutes from './routes/dashboard';
+import requirementRoutes from './routes/requirements';
+import integrationRoutes from './routes/integrations';
 
 export interface BuildOptions {
   /** Injected clock (Constitution II: time is controlled in tests). */
@@ -29,6 +31,8 @@ export interface BuildOptions {
   notify?: boolean | undefined;
   /** SSE heartbeat interval (tests shorten it). */
   heartbeatMs?: number | undefined;
+  /** Shared secret for `x-hub-signature` on the Jira webhook; undefined → every webhook call is 401. */
+  jiraWebhookSecret?: string | undefined;
 }
 
 declare module 'fastify' {
@@ -82,6 +86,8 @@ export async function buildApp(opts: BuildOptions): Promise<FastifyInstance> {
       await api.register(approvalRoutes);
       await api.register(clarificationRoutes);
       await api.register(dashboardRoutes);
+      await api.register(requirementRoutes);
+      await api.register(integrationRoutes, { jiraWebhookSecret: opts.jiraWebhookSecret });
     },
     { prefix: '/api' },
   );

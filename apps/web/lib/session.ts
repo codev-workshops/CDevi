@@ -4,6 +4,8 @@ import type {
   DashboardSnapshot,
   InboxSnapshot,
   Me,
+  RequirementDetail,
+  RequirementListPage,
   Tab,
   WindowKey,
 } from '@cdevi/contracts';
@@ -55,6 +57,34 @@ export const getDashboardSnapshot = cache(
     });
   },
 );
+
+/**
+ * First Requirements page per filter set per request (specs/001 US4 scenario 5; SC-007 server first paint).
+ * Filters are the raw `searchParams` strings (`state` is the csv); primitives so React `cache` can key on them.
+ */
+export const getRequirementList = cache(
+  async (
+    project: string,
+    state?: string | undefined,
+    assignee?: string | undefined,
+    cursor?: string | undefined,
+  ): Promise<RequirementListPage> => {
+    const qs = new URLSearchParams({ project });
+    if (state) qs.set('state', state);
+    if (assignee) qs.set('assignee', assignee);
+    if (cursor) qs.set('cursor', cursor);
+    return apiFetch<RequirementListPage>(`/api/requirements?${qs}`, {
+      cookie: await cookieHeader(),
+    });
+  },
+);
+
+/** One requirement detail per id per request (specs/001 US4 scenarios 1, 3, 4). */
+export const getRequirementDetail = cache(async (id: string): Promise<RequirementDetail> => {
+  return apiFetch<RequirementDetail>(`/api/requirements/${encodeURIComponent(id)}`, {
+    cookie: await cookieHeader(),
+  });
+});
 
 /** Approval Center snapshot per project per request; layout (nav count) and page share it (specs/001 US2 scenario 6). */
 export const getApprovalCenterSnapshot = cache(

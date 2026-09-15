@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ExternalId, IsoDateTime, line, StageInput, Uuid } from './common';
+import { RequirementState } from './requirements';
 import { RiskLevel, WorkflowState } from './vocabulary';
 import { AgentRunEvent, ArtifactType, TestRunStatus } from './workflow-detail';
 
@@ -120,6 +121,28 @@ export const IngestResult = z.object({
   state: WorkflowState.optional(),
 });
 export type IngestResult = z.infer<typeof IngestResult>;
+
+/**
+ * `PUT /ingest/requirements/{externalId}/analysis` — the runtime delivers the analysis
+ * (specs/001 data-model.md §25, research R34). READY when `openQuestions` is empty,
+ * otherwise NEEDS_CLARIFICATION; `stale` when `observedAt` is not newer than the stored one.
+ */
+export const RequirementAnalysisIngest = z.object({
+  agent: line(80),
+  observedAt: IsoDateTime,
+  summary: line(400).nullable().optional(),
+  acceptanceCriteria: z.array(line(1000)).max(50),
+  rules: z.array(line(1000)).max(50),
+  openQuestions: z.array(line(1000)).max(20),
+});
+export type RequirementAnalysisIngest = z.infer<typeof RequirementAnalysisIngest>;
+
+export const RequirementIngestResult = z.object({
+  outcome: z.enum(['accepted', 'stale']),
+  id: Uuid,
+  state: RequirementState,
+});
+export type RequirementIngestResult = z.infer<typeof RequirementIngestResult>;
 
 export const ExternalIdParams = z.object({ externalId: ExternalId });
 

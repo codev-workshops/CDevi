@@ -10,21 +10,37 @@ export interface InboxStreamOptions {
   onStatus?: ((connected: boolean) => void) | undefined;
   /** When set, only `inbox.changed` frames whose data carries this `workflowId` fire `onChange` (specs/001 R3). */
   workflowId?: string | undefined;
+  /** When set, frames carrying this `requirementId` fire `onChange`; combines with `workflowId` as "either" (R37). */
+  requirementId?: string | undefined;
 }
 
-/** Reads `workflowId` from an `inbox.changed` frame; unparsable frames match nothing. */
-export function frameWorkflowId(data: unknown): string | null {
+export type FrameIdKey = 'workflowId' | 'requirementId';
+
+/** Reads one id from an `inbox.changed` frame; unparsable frames match nothing. */
+export function frameId(data: unknown, key: FrameIdKey): string | null {
   if (typeof data !== 'string') return null;
   try {
     const parsed: unknown = JSON.parse(data);
-    if (parsed && typeof parsed === 'object' && 'workflowId' in parsed) {
-      const id = (parsed as { workflowId: unknown }).workflowId;
+    if (parsed && typeof parsed === 'object' && key in parsed) {
+      const id = (parsed as Record<FrameIdKey, unknown>)[key];
       return typeof id === 'string' ? id : null;
     }
   } catch {
     /* not JSON */
   }
   return null;
+}
+
+export function frameWorkflowId(data: unknown): string | null {
+  return frameId(data, 'workflowId');
+}
+
+function frameMatches(data: unknown, opts: InboxStreamOptions): boolean {
+  if (!opts.workflowId && !opts.requirementId) return true;
+  return (
+    (Boolean(opts.workflowId) && frameId(data, 'workflowId') === opts.workflowId) ||
+    (Boolean(opts.requirementId) && frameId(data, 'requirementId') === opts.requirementId)
+  );
 }
 
 export function streamUrl(): string {
@@ -63,7 +79,7 @@ export function subscribeInboxStream(opts: InboxStreamOptions): () => void {
       }
     });
     es.addEventListener('inbox.changed', (ev) => {
-      if (opts.workflowId && frameWorkflowId((ev as MessageEvent).data) !== opts.workflowId) return;
+      if (!frameMatches((ev as MessageEvent).data, opts)) return;
       fire();
     });
     es.addEventListener('error', () => {

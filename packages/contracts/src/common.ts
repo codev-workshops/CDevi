@@ -17,6 +17,15 @@ export type ExternalId = z.infer<typeof ExternalId>;
 
 export const Uuid = z.uuid();
 
+/** `?state=A,B` → ['A', 'B'] for `z.preprocess`; non-strings (already arrays) pass through. */
+export const splitCsv = (v: unknown) =>
+  typeof v === 'string'
+    ? v
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : v;
+
 export const StageInput = z
   .object({
     index: z.number().int().min(1),

@@ -40,6 +40,11 @@ export const AUDIT_ACTIONS = [
   'approval.approved',
   'approval.rejected',
   'clarification.answered',
+  'requirement.submitted',
+  'requirement.approved',
+  'requirement.rejected',
+  'requirement.flagged',
+  'requirement.workflow_created',
 ] as const;
 export const AuditAction = z.enum(AUDIT_ACTIONS);
 export type AuditAction = z.infer<typeof AuditAction>;

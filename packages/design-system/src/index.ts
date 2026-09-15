@@ -130,6 +130,8 @@ export type {
 // Control-plane vocabulary
 export { StatePill } from './components/Pill/StatePill';
 export type { StatePillProps } from './components/Pill/StatePill';
+export { RequirementStatePill } from './components/Pill/RequirementStatePill';
+export type { RequirementStatePillProps } from './components/Pill/RequirementStatePill';
 export { RiskBadge } from './components/RiskBadge/RiskBadge';
 export type { RiskBadgeProps } from './components/RiskBadge/RiskBadge';
 export { AuditRow, AuditTable, FindingRow } from './components/Finding/Finding';
@@ -141,11 +143,13 @@ export type {
   FindingRowProps,
 } from './components/Finding/Finding';
 export {
+  REQUIREMENT_STATES,
   RISK_LEVELS,
   WORKFLOW_STATES,
   blockingToPill,
   cssVar,
   policyOutcomeToPill,
+  requirementStateToPill,
   riskToVariant,
   semanticColor,
   severityToPill,
@@ -156,6 +160,7 @@ export type {
   FindingBlocking,
   FindingSeverity,
   PolicyOutcome,
+  RequirementState,
   RiskLevel,
   RiskPresentation,
   RiskVariant,

@@ -231,3 +231,100 @@ If reviewers prefer `pnpm db:seed` to stay identical, the fallback is an opt-in 
 | `inbox.changed` → refreshed figure ≤ 5 s p95, ≤ 1 s median (SC-002, SC-003) | e2e measures after the step-5 ingest |
 | Refetch re-render ≤ 100 ms; cards ≤ 12 | component test (fake timers); pure `ACTIVE_CARD_LIMIT` test |
 | Route JS ≤ 200 KB gzip | `pnpm check:size` |
+
+## 5. User Story 4 — Requirements
+
+### 5.1 Prerequisites
+
+Same as §3.1/§4.1: `.env` (now also `JIRA_WEBHOOK_SECRET=<any local value>` — the placeholder in `.env.example` is `change-me`; never commit a real one), `docker compose up -d`, `pnpm db:migrate` (applies `0005_requirements.sql` — the first migration with tables), `pnpm db:seed`, `pnpm dev`. The seed prints the demo credentials and the ingestion token (`principal e2e-tests`) once — export it as `INGEST_TOKEN`. The US4 Independent Test uses **engineer1** (`engineer1@cdevi.demo`, may create/submit — FR-032) and **approver1** (`approver1@cdevi.demo`, may approve/reject); both are members of `payments-api`.
+
+**Spec Kit feature pointer.** `/speckit-analyze` and `/speckit-implement` resolve the feature through `.specify/scripts/bash/check-prerequisites.sh`, which reads `.specify/feature.json` — a per-checkout file that Spec Kit deliberately git-ignores (`.specify/.gitignore`), so a fresh clone has none. Before running either skill on this feature, point the checkout at it once; the script persists the value to `.specify/feature.json` for later runs:
+
+```bash
+SPECIFY_FEATURE_DIRECTORY=specs/001-sdlc-control-plane-mvp \
+  .specify/scripts/bash/check-prerequisites.sh --json --require-spec --require-tasks --include-tasks
+# → {"FEATURE_DIR":".../specs/001-sdlc-control-plane-mvp","AVAILABLE_DOCS":["research.md","data-model.md","contracts/","quickstart.md","tasks.md"]}
+```
+
+Do not commit `.specify/feature.json`.
+
+### 5.2 Red → green order (Principle II)
+
+tasks.md Phase 9: 9a contracts tests → 9a implementation → (9b database tests → 9b migration/seed) **in parallel with** (9d design-system + web component tests → 9d implementation on typed fixtures) → 9c API tests → 9c services/routes → 9e Playwright → Phase 10 polish. Every test name starts with the FR/SC id it proves.
+
+### 5.3 Independent Test (spec line 82)
+
+Automated as `apps/web/tests/e2e/requirements.spec.ts` (`FR-007 …`, `FR-009 …`, `FR-010 …`, `SC-003 …`, `SC-007 …`, `SC-008 …`, `SC-010 …`); by hand:
+
+1. **Create** (Scenario 1, FR-007). Sign in as engineer1. Inbox → **New requirement** (saffron) → `/requirements/new`. Choose project **Payments API**, title `Retry declined cards once`, business objective `Recover revenue lost to transient issuer declines by retrying once after 30 seconds`, one acceptance criterion `A declined card is retried at most once`. **Create requirement** (the only saffron control on the form). The browser opens `/requirements/{id}`: the pill reads **draft**, the Analysis card says "No analysis yet", the criterion shows **Authored by Engineer 1**, the action bar offers **Submit for analysis** (primary, not saffron) and a disabled **Reject…** with help "Only approvers and administrators can reject". Note the `req-…` external id shown in the meta line — export it as `REQ`.
+2. **Submit.** Click **Submit for analysis**. Pill → **analyzing** (pulsing), the Analysis card says "Analysis in progress — results appear here automatically.", no action is enabled. `GET /api/requirements/{id}` shows `decision.submittedBy` = Engineer 1. History shows `draft → analyzing · Engineer 1`.
+3. **Simulate the runtime — with open questions** (Scenario 3, FR-009, FR-036):
+
+```bash
+curl -s -X PUT localhost:3001/api/ingest/requirements/$REQ/analysis \
+  -H "authorization: Bearer $INGEST_TOKEN" -H 'content-type: application/json' -d '{
+  "agent": "Requirement Agent", "observedAt": "'"$(date -u +%FT%TZ)"'",
+  "summary": "Retry once for soft declines; hard declines are not retried.",
+  "acceptanceCriteria": ["A soft-declined card is retried once after 30 s", "A hard decline is never retried"],
+  "rules": ["Issuer response codes 05 and 51 are soft declines"],
+  "openQuestions": ["Should the customer be notified before the retry?"] }'
+# → {"outcome":"accepted","id":"…","state":"NEEDS_CLARIFICATION"}
+```
+
+Within 5 s and **without reloading** (FR-034, SC-003) the pill reads **needs clarification**, the Analysis card shows the summary, two acceptance criteria, one rule and one open question — every AI item carries the **AI-generated** pill and sits inside the "Requirement Agent · analysis" summary message (not evidence); the human criterion from step 1 still reads **Authored by Engineer 1**. The action bar now offers **Resubmit for analysis** (saffron — a person must resolve the question) and **Reject…** (disabled for engineer1). Repeating the same curl returns `{"outcome":"stale",…}` and changes nothing.
+4. **Resubmit, then simulate — without open questions.** Click **Resubmit for analysis** (pill → **analyzing**), then send the same body with a newer `observedAt` and `"openQuestions": []` → `{"outcome":"accepted","state":"READY"}`. Pill → **ready** (neutral); the AI items are replaced wholesale (the open question is gone); engineer1 sees no enabled action ("Only approvers and administrators can approve").
+5. **Approve** (Scenario 4, FR-010, SC-008). Sign in as approver1 in a second browser (or sign out/in). Open `/requirements/{id}`: **Approve** is the single saffron button; **Reject…** is ghost. Click **Approve**. Pill → **approved**; the Decision card shows "Approved · Approver 1" and **Workflow `wf-req-…` · stage 1 of 7** with a `StatePill` reading **queued**; History shows `ready → approved · Approver 1`; the audit table lists `requirement.approved` and `requirement.workflow_created`. A second **Approve** from a stale tab returns `409 This requirement was already decided.` (exactly once).
+6. **Appears in the Workflow Center** (decision 3): click the workflow link → `/workflows/{id}` (Workflow Detail) shows 7 stages, stage 1 **Requirement** `queued`, title `Retry declined cards once`. Open **Dashboard**, project **Payments API**: active workflows grew by 1 and the new card `wf-req-…` shows "Stage 1 of 7 · Requirement" with pill `queued`. Then:
+
+```bash
+curl -s "localhost:3001/api/workflows?requirement=<requirement uuid>" -b "$COOKIE"
+# → { "items": [ { "externalId": "wf-req-…", "state": "QUEUED", "stage": { "index": 1, "count": 7, "name": "Requirement" }, "requirement": { "id": "…", "href": "/requirements/…" }, … } ], "nextCursor": null, "total": 1 }
+```
+
+7. **Follow the workflow** (R33). Ingest a transition `PUT /api/ingest/workflows/wf-$REQ` with `{"state":"RUNNING",…}` → within 5 s the requirement pill reads **in implementation**; `{"state":"COMPLETED"}` → **completed**.
+8. **List and filters** (Scenario 5). Open **Requirements** (nav). Filters Project / State / Assignee; each row shows the state pill, the linked workflow's `StatePill` (link to `/workflows/{id}`), and for `req-seed-003` the Jira link **PAY-231** (opens in a new tab). Choose State = **needs clarification** → only `req-seed-003` (and yours from step 3 if you skipped step 4); Assignee = **Me** as approver1 → `req-seed-003`. The URL reflects the filters; "8 of 8 requirements" becomes "9 of 9" after your creation.
+9. **Reject path**: as approver1 open `req-seed-004` (READY) → **Reject…** → reason `Superseded` → **Confirm rejection** → pill **rejected**, Decision shows the reason. (Do this last: it changes seed data until the next `pnpm db:seed`; the e2e never rejects seed rows.)
+
+### 5.4 Jira webhook (Scenario 2, FR-008, edge case)
+
+The seed maps Jira project **PAY** → **Payments API** (`integration_project_mappings`). Sign the raw body with the shared secret:
+
+```bash
+BODY='{"timestamp":1757900000000,"webhookEvent":"jira:issue_created","issue":{"id":"10042","key":"PAY-240","self":"https://jira.example.invalid/rest/api/3/issue/10042","fields":{"summary":"Chargeback evidence export","description":"Export chargeback evidence as PDF for the issuer portal.","updated":"2026-09-15T06:00:00.000+0000","project":{"key":"PAY"},"status":{"name":"To Do","statusCategory":{"key":"new"}},"assignee":{"emailAddress":"approver1@cdevi.demo"}}}}'
+SIG="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$JIRA_WEBHOOK_SECRET" | sed 's/^.* //')"
+curl -s -X POST localhost:3001/api/integrations/jira/webhook -H "content-type: application/json" -H "x-hub-signature: $SIG" --data-binary "$BODY"
+# → 202 {"outcome":"created","requirementId":"…"}
+```
+
+- The Requirements list shows **PAY-240** in `draft`, assignee Approver 1, with the Jira link `https://jira.example.invalid/browse/PAY-240` (`rel="noopener noreferrer"`, new tab).
+- Send the same body with `"webhookEvent":"jira:issue_updated"`, a newer `updated` and `"summary":"Chargeback evidence export (PDF)"` → `202 {"outcome":"updated"}`; the title changes. The same `updated` again → `{"outcome":"stale"}`.
+- Wrong signature (`-H "x-hub-signature: sha256=00"`) → `401` problem+json `urn:cdevi:problem:unauthenticated` with no body echo; unmapped project (`"key":"XYZ"`, `"project":{"key":"XYZ"}`) → `202 {"outcome":"ignored","requirementId":null}`.
+- **Edge case**: for the requirement you approved in §5.3 step 5 there is no Jira link; instead create `PAY-241` via the webhook, submit → analyse (no questions) → approve it as above so it owns a `QUEUED` workflow, then send `"webhookEvent":"jira:issue_deleted"` for `PAY-241` → `202 {"outcome":"flagged"}`. The requirement shows the error-tone notice (role `alert`) "The linked Jira issue PAY-241 was deleted…", its list row a **Jira deleted** pill, and the workflow at `/workflows/{id}` is **blocked** with reason "Jira PAY-241 deleted — human decision required"; the Inbox needs-you tab and the Dashboard "blocked workflows" figure include it within 5 s. A `jira:issue_updated` whose `statusCategory.key` is `done` flags **closed** the same way.
+
+### 5.5 Seed requirements the e2e relies on — and what the seed does not touch (research R44, data-model §30)
+
+| `external_id` | State | Used by |
+|---------------|-------|---------|
+| `req-seed-001` | draft | list row; `FR-032` engineer sees Submit, viewer sees nothing |
+| `req-seed-002` | analyzing | list row; no enabled action |
+| `req-seed-003` | needs clarification — **Jira PAY-231**, assignee approver1, 2 open questions | `FR-008` Jira link + `FR-009` AI labels + assignee filter |
+| `req-seed-004` | ready | `FR-032` Approve offered to approver1/admin, not to engineer1/viewer1 (asserted without clicking) |
+| `req-seed-005` | approved → first `QUEUED` S-500 workflow | `FR-010` linked workflow `queued` |
+| `req-seed-006` | in implementation → `s500-001` (`SHOWCASE_WAITING`) | linked `StatePill` "waiting for human" + `/workflows/{id}` link |
+| `req-seed-007` | completed → first `COMPLETED` S-500 workflow | state filter |
+| `req-seed-008` | rejected, reason "Duplicate of req-seed-004" | Decision card |
+
+The Independent Test creates its own requirement (`uniq('e2e-req')`) and Jira issue key (`E2E-<n>` is **not** mapped — the e2e uses `PAY-9<nnn>` keys) so seed rows are never mutated by the e2e. **What the seed does not touch**: no workflow, stage, run, test run, approval, clarification or `audit_events` row is added (requirement history is seeded into `requirement_transitions` only, 26 rows), so `EXPECTED_BUCKETS`, `EXPECTED_SHOWCASE`, `EXPECTED_DASHBOARD`, the Inbox counts, the Approval Center showcase, the Dashboard figures (18 / 4 / 2 / 97.4 %), the two `count(*) from audit_events = 0` seed assertions (`seed.test.ts` lines 270 and 551) and every existing e2e assertion are unchanged. The only S-500 rows touched are three `workflows.requirement_id` values (nullable column added by 0005), which no existing test reads. The seed's `TRUNCATE` list gains the four new tables; the requirement inserts run before the final `TRUNCATE inbox_change_log`, so the change log is still empty after seeding.
+
+**Exactly two existing assertions change**, both in `packages/db/tests/schema.test.ts`, both because that file applies every migration (including 0005) before asserting, and both edited tests-first in T092: (1) ≈ line 149, in `changing a workflow emits NOTIFY inbox_changed and appends to inbox_change_log` — the exact `inbox_changed_%` trigger list gains `'inbox_changed_requirements'` (eight names, sorted); (2) ≈ line 741 `SC-007 0004 adds no tables, columns, triggers, policies or grants (indexes only)` — the `pg_tables` expectation becomes `[...TABLES_AFTER_0003, ...TABLES_ADDED_BY_0005].sort()` where `TABLES_ADDED_BY_0005 = ['integration_project_mappings', 'requirements', 'requirement_analysis_items', 'requirement_transitions']`; the column-count map in that test is untouched (0005 adds columns only to `workflows` and `inbox_change_log`). `packages/db/tests/seed.test.ts` only *gains* tests (`FR-009 seed has one requirement per state and EXPECTED_REQUIREMENTS …`, `FR-009 seed writes no audit_events …`) and re-asserts the US1–US3 totals in the same run. Visual baselines (`00-inbox-visual.spec.ts`) are unaffected (the Inbox does not render requirements).
+
+### 5.6 Performance budgets (plan Part D)
+
+| Budget | Method |
+|--------|--------|
+| Requirements list initial content ≤ 2 s p95 (SC-007) | Playwright trace, 10 runs (`requirements.spec.ts`) |
+| `GET /api/requirements` ≤ 200 ms p95, `GET /api/requirements/{id}` ≤ 150 ms p95, `GET /api/workflows` ≤ 200 ms p95 at the SC-007 fixture (+ 2 000 requirements / 20 000 items) | `Server-Timing` over 20 calls in `apps/api/tests/requirements.test.ts` / `workflows-list.test.ts`; fixture by `seedSc007Org` |
+| `POST …/approve` ≤ 300 ms p95; analysis `PUT` ≤ 200 ms p95; webhook ≤ 100 ms p95 | `Server-Timing` over 20 calls |
+| `inbox.changed` → updated pill ≤ 5 s p95, ≤ 1 s median (SC-003) | e2e measures after the §5.3 step-3 ingest |
+| Payloads: list ≤ 40 KB, detail ≤ 32 KB, workflow list ≤ 40 KB | `content-length` asserted |
+| Route JS ≤ 200 KB gzip | `pnpm check:size` |

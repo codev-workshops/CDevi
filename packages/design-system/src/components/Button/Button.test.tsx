@@ -50,6 +50,18 @@ describe('Button', () => {
     expect(btn.querySelector('.cd-spin')).toHaveAttribute('aria-hidden', 'true');
   });
 
+  it('keeps an explicit aria-disabled on a focusable button so the help text stays reachable', () => {
+    renderThemed(
+      <Button aria-disabled aria-describedby="why">
+        Approve
+      </Button>,
+    );
+    const btn = screen.getByRole('button', { name: 'Approve' });
+    expect(btn).toHaveAttribute('aria-disabled', 'true');
+    expect(btn).toHaveAttribute('aria-describedby', 'why');
+    expect(btn).toBeEnabled();
+  });
+
   it('renders a link when href is given and marks disabled links aria-disabled', () => {
     renderThemed(
       <>
