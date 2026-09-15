@@ -749,8 +749,8 @@ export const entries: GalleryEntry[] = [
     name: 'Finding',
     title: 'Review finding',
     description:
-      'An AI review finding with severity, blocking class, lane, impact, evidence, recommended fix and actions (specs/001 FR-020).',
-    usage: `<FindingRow severity="HIGH" blocking="BLOCKING" lane="Security" title="…" impact="…" evidence={[{ label: 'RefundController.java:84', href }]} fix="…" actions={<>…</>} />`,
+      'An AI review finding with severity, blocking class, lane, description, impact, evidence, recommended fix and actions (specs/001 FR-020).',
+    usage: `<FindingRow severity="HIGH" blocking="BLOCKING" lane="Security" title="…" description="…" impact="…" evidence={[{ label: 'RefundController.java:84', href }]} fix="…" actions={<>…</>} />`,
     a11y: 'An <article aria-labelledby> with words for severity and blocking class; evidence items are links.',
     render: () => (
       <>
@@ -759,6 +759,7 @@ export const entries: GalleryEntry[] = [
           blocking="BLOCKING"
           lane="Security"
           title="Refund endpoint does not verify authorization against the original payment owner"
+          description="POST /refunds issues the refund without checking that the caller owns the payment."
           impact="A user may potentially refund another user's payment."
           evidence={[{ label: 'RefundController.java:84', href: '#l84' }]}
           fix="Validate payment ownership before processing."

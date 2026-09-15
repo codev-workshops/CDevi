@@ -1,4 +1,11 @@
-import type { Problem } from '@cdevi/contracts';
+import type {
+  DismissFindingBody,
+  FindingActionResult,
+  Problem,
+  PullRequestReviewView,
+  PullRequestStatus,
+  ReviewListResponse,
+} from '@cdevi/contracts';
 
 export const API_TIMEOUT_MS = 5_000;
 
@@ -50,3 +57,47 @@ export async function apiFetch<T>(path: string, init: ApiFetchInit = {}): Promis
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
+
+// --- specs/001 US6 Reviews (FR-020, FR-021). Browser-safe: types only from the contracts.
+
+export interface ReviewsQuery {
+  project: string;
+  state?: PullRequestStatus | undefined;
+  cursor?: string | undefined;
+}
+
+export function reviewsPath(query: ReviewsQuery): string {
+  const qs = new URLSearchParams({ project: query.project });
+  if (query.state) qs.set('state', query.state);
+  if (query.cursor) qs.set('cursor', query.cursor);
+  return `/api/reviews?${qs}`;
+}
+
+/** Bounded (50) keyset page of pull requests under review. */
+export const getReviews = (query: ReviewsQuery, init?: ApiFetchInit) =>
+  apiFetch<ReviewListResponse>(reviewsPath(query), init);
+
+/** The Review Center read model: latest review, findings and cycles for one pull request. */
+export const getPullRequestReview = (pullRequestId: string, init?: ApiFetchInit) =>
+  apiFetch<PullRequestReviewView>(`/api/reviews/${encodeURIComponent(pullRequestId)}`, init);
+
+const findingActionPath = (pullRequestId: string, findingId: string, action: string) =>
+  `/api/reviews/${encodeURIComponent(pullRequestId)}/findings/${encodeURIComponent(findingId)}/${action}`;
+
+export const dismissFinding = (pullRequestId: string, findingId: string, reason: string) =>
+  apiFetch<FindingActionResult>(findingActionPath(pullRequestId, findingId, 'dismiss'), {
+    method: 'POST',
+    body: JSON.stringify({ reason } satisfies DismissFindingBody),
+  });
+
+export const applyFix = (pullRequestId: string, findingId: string) =>
+  apiFetch<FindingActionResult>(findingActionPath(pullRequestId, findingId, 'fix'), {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+
+export const createIssue = (pullRequestId: string, findingId: string) =>
+  apiFetch<FindingActionResult>(findingActionPath(pullRequestId, findingId, 'issue'), {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
