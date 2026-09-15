@@ -390,3 +390,182 @@ Consequences for existing **database-level** assertions (they count rows across 
 - §4 interaction table: "Dashboard" → landed (`GET /api/dashboard?project=&window=`), read model only.
 - §6 (query contracts for placeholder screens): `/workflows?stage=n|state=A,B|hasPr=true|intervention=human`, `/approvals?kind=clarification|risk=HIGH,CRITICAL`, `/testing?window=`, `/agents?window=`, `/audit?risk=HIGH,CRITICAL&window=`, `/reviews` — parameters the later Workflow Center / Testing / Agent Activity / Audit Log screens must honour.
 - §8 repository layout: `packages/db/migrations/0004_dashboard.sql`, `packages/db/src/seed/dashboard.ts`, `apps/api/src/services/dashboard.ts`, `apps/api/src/routes/dashboard.ts`, `apps/web/app/(app)/dashboard/`.
+
+---
+
+# Part D — User Story 4 (Requirements): R31–R45
+
+Scope reminder (approved, not reopened — R31): analysis is produced by the agent runtime and delivered through the ingestion API (no analyzer, no LLM call in the API); Jira is inbound-only through a signed webhook (no outbound Jira calls, no OAuth, no Integrations screen — US8); the Workflow Center list page is not built (`/workflows` stays the `[section]` placeholder; a bounded `GET /api/workflows` is added for it to consume later). First migration that adds tables: `0005_requirements.sql`.
+
+## R31 — Scope decisions recorded
+
+**Decision**: (1) `POST /api/requirements/{id}/submit` moves `Draft → Analyzing` and records who/when; the runtime delivers results via `PUT /api/ingest/requirements/{externalId}/analysis`; `Ready` when there are no open questions, otherwise `Needs Clarification`. Seed and e2e simulate the runtime by calling the ingest endpoint with the seeded `e2e-tests` principal token. (2) `POST /api/integrations/jira/webhook`, HMAC-SHA256 over the raw body, constant-time compare, secret from `JIRA_WEBHOOK_SECRET`; `integration_project_mappings` maps a Jira project key to a CDevi project (seeded once for `payments-api`); created/updated → create/update, deleted/closed → flag + `BLOCKED`. (3) "Appears in the Workflow Center" is verified through `/workflows/{id}`, the Dashboard active-workflow card and `GET /api/workflows?project=&requirement=&state=&stage=&cursor=`.
+
+**Rationale**: keeps the API deterministic and testable (no model in the loop), keeps secrets out of the repo, and keeps US4 from absorbing the Workflow Center (US5-scope list page) and US8 (Integrations).
+
+**Alternatives considered**: built-in heuristic analyzer (non-deterministic quality, hides the runtime boundary FR-036 requires — rejected); Jira polling (needs outbound credentials — US8, rejected); building `/workflows` now (doubles the story — rejected).
+
+## R32 — Requirement state machine and who may trigger each transition (FR-009, FR-032)
+
+**Decision**: enum `requirement_state` = `DRAFT | ANALYZING | NEEDS_CLARIFICATION | READY | APPROVED | IN_IMPLEMENTATION | COMPLETED | REJECTED` (stored SCREAMING_SNAKE like `workflow_state`; displayed words come from the design system, R41). Transition table `REQUIREMENT_TRANSITIONS` in `@cdevi/contracts/requirement-rules` (zod-free), enforced by `canTransitionRequirement(from, to)` in the API and asserted by a `CHECK`-free but trigger-free design (the API is the only writer of state, except the follow-workflow trigger R33):
+
+| From | To | Trigger | Actor / role gate |
+|------|----|---------|-------------------|
+| — | `DRAFT` | `POST /requirements`, Jira `issue_created`/first `issue_updated` | user with `canCreateRequirement` (engineer, approver, administrator) and visibility of the project; or the Jira webhook (actor `system`) |
+| `DRAFT` | `ANALYZING` | `POST …/submit` | `canCreateRequirement`; records `submitted_by_user_id`, `submitted_at` |
+| `NEEDS_CLARIFICATION` | `ANALYZING` | `POST …/submit` (resubmit) | `canCreateRequirement` |
+| `ANALYZING`, `NEEDS_CLARIFICATION` | `READY` | ingest analysis with `openQuestions.length === 0` | ingestion principal scoped to the project (actor `agent`) |
+| `ANALYZING`, `NEEDS_CLARIFICATION` | `NEEDS_CLARIFICATION` | ingest analysis with open questions | ingestion principal (actor `agent`) |
+| `READY` | `APPROVED` | `POST …/approve` | `canDecide` (approver, administrator); creates the workflow (R37) |
+| `DRAFT`, `NEEDS_CLARIFICATION`, `READY` | `REJECTED` | `POST …/reject` with `reason` | `canDecide` |
+| `APPROVED` | `IN_IMPLEMENTATION` | linked workflow leaves `QUEUED` (any non-terminal state) | `system` (trigger, R33) |
+| `APPROVED`, `IN_IMPLEMENTATION` | `COMPLETED` | linked workflow `COMPLETED` | `system` (trigger, R33) |
+
+`ANALYZING → REJECTED` is not allowed (avoids racing the runtime; reject after the result lands). `REJECTED`, `COMPLETED` are terminal. Viewer: read-only on every route (403 `urn:cdevi:problem:forbidden`). Every human transition also checks project visibility (`visibleProjects`), returning 404 for invisible requirements (no existence leak). `requirementActions(state, role, { hasWorkflow })` returns `{ canSubmit, canApprove, canReject, submitLabel: 'Submit for analysis' | 'Resubmit for analysis' }` and is the single source for API enforcement and web affordances. Each transition writes one `requirement_transitions` row (`from_state`, `to_state`, `actor_type ∈ user|agent|system`, `actor_id`, `actor_name`, `reason`, `occurred_at`) and, for human/system decisions, one `audit_events` row (`requirement.submitted`, `requirement.approved`, `requirement.rejected`, `requirement.flagged`, `requirement.workflow_created`; `target_type = 'requirement'`).
+
+**Rationale**: FR-009 fixes the eight states; FR-032 fixes the roles; reusing the `canCreateRequirement`/`canDecide` predicates from `decision-rules` keeps one role vocabulary. A dedicated append-only transitions table mirrors `workflow_transitions` for FR-002-style traceability while `audit_events` keeps the human-facing trail already rendered by `AuditTable`.
+
+**Alternatives considered**: storing transitions only in `audit_events` (loses agent/system transitions that are not audit-worthy and mixes vocabularies — rejected); allowing engineers to approve their own requirement (violates FR-032 — rejected); a `CANCELLED` requirement state (not in FR-009 — rejected; `REJECTED` covers it).
+
+## R33 — `Approved → In Implementation → Completed` follow the linked workflow through a trigger
+
+**Decision**: `0005` adds `requirements_follow_workflow()` — `AFTER UPDATE OF state ON workflows FOR EACH ROW WHEN (NEW.requirement_id IS NOT NULL AND OLD.state IS DISTINCT FROM NEW.state)`: if the requirement is `APPROVED` and `NEW.state NOT IN ('QUEUED','CANCELLED','BLOCKED')` → `IN_IMPLEMENTATION` (a workflow blocked before it ran — e.g. by the Jira flag, R36 — leaves the requirement `APPROVED`); if the requirement is `APPROVED` or `IN_IMPLEMENTATION` and `NEW.state = 'COMPLETED'` → `COMPLETED`; otherwise no change. The trigger writes the `requirement_transitions` row (`actor_type = 'system'`, `actor_name = 'workflow'`, `reason = 'workflow ' || NEW.external_id || ' → ' || NEW.state`) and touches `updated_at` so `notify_requirement_changed()` fires. The pure equivalent `requirementStateForWorkflow(current, workflowState)` lives in `requirement-rules` so the web can predict the pill and the trigger is tested against the same table.
+
+**Rationale**: three existing writers already update `workflows.state` (ingestion transitions, US2 decisions, US1 actions); a trigger keeps them untouched and 9b independent of 9c (Part D Complexity Tracking).
+
+**Alternatives considered**: computing the requirement state at read time from the workflow (would make `state` a view column and break the list filter index — rejected); service call in each writer (coupling — rejected).
+
+## R34 — Requirements table and analysis content model with `ai_generated` labelling
+
+**Decision**: `requirements` (one row per requirement; data-model §22) carries identity (`id`, `organization_id`, `project_id`, `external_id` — the runtime handle, `req-<12 hex>` for manual rows, `req-<lowercased jira key>` for Jira rows, unique per organization), content (`title` ≤ 200, `business_objective` ≤ 4 000), lifecycle (`state`, `submitted_*`, `analysis_observed_at`, `analysis_agent`, `analysis_summary` ≤ 400, `approved_*`, `rejected_*`, `rejection_reason` ≤ 500), ownership (`created_by_user_id` nullable — Jira rows have none, `assignee_user_id` nullable) and the external link (`source ∈ manual|jira`, `external_ref jsonb` `{ provider:'jira', key, url, updatedAt }`, `external_flag ∈ deleted|closed` nullable, `external_flagged_at`). `requirement_analysis_items` holds every criterion / rule / open question as one row: `kind ∈ acceptance_criterion|rule|open_question`, `position`, `text` ≤ 1 000, `ai_generated boolean NOT NULL`, `source` ≤ 120 (`'user:<display name>'` for human-authored criteria entered on the create form, `'agent:<agent name>'` for ingested items), unique `(requirement_id, kind, position)`. The API never sets `ai_generated = true` outside the ingest path and never `false` inside it. Responses expose `aiGenerated` and `source` on every `AnalysisItem`; the UI labels every `aiGenerated` item "AI-generated" (DR-03, FR-009).
+
+**Rationale**: rows instead of a JSON blob give bounded, orderable items (≤ 120 per requirement enforced by the ingest schema), a truthful per-item provenance flag, and future per-item answers (clarifications) without a migration of the content shape.
+
+**Alternatives considered**: one `analysis jsonb` column (cannot label per item, unbounded, no per-item identity — rejected); separate tables per kind (three identical tables — rejected).
+
+## R35 — `PUT /api/ingest/requirements/{externalId}/analysis`: payload and idempotency
+
+**Decision**: same conventions as `PUT /ingest/workflows/{externalId}` — bearer `ingestion_principals` token (`app.requirePrincipal`), principal must be scoped to the requirement's project (403 `urn:cdevi:problem:forbidden`), unknown `externalId` → 404, one transaction with `SELECT … FROM requirements … FOR UPDATE`, outcome written to `ingestion_log`. Body `RequirementAnalysisIngest { agent: Line(80), observedAt: IsoDateTime, summary?: Line(400) | null, acceptanceCriteria: Line(1000)[] ≤ 50, rules: Line(1000)[] ≤ 50, openQuestions: Line(1000)[] ≤ 20 }`. Preconditions: state ∈ `ANALYZING | NEEDS_CLARIFICATION` (else 409 `urn:cdevi:problem:invalid-transition`). Idempotency: `observedAt <= analysis_observed_at` → `200 { outcome: 'stale', id, state }` with no write; otherwise delete the requirement's `ai_generated = true` items, insert the new ones (positions 1..n per kind), set `analysis_observed_at`, `analysis_agent`, `analysis_summary`, compute `stateAfterAnalysis(openQuestions.length)` = `READY` when 0 else `NEEDS_CLARIFICATION`, write the transition row (actor `agent`) and return `200 { outcome: 'accepted', id, state }`. Human-authored criteria (`ai_generated = false`) are never touched by ingestion. Replaying the same body is a no-op (`stale`); redelivering a newer analysis replaces the AI items wholesale.
+
+**Rationale**: monotonic `observedAt` is the existing staleness rule (R-002/ingestion.ts); wholesale replacement keeps "the analysis" one coherent artefact instead of merging lists.
+
+**Alternatives considered**: `POST` with an idempotency key header (new convention — rejected); merge by text (duplicates and reorders — rejected); accepting analysis while `DRAFT` (skips the submit audit — rejected).
+
+## R36 — Jira webhook: signature verification, event mapping, project mapping and the BLOCKED edge case (FR-008)
+
+**Decision**: `POST /api/integrations/jira/webhook` is registered in an encapsulated Fastify plugin that replaces the JSON content-type parser with `parseAs: 'buffer'` (body limit 256 KB) so the **raw bytes** are available; `verifyJiraSignature(raw, header, secret)` computes `HMAC-SHA256(secret, raw)` and compares to the `x-hub-signature` header (`sha256=<hex>`; I believe this is the header Jira Cloud sends when a webhook secret is configured — the header name is a single constant `JIRA_SIGNATURE_HEADER` so it can be corrected without touching logic) with `crypto.timingSafeEqual` on equal-length buffers; missing secret env, missing header, malformed or wrong signature all return **401** `urn:cdevi:problem:unauthenticated` (the missing env var is additionally logged once as a warning). After verification the buffer is parsed and validated with `JiraWebhookEvent` (400 Problem on failure, no body echoed). Mapping (`mapJiraEvent(event)` in `requirement-rules`, pure):
+
+| `webhookEvent` | Condition | Effect | `outcome` |
+|----------------|-----------|--------|-----------|
+| `jira:issue_created` | project key mapped | create requirement `DRAFT`, `source = jira`, `external_ref = { provider:'jira', key, url: <baseUrl>/browse/<key>, updatedAt }`, `title = fields.summary`, `business_objective = adfToPlainText(fields.description) || 'Imported from Jira <key>'`, `assignee` = user with matching `emailAddress` in the organization if any | `created` |
+| `jira:issue_updated` | key known, `fields.updated` newer than `external_ref.updatedAt` | update `title`, `business_objective`, `external_ref` (state unchanged); if `fields.status.statusCategory.key === 'done'` → also flag `closed` | `updated` / `flagged` |
+| `jira:issue_updated` | key unknown | treated as created | `created` |
+| `jira:issue_updated` | `fields.updated` not newer | no write | `stale` |
+| `jira:issue_deleted` | key known | flag `deleted` | `flagged` |
+| any | project key not mapped, or unknown event name | no write | `ignored` |
+
+All outcomes return **202** `JiraWebhookResult { outcome, requirementId: Uuid | null }` so Jira does not retry; only auth/validation failures are non-2xx. `integration_project_mappings (organization_id, project_id, provider = 'jira', external_project_key, external_base_url)` is unique on `(provider, external_project_key)` — the webhook carries no organization, so a key resolves to exactly one project; the seed maps `PAY → payments-api` with base URL `https://jira.example.invalid`. **Edge case**: flagging (`external_flag`, `external_flagged_at`) does not change the requirement state; if the requirement's linked workflow is in `QUEUED | RUNNING | RETRYING | WAITING | WAITING_FOR_HUMAN` (all of which allow `→ BLOCKED` in `WORKFLOW_TRANSITIONS`) it is moved to `BLOCKED` with `state_reason = 'Jira <key> <deleted|closed> — human decision required'`, its current non-terminal stage to `BLOCKED`, a `workflow_transitions` row (`source = 'jira-webhook'`) and an `audit_events` row `requirement.flagged` (actor `system`, `result = 'blocked'`); the Inbox needs-you tab and Dashboard show it through the existing triggers. A workflow already `BLOCKED`, `FAILED`, `COMPLETED` or `CANCELLED` is left unchanged (the flag is still shown on the requirement). Unflagging is a human action deferred to US8. The Requirement Detail shows the flag as a `Notice tone="warning"` and the list row as a `Pill variant="blocked"` "Jira closed/deleted".
+
+**Rationale**: raw-body HMAC with constant-time comparison is the standard webhook trust model and needs no outbound calls; 202-for-everything-verified avoids Jira retry storms; `statusCategory.key === 'done'` is Jira's provider-neutral notion of "closed".
+
+**Alternatives considered**: IP allow-listing (Atlassian ranges change — rejected); parsing then re-serialising to verify (breaks on key order — rejected); moving the requirement to `REJECTED` on delete (destroys human context; spec says *flag* — rejected).
+
+## R37 — Approve → workflow creation in one transaction (FR-010, SC-008)
+
+**Decision**: `approveRequirement(client, user, id, now)` in `services/requirements.ts`, inside `app.tx({ organizationId, userId })`: (1) `canDecide(role)` else 403; (2) `SELECT … FROM requirements WHERE id = $1 AND project_id = ANY($visible) FOR UPDATE` else 404; (3) state must be `READY` else 409 `invalid-transition` (a second concurrent approver blocks on the lock and then sees `APPROVED` → 409 — exactly once, same as US2 `applyDecision`); (4) `INSERT INTO workflows (organization_id, project_id, external_id = 'wf-' || requirement.external_id, title, agent = NULL, state = 'QUEUED', state_observed_at = now, started_at = now, stage_index = 1, stage_count = 7, stage_name = 'Requirement', requirement_id)`; (5) seven `workflow_stages` rows from `SDLC_STAGES` (`@cdevi/contracts/dashboard-model`), positions 1–7, all `QUEUED`, `state_observed_at = now` (stage 1 is what the runtime picks up; there is no earlier vocabulary word for "not yet reached" and the Dashboard pipeline counts by `workflows.stage_index`); (6) `workflow_transitions (NULL → QUEUED, user_id, source = 'approval')` plus one per stage; (7) `UPDATE requirements SET state = 'APPROVED', approved_by_user_id, approved_at`; (8) `requirement_transitions (READY → APPROVED, actor user)`; (9) `audit_events` `requirement.approved` (`workflow_id` set, `result = 'approved'`) and `requirement.workflow_created`; (10) commit. NOTIFY: the `workflows` insert trigger and the `requirements` update trigger both write `inbox_change_log` and `pg_notify('inbox_changed', …)` — Inbox, Dashboard, Requirement Detail and the open Workflow Detail all refetch (FR-034). Response `200 RequirementDetail` (with `linkedWorkflow`). `workflows.requirement_id` has a partial unique index so a requirement can own at most one workflow in US4.
+
+**Rationale**: mirrors US2 (`decisions.ts`: lock → check → write → audit) and US1 ingestion (`QUEUED` first, transitions appended); one transaction satisfies "workflow is created and its first stage is queued" atomically.
+
+**Alternatives considered**: creating the workflow through the ingestion service by "self-calling" `PUT /ingest/workflows` (two transactions, principal impersonation — rejected); leaving stages to the runtime (Workflow Detail would show 0/7 — rejected).
+
+## R38 — `GET /api/workflows` list shape (bounded, keyset cursor, filters)
+
+**Decision**: `WorkflowListQuery { project: 'all' | Uuid = 'all', requirement?: Uuid, state?: comma-separated WorkflowState list (≤ 9, `z.preprocess` split), stage?: int 1..7, cursor?: string ≤ 200 }`; response `WorkflowListPage { generatedAt, project, filters: { requirement, state[], stage }, items: WorkflowListItem[] (≤ 50), nextCursor: string | null, total: int }`. `WorkflowListItem` is the FR-003 shape: `{ id, externalId, title, project { id, key, name }, state, stateObservedAt, stage { index, count, name } | null, agent, pullRequestRef, requirement { id, title, href } | null, startedAt, finishedAt, href: '/workflows/{id}' }`. Order `state_observed_at DESC, id DESC`; cursor = b64url `['workflows', stateObservedAtIso, id]` (`encodeWorkflowCursor`/`decodeWorkflowCursor`, invalid → 400 `urn:cdevi:problem:invalid-cursor`, same as the Inbox). One `REPEATABLE READ` transaction, one page statement + one `COUNT(*)` with the same predicate; scoped by `visibleProjects`; invisible `project`/`requirement` → empty page with `total: 0`. Index `workflows_list_idx (organization_id, state_observed_at DESC, id DESC)`; `workflows_requirement_idx` serves `requirement=`. `WORKFLOWS_PAGE_SIZE = 50`. The Dashboard's §6 placeholder params (`hasPr`, `intervention`) are **not** added here — they are Workflow Center scope and are listed as an open question.
+
+**Rationale**: the same cursor and bound conventions as `GET /api/inbox` (R5) so the Workflow Center can consume it unchanged; `requirement=` is what the Independent Test needs.
+
+**Alternatives considered**: reusing `InboxItem` (needs-you vocabulary, no requirement link — rejected); offset pagination (unbounded scan — rejected).
+
+## R39 — Requirements list filters (state / project / assignee) and keyset pagination
+
+**Decision**: `RequirementListQuery { project: 'all' | Uuid = 'all', state?: comma-separated RequirementState list (≤ 8), assignee?: 'me' | 'unassigned' | Uuid, cursor?: string ≤ 200 }`; `RequirementListPage { generatedAt, project, filters: { state[], assignee }, items: Requirement[] (≤ 50), nextCursor, total }`. Order `created_at DESC, id DESC` (newest first — the list is a work queue for new work); cursor b64url `['requirements', createdAtIso, id]`. Indexes: `requirements_list_idx (organization_id, project_id, created_at DESC, id DESC)`, partial `requirements_state_idx (organization_id, state, created_at DESC, id DESC) WHERE state NOT IN ('COMPLETED','REJECTED')`, partial `requirements_assignee_idx (organization_id, assignee_user_id, created_at DESC, id DESC) WHERE assignee_user_id IS NOT NULL`; `EXPLAIN` tests assert an index scan for each filter at the fixture. Each `Requirement` row carries `linkedWorkflow { id, externalId, state, stage { index, count, name }, href } | null` (LEFT JOIN on `workflows.requirement_id`) and `openQuestionCount` (a correlated `COUNT` over `requirement_analysis_items … kind = 'open_question'`, bounded by the ≤ 20 rule). The filters are URL query params on `/requirements` (server first paint honours them; the client updates the URL with `router.replace`) so filtered views are linkable, like the Dashboard's `project`/`window`. `REQUIREMENTS_PAGE_SIZE = 50`.
+
+**Rationale**: acceptance scenario 5 names the three filters and "the linked workflow's status"; FR-025 gives the project selector (with "All projects", administrators see all, others their memberships).
+
+**Alternatives considered**: free-text search (unbounded `ILIKE` at scale — rejected for US4); ordering by `updated_at` (rows jump while the runtime writes — rejected).
+
+## R40 — Live updates: `inbox_change_log.requirement_id` and refetch on `inbox.changed` (FR-034, SC-003)
+
+**Decision**: `0005` makes `inbox_change_log.workflow_id` nullable and adds `requirement_id uuid`; new `notify_requirement_changed()` (`AFTER INSERT OR UPDATE ON requirements`, and `AFTER INSERT OR DELETE ON requirement_analysis_items` via the parent's `project_id`) inserts `(organization_id, project_id, NULL, requirement_id)` and `pg_notify('inbox_changed', json { seq, organizationId, projectId, workflowId: null, requirementId })`. `plugins/notify.ts` parses `requirementId` (nullable) into `InboxChange`; `routes/inbox.ts` replays and emits `inbox.changed` frames as `{ seq, projectId, workflowId, requirementId }` (additive; the Inbox, Dashboard and Approval Center ignore the new key). `lib/inbox-stream.ts` gains a `requirementId` filter (generalising `frameWorkflowId` to `frameId(data, key)`); the Requirements list refetches on every visible frame (debounce 300 ms), the Requirement Detail only on frames carrying its `requirementId` **or** its linked `workflowId`. Budget: pill updated ≤ 5 s p95 after the ingest call (e2e measures it).
+
+**Rationale**: one channel, one LISTEN connection, one replay table — the reason R6 chose NOTIFY; requirement changes are "inbox-relevant" (a `Needs Clarification` requirement is work for a person).
+
+**Alternatives considered**: separate `requirements_changed` channel (second LISTEN client and SSE endpoint — rejected); polling (fails SC-003 median — rejected).
+
+## R41 — Requirement-state pill: `RequirementStatePill` in the design system (DR-01, DESIGN.md §4, §8)
+
+**Decision**: `StatePill` **cannot legitimately render requirement states**: its `state` prop is `WorkflowState`, its words/pulse come from `stateToPill` (workflow vocabulary) and DESIGN.md §4 defines a *separate* requirement-lifecycle mapping. Rendering `Pill` with an app-side `switch` would move vocabulary into `apps/web` (DR-09: missing patterns are added to the package) and make the mapping untestable in the design system. Therefore 1.4.0 adds `requirementStateToPill(state): StatePresentation` to `src/tokens.ts` and `RequirementStatePill({ state })` next to `StatePill`, reusing the existing `.cd-pill` variant classes (no new CSS):
+
+| State | Word | Variant | Pulse |
+|-------|------|---------|-------|
+| `DRAFT` | draft | neutral | no |
+| `ANALYZING` | analyzing | run | yes |
+| `NEEDS_CLARIFICATION` | needs clarification | needs-you | no |
+| `READY` | ready | neutral | no |
+| `APPROVED` | approved | done | no |
+| `IN_IMPLEMENTATION` | in implementation | run | yes |
+| `COMPLETED` | completed | done | no |
+| `REJECTED` | rejected | fail | no |
+
+Added per DESIGN.md §8 in tasks 9d: tokens + component + test (behaviour and `expectAccessible`) → export → gallery entry + visual baseline → DESIGN.md §3 row, §4 table, §5 glossary → CHANGELOG 1.4.0 + `package.json` bump → `pnpm check`. `apps/web/lib/ds.ts` re-exports it. The linked workflow's state stays a `StatePill`.
+
+**Rationale**: DR-01 demands the word in a pill; keeping both mappings in `tokens.ts` keeps the design system the single vocabulary owner.
+
+**Alternatives considered**: widening `StatePill`'s union (conflates two state machines and their tests — rejected); app-local `Pill` switch (DR-09 — rejected).
+
+## R42 — Hrefs and external links
+
+**Decision**: `requirementHrefs` (pure): requirement `/requirements/{id}`; linked workflow `/workflows/{id}` (Workflow Detail, existing); Jira `external_ref.url` rendered as an `<a href target="_blank" rel="noopener noreferrer">` whose accessible name is `"Open PAY-231 in Jira (opens in a new tab)"`; `isSafeExternalUrl` accepts `https:` only and the API stores the URL as `<mapping.external_base_url>/browse/<key>` (never the raw `issue.self` REST URL). List row title links to the detail; the detail's "Workflow" `KeyValue` links to `/workflows/{id}` with the `StatePill`; the Dashboard active card already links to `/workflows/{id}`. `/requirements/new` is linked from the list header and the Inbox (existing).
+
+**Rationale**: FR-008 "link preserved both ways" is satisfied by `external_ref` (CDevi → Jira) and the mapping (Jira → CDevi); `noopener` prevents tab-nabbing.
+
+**Alternatives considered**: same-tab Jira navigation (leaves the control plane — rejected).
+
+## R43 — Roles, visibility and Problems on the nine routes
+
+**Decision**: session routes use `app.requireUser` + `scopeFor(user)`/`visibleProjects`; create requires the target `projectId` to be visible (else 404, no leak) and `canCreateRequirement` (else 403); `assigneeUserId` must be a member of the organization (else 400 `urn:cdevi:problem:validation`). Status codes: 200 (reads, submit/approve/reject return `RequirementDetail`), 201 (`POST /requirements` returns `RequirementDetail` + `Location`), 400 (invalid cursor/query), 401 (no session / bad signature), 403 (role), 404 (invisible/unknown), 409 (`invalid-transition`, incl. exactly-once), 400 (body validation — existing `problems.validation`). No Problem includes SQL, stack traces or the request body (`problem.ts` already guarantees this). Rate limits: existing global limiter; the webhook adds a route-level `max: 120/min` per IP.
+
+## R44 — Seed requirements (deterministic) without touching US1–US3 figures
+
+**Decision**: `packages/db/src/seed/requirements.ts › buildRequirements(base)` adds, in project `payments-api` (an S-500 project visible to `admin@cdevi.demo`, `approver1@cdevi.demo`, `engineer1@cdevi.demo` and `viewer1@cdevi.demo` through the existing memberships), **eight** requirements with fixed `external_id`s and fixed timestamps relative to the S-500 base time — one per state — plus **one** `integration_project_mappings` row:
+
+| `external_id` | State | Content / links |
+|---------------|-------|-----------------|
+| `req-seed-001` | `DRAFT` | "Retry queue for card declines", created by engineer1, 2 human-authored acceptance criteria (`ai_generated = false`, `source = 'user:Engineer 1'`) |
+| `req-seed-002` | `ANALYZING` | submitted by engineer1; no analysis items |
+| `req-seed-003` | `NEEDS_CLARIFICATION` | **the Jira-linked one**: `source = jira`, `external_ref { provider:'jira', key:'PAY-231', url:'https://jira.example.invalid/browse/PAY-231', updatedAt }`, assignee approver1; 3 AI criteria, 2 AI rules, 2 AI open questions (`source = 'agent:Requirement Agent'`) |
+| `req-seed-004` | `READY` | 4 AI criteria, 3 AI rules, 0 open questions; assignee engineer1 |
+| `req-seed-005` | `APPROVED` | approved by approver1; linked to the first `QUEUED` S-500 workflow in `external_id` order (stays `APPROVED` per R33); 3 AI criteria, 2 AI rules |
+| `req-seed-006` | `IN_IMPLEMENTATION` | linked to the `SHOWCASE_WAITING` S-500 workflow (`WAITING_FOR_HUMAN`); 3 AI criteria, 1 AI rule |
+| `req-seed-007` | `COMPLETED` | linked to the first `COMPLETED` S-500 workflow in `external_id` order; 3 AI criteria |
+| `req-seed-008` | `REJECTED` | rejected by approver1, reason "Duplicate of req-seed-004"; no items |
+
+`JIRA_MAPPING = { provider: 'jira', externalProjectKey: 'PAY', projectKey: 'payments-api', baseUrl: 'https://jira.example.invalid' }`. The three links are written with `UPDATE workflows SET requirement_id = $1 WHERE id = $2` after the requirements are inserted; the follow-workflow trigger fires only on `UPDATE OF state`, so the seeded requirement states stay exactly as listed. **No new workflows, stages, runs, test runs, approvals or clarifications are inserted**, so `EXPECTED_BUCKETS`, `EXPECTED_SHOWCASE`, `EXPECTED_DASHBOARD`, the Inbox counts, the Approval Center showcase and the Dashboard figures (18 / 4 / 2 / 97.4 %) are unchanged; the only S-500 change is three `requirement_id` values, which no existing assertion reads. `EXPECTED_REQUIREMENTS = { total: 8, byState: { DRAFT:1, ANALYZING:1, NEEDS_CLARIFICATION:1, READY:1, APPROVED:1, IN_IMPLEMENTATION:1, COMPLETED:1, REJECTED:1 }, analysisItems: 28, aiGenerated: 26, openQuestions: 2, jiraLinked: 1, linkedWorkflows: 3, mappings: 1 }`. Every requirement also gets its `requirement_transitions` history (e.g. `NULL→DRAFT→ANALYZING→NEEDS_CLARIFICATION` for `req-seed-003`) and the human decisions get `audit_events` rows (`requirement.submitted/approved/rejected`), which the existing audit tests do not count. The `TRUNCATE` list gains the four tables. The `e2e-tests` principal's `project_ids` already include `payments-api`, so the e2e can call the analysis ingest with `SEED_INGEST_TOKEN`. The e2e **creates its own requirement** (`uniq('e2e-req')`) for the Independent Test and never mutates seed rows; `req-seed-003` is used to assert the Jira link, the needs-you pill and the AI labels; `req-seed-004` to assert *Approve* is offered to approver1 and not to engineer1/viewer1 (without clicking); `req-seed-006` to assert the linked workflow's `StatePill` and `/workflows/{id}` link.
+
+**Rationale**: one row per state makes every pill, filter and gate observable from the seed; reusing S-500 workflows keeps every existing invariant literally unchanged.
+
+**Alternatives considered**: creating new workflows for the linked requirements (changes `EXPECTED_BUCKETS.total` and the Inbox e2e — rejected); seeding in `dashboard-demo` (administrator-only; engineer/approver scenarios impossible — rejected).
+
+## R45 — Create form validation and the saffron decision
+
+**Decision**: `CreateRequirementRequest { projectId: Uuid, title: Line(200) (trimmed, ≥ 3 chars), businessObjective: string 10..4000 (trimmed), acceptanceCriteria: Line(1000)[] ≤ 20 (default []), assigneeUserId?: Uuid }`. Client-side messages (also returned as `errors[]` by the API's 400 Problem, `pointer` per field): title "Enter a title (3–200 characters)", objective "Describe the business objective (10–4 000 characters)", criterion "Each acceptance criterion must be 1–1 000 characters", too many "At most 20 acceptance criteria". On success the API returns 201 + `Location: /api/requirements/{id}` and the form navigates to `/requirements/{id}` where the state pill reads *draft* and *Submit for analysis* is offered. The form's single **saffron** control is *Create requirement*: it is the screen's one primary action, it completes a person's entry of new work (the same reason the Inbox's "New requirement" link is saffron), and nothing else on the screen asks for a person; *Cancel* is `ghost`. On the Detail screen the saffron control is the one that resolves a "person needed" state (*Approve* on `READY` for deciders, *Resubmit for analysis* on `NEEDS_CLARIFICATION` for creators); *Submit for analysis* on a `DRAFT` is `primary` because nothing is waiting on a human yet.
+
+**Rationale**: DR-02 — saffron is "a person is needed", one per screen; the create form is *only* a person's action.
+
+**Alternatives considered**: `primary` create button (inconsistent with the saffron Inbox entry point — rejected); saffron *Submit* on drafts (two saffron states on one screen type, weakens the signal — rejected).
+
+## Architecture document updates required (Part D)
+
+- §4 interaction table: "Requirements" → landed (`GET/POST /api/requirements`, `GET /api/requirements/{id}`, `POST …/submit|approve|reject`); "Jira (inbound)" → `POST /api/integrations/jira/webhook`; "Agent runtime → analysis" → `PUT /api/ingest/requirements/{externalId}/analysis`; "Workflow list" → `GET /api/workflows` (consumed by the Workflow Center later).
+- §6 (query contracts for placeholder screens): `/workflows` now has a live API behind it (`project`, `requirement`, `state`, `stage`, `cursor`); `hasPr`/`intervention` remain to be added by the Workflow Center story.
+- §8 repository layout: `packages/db/migrations/0005_requirements.sql`, `packages/db/src/seed/requirements.ts`, `apps/api/src/services/requirements.ts`, `requirement-analysis.ts`, `jira-webhook.ts`, `workflow-list.ts`, `apps/api/src/routes/requirements.ts`, `integrations.ts`, `apps/web/app/(app)/requirements/`, `packages/design-system/src/components/Pill/RequirementStatePill.tsx`.

@@ -423,3 +423,384 @@ Window semantics per figure are the R24 table: windowed = `prsGenerated`, the th
 Clock rules: every `finished_at` (agent runs, test runs, COMPLETED workflows) lies between 1 and 3 days before `base`, so `7d` and `30d` agree and `24h` has empty health denominators; every active workflow's `state_observed_at` lies within the last 12 hours (d17 included, so `24h` counts one PR).
 
 Pipeline check: stage 1 → d01, d02, d03 = 3 · stage 2 → d04, d05 = 2 · stage 3 → d06 = 1 · stage 4 → d07, d08, d09, d10 = 4 · stage 5 → d11, d12, d13 = 3 · stage 6 → d14, d15, d16 = 3 · stage 7 → d17, d18 = 2 · **total 18**. Health check (7d): tests 5 × 177 + 89 = 974 of 5 × 180 + 100 = 1000 → **97.4 %**; runs 35 / 37 → 94.6 %; intervention (d03, d04, d09, d16, d17, d18, d19, d20) = 8 / 24 → 33.3 %. `audit_events` stays empty.
+
+---
+
+# Part D — User Story 4 (Requirements): §22–§30
+
+First migration that adds tables. §22 is the migration `0005_requirements.sql`; §23–§27 are the Zod shapes; §28 the pure state-machine rules (zod-free subpath `@cdevi/contracts/requirement-rules`); §29 the transactions; §30 the seed.
+
+## 22. Migration `0005_requirements.sql` (research R32–R40)
+
+```sql
+-- specs/001 US4 (Part D): requirements, analysis items, transitions, Jira project mappings; workflows.requirement_id;
+-- inbox_change_log.requirement_id. RLS and grants follow 0001–0003.
+
+CREATE TYPE requirement_state  AS ENUM ('DRAFT','ANALYZING','NEEDS_CLARIFICATION','READY','APPROVED','IN_IMPLEMENTATION','COMPLETED','REJECTED');
+CREATE TYPE requirement_source AS ENUM ('manual','jira');
+CREATE TYPE analysis_item_kind AS ENUM ('acceptance_criterion','rule','open_question');
+CREATE TYPE external_flag      AS ENUM ('deleted','closed');
+
+-- §22.1 integration_project_mappings: Jira project key → CDevi project (R36). One key resolves to one project.
+CREATE TABLE integration_project_mappings (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id uuid NOT NULL REFERENCES organizations(id),
+  project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  provider text NOT NULL CHECK (provider IN ('jira')),
+  external_project_key text NOT NULL CHECK (external_project_key ~ '^[A-Z][A-Z0-9_]{1,63}$'),
+  external_base_url text NOT NULL CHECK (external_base_url ~ '^https://' AND char_length(external_base_url) <= 500),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (provider, external_project_key),
+  UNIQUE (organization_id, project_id, provider)
+);
+
+-- §22.2 requirements (R32, R34)
+CREATE TABLE requirements (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id uuid NOT NULL REFERENCES organizations(id),
+  project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  external_id text NOT NULL CHECK (external_id ~ '^[A-Za-z0-9._:-]{1,128}$'),
+  title text NOT NULL CHECK (char_length(title) BETWEEN 3 AND 200),
+  business_objective text NOT NULL CHECK (char_length(business_objective) BETWEEN 10 AND 4000),
+  state requirement_state NOT NULL DEFAULT 'DRAFT',
+  source requirement_source NOT NULL DEFAULT 'manual',
+  external_ref jsonb,                                   -- { provider:'jira', key, url, updatedAt } (R36)
+  external_flag external_flag,
+  external_flagged_at timestamptz,
+  created_by_user_id uuid REFERENCES users(id),         -- NULL for Jira-created rows
+  assignee_user_id uuid REFERENCES users(id),
+  submitted_by_user_id uuid REFERENCES users(id),
+  submitted_at timestamptz,
+  analysis_observed_at timestamptz,                     -- idempotency watermark for the analysis ingest (R35)
+  analysis_agent text CHECK (char_length(analysis_agent) <= 80),
+  analysis_summary text CHECK (char_length(analysis_summary) <= 400),  -- AI-generated (labelled)
+  approved_by_user_id uuid REFERENCES users(id),
+  approved_at timestamptz,
+  rejected_by_user_id uuid REFERENCES users(id),
+  rejected_at timestamptz,
+  rejection_reason text CHECK (char_length(rejection_reason) <= 500),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (organization_id, external_id),
+  CONSTRAINT requirements_external_ref_check CHECK (
+    (source = 'manual' AND external_ref IS NULL) OR
+    (source = 'jira' AND external_ref ? 'key' AND external_ref ? 'url')),
+  CONSTRAINT requirements_flag_check CHECK ((external_flag IS NULL) = (external_flagged_at IS NULL))
+);
+CREATE UNIQUE INDEX requirements_jira_key_idx ON requirements (organization_id, (external_ref->>'key')) WHERE source = 'jira';
+CREATE INDEX requirements_list_idx     ON requirements (organization_id, project_id, created_at DESC, id DESC);
+CREATE INDEX requirements_state_idx    ON requirements (organization_id, state, created_at DESC, id DESC) WHERE state NOT IN ('COMPLETED','REJECTED');
+CREATE INDEX requirements_assignee_idx ON requirements (organization_id, assignee_user_id, created_at DESC, id DESC) WHERE assignee_user_id IS NOT NULL;
+CREATE TRIGGER requirements_updated_at BEFORE UPDATE ON requirements FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- §22.3 requirement_analysis_items: one row per criterion / rule / open question (R34)
+CREATE TABLE requirement_analysis_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id uuid NOT NULL REFERENCES organizations(id),
+  project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  requirement_id uuid NOT NULL REFERENCES requirements(id) ON DELETE CASCADE,
+  kind analysis_item_kind NOT NULL,
+  position smallint NOT NULL CHECK (position BETWEEN 1 AND 50),
+  text text NOT NULL CHECK (char_length(text) BETWEEN 1 AND 1000),
+  ai_generated boolean NOT NULL,
+  source text NOT NULL CHECK (char_length(source) <= 120),   -- 'user:<display name>' | 'agent:<agent>'
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (requirement_id, kind, position)
+);
+CREATE INDEX requirement_analysis_items_req_idx ON requirement_analysis_items (requirement_id, kind, position);
+
+-- §22.4 requirement_transitions: append-only history (R32), mirrors workflow_transitions
+CREATE TABLE requirement_transitions (
+  id bigserial PRIMARY KEY,
+  organization_id uuid NOT NULL REFERENCES organizations(id),
+  requirement_id uuid NOT NULL REFERENCES requirements(id) ON DELETE CASCADE,
+  from_state requirement_state,                          -- NULL on creation
+  to_state requirement_state NOT NULL,
+  actor_type text NOT NULL CHECK (actor_type IN ('user','agent','system')),
+  actor_id text,
+  actor_name text NOT NULL CHECK (char_length(actor_name) <= 120),
+  reason text CHECK (char_length(reason) <= 500),
+  occurred_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX requirement_transitions_req_idx ON requirement_transitions (requirement_id, occurred_at);
+CREATE TRIGGER requirement_transitions_append_only BEFORE UPDATE OR DELETE ON requirement_transitions
+  FOR EACH ROW EXECUTE FUNCTION audit_events_append_only();   -- reuses the 0003 append-only guard
+
+-- §22.5 workflows.requirement_id — one workflow per requirement in US4 (R37)
+ALTER TABLE workflows ADD COLUMN requirement_id uuid REFERENCES requirements(id) ON DELETE SET NULL;
+CREATE UNIQUE INDEX workflows_requirement_idx ON workflows (requirement_id) WHERE requirement_id IS NOT NULL;
+CREATE INDEX workflows_list_idx ON workflows (organization_id, state_observed_at DESC, id DESC);   -- GET /workflows keyset (R38)
+
+-- §22.6 Approved → In Implementation → Completed follows the linked workflow (R33)
+CREATE FUNCTION requirements_follow_workflow() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE v_state requirement_state; v_next requirement_state;
+BEGIN
+  SELECT state INTO v_state FROM requirements WHERE id = NEW.requirement_id FOR UPDATE;
+  IF v_state IS NULL THEN RETURN NEW; END IF;
+  IF NEW.state = 'COMPLETED' AND v_state IN ('APPROVED','IN_IMPLEMENTATION') THEN v_next := 'COMPLETED';
+  ELSIF v_state = 'APPROVED' AND NEW.state NOT IN ('QUEUED','CANCELLED','BLOCKED') THEN v_next := 'IN_IMPLEMENTATION';
+  ELSE RETURN NEW; END IF;
+  UPDATE requirements SET state = v_next WHERE id = NEW.requirement_id;
+  INSERT INTO requirement_transitions (organization_id, requirement_id, from_state, to_state, actor_type, actor_name, reason, occurred_at)
+    VALUES (NEW.organization_id, NEW.requirement_id, v_state, v_next, 'system', 'workflow', 'workflow ' || NEW.external_id || ' → ' || NEW.state, NEW.state_observed_at);
+  RETURN NEW;
+END $$;
+CREATE TRIGGER workflows_follow_requirement AFTER UPDATE OF state ON workflows FOR EACH ROW
+  WHEN (NEW.requirement_id IS NOT NULL AND OLD.state IS DISTINCT FROM NEW.state) EXECUTE FUNCTION requirements_follow_workflow();
+
+-- §22.7 live updates: requirement changes ride inbox_changed (R40)
+ALTER TABLE inbox_change_log ALTER COLUMN workflow_id DROP NOT NULL, ADD COLUMN requirement_id uuid;
+ALTER TABLE inbox_change_log ADD CONSTRAINT inbox_change_log_target_check CHECK (workflow_id IS NOT NULL OR requirement_id IS NOT NULL);
+CREATE FUNCTION notify_requirement_changed() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE v_row record; v_seq bigint;
+BEGIN
+  v_row := COALESCE(NEW, OLD);
+  IF TG_TABLE_NAME = 'requirements' THEN
+    INSERT INTO inbox_change_log (organization_id, project_id, workflow_id, requirement_id)
+      VALUES (v_row.organization_id, v_row.project_id, NULL, v_row.id) RETURNING seq INTO v_seq;
+    PERFORM pg_notify('inbox_changed', json_build_object('seq', v_seq, 'organizationId', v_row.organization_id,
+      'projectId', v_row.project_id, 'workflowId', NULL, 'requirementId', v_row.id)::text);
+  ELSE
+    INSERT INTO inbox_change_log (organization_id, project_id, workflow_id, requirement_id)
+      VALUES (v_row.organization_id, v_row.project_id, NULL, v_row.requirement_id) RETURNING seq INTO v_seq;
+    PERFORM pg_notify('inbox_changed', json_build_object('seq', v_seq, 'organizationId', v_row.organization_id,
+      'projectId', v_row.project_id, 'workflowId', NULL, 'requirementId', v_row.requirement_id)::text);
+  END IF;
+  RETURN NULL;
+END $$;
+CREATE TRIGGER inbox_changed_requirements AFTER INSERT OR UPDATE ON requirements FOR EACH ROW EXECUTE FUNCTION notify_requirement_changed();
+CREATE TRIGGER inbox_changed_analysis_items AFTER INSERT OR DELETE ON requirement_analysis_items FOR EACH ROW EXECUTE FUNCTION notify_requirement_changed();
+
+-- §22.8 RLS (same policy shape as 0001) and grants
+ALTER TABLE integration_project_mappings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE requirements                 ENABLE ROW LEVEL SECURITY;
+ALTER TABLE requirement_analysis_items   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE requirement_transitions      ENABLE ROW LEVEL SECURITY;
+DO $$
+DECLARE t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['integration_project_mappings','requirements','requirement_analysis_items','requirement_transitions'] LOOP
+    EXECUTE format('CREATE POLICY %I_org_isolation ON %I USING (organization_id = current_setting(''app.organization_id'', true)::uuid)', t, t);
+  END LOOP;
+END $$;
+GRANT SELECT, INSERT, UPDATE, DELETE ON requirements, requirement_analysis_items TO app_user;
+GRANT SELECT ON integration_project_mappings TO app_user;          -- mappings are seeded/administered (US8), never written by US4 routes
+GRANT SELECT, INSERT ON requirement_transitions TO app_user;      -- append-only
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_user;
+```
+
+Notes: the append-only trigger reuses `audit_events_append_only()` from 0003 (it raises on any UPDATE/DELETE regardless of table). The webhook's lookups run with `app.organization_id` **unset** until the mapping resolves the organization; the service therefore resolves the mapping with the pool owner connection (which bypasses RLS as today's `visibleProjects` bootstrap does) and then opens the transaction with the resolved organization. Mirrored in `packages/db/src/schema.ts`: `requirementState`, `requirementSource`, `analysisItemKind`, `externalFlag` enums; `integrationProjectMappings`, `requirements`, `requirementAnalysisItems`, `requirementTransitions` tables; `workflows.requirementId`; `inboxChangeLog.requirementId` (and `workflowId` nullable); every index above; `RLS_TABLES` gains the four names. Rollback: drop the two triggers/functions, the `inbox_change_log` constraint and column (re-add `NOT NULL` only if no requirement rows exist), `workflows.requirement_id` and its indexes, the four tables, the four enums.
+
+## 23. Requirement shapes (`packages/contracts/src/requirements.ts`, Zod)
+
+```ts
+export const RequirementState = z.enum(['DRAFT','ANALYZING','NEEDS_CLARIFICATION','READY','APPROVED','IN_IMPLEMENTATION','COMPLETED','REJECTED']);
+export const RequirementSource = z.enum(['manual','jira']);
+export const ExternalFlag = z.enum(['deleted','closed']);
+export const AnalysisItemKind = z.enum(['acceptance_criterion','rule','open_question']);
+
+export const ExternalRef = z.object({ provider: z.literal('jira'), key: z.string().regex(/^[A-Z][A-Z0-9_]+-\d+$/), url: z.string().url().startsWith('https://'), updatedAt: IsoDateTime });
+export const UserRef = z.object({ id: Uuid, name: z.string() });
+export const ProjectRef = z.object({ id: Uuid, key: z.string(), name: z.string() });
+
+export const LinkedWorkflow = z.object({
+  id: Uuid, externalId: ExternalId, state: WorkflowState,
+  stage: z.object({ index: z.number().int(), count: z.number().int(), name: z.string().nullable() }).nullable(),
+  href: z.string(),                       // '/workflows/{id}'
+});
+
+export const Requirement = z.object({            // list row (§23.1)
+  id: Uuid, externalId: ExternalId, project: ProjectRef,
+  title: z.string(), state: RequirementState, source: RequirementSource,
+  externalRef: ExternalRef.nullable(), externalFlag: ExternalFlag.nullable(),
+  assignee: UserRef.nullable(), createdBy: UserRef.nullable(),
+  createdAt: IsoDateTime, updatedAt: IsoDateTime, submittedAt: IsoDateTime.nullable(),
+  openQuestionCount: z.number().int().min(0),
+  linkedWorkflow: LinkedWorkflow.nullable(),
+  href: z.string(),                              // '/requirements/{id}'
+});
+
+export const AnalysisItem = z.object({ id: Uuid, kind: AnalysisItemKind, position: z.number().int(), text: z.string(), aiGenerated: z.boolean(), source: z.string() });
+
+export const RequirementActions = z.object({ canSubmit: z.boolean(), canApprove: z.boolean(), canReject: z.boolean(), submitLabel: z.enum(['Submit for analysis','Resubmit for analysis']), reasons: z.array(z.string()) });
+
+export const RequirementDetail = z.object({       // §23.2
+  requirement: Requirement,
+  businessObjective: z.string(),
+  analysis: z.object({
+    observedAt: IsoDateTime.nullable(), agent: z.string().nullable(), summary: z.string().nullable(),   // summary is AI-generated when present
+    acceptanceCriteria: z.array(AnalysisItem).max(70),   // ≤ 20 human + ≤ 50 AI
+    rules: z.array(AnalysisItem).max(50),
+    openQuestions: z.array(AnalysisItem).max(20),
+  }),
+  decision: z.object({
+    submittedBy: UserRef.nullable(), submittedAt: IsoDateTime.nullable(),
+    approvedBy: UserRef.nullable(), approvedAt: IsoDateTime.nullable(),
+    rejectedBy: UserRef.nullable(), rejectedAt: IsoDateTime.nullable(), rejectionReason: z.string().nullable(),
+    externalFlaggedAt: IsoDateTime.nullable(),
+  }),
+  actions: RequirementActions,                    // computed for request.user by requirementActions()
+  transitions: z.array(z.object({ from: RequirementState.nullable(), to: RequirementState, actorType: z.enum(['user','agent','system']), actorName: z.string(), reason: z.string().nullable(), occurredAt: IsoDateTime })).max(40),
+  audit: z.array(AuditEventView).max(20),        // reuses the US2 view (AuditTable)
+  generatedAt: IsoDateTime,
+});
+
+export const RequirementListQuery = z.object({    // §23.3
+  project: z.union([z.literal('all'), Uuid]).default('all'),
+  state: z.preprocess(splitCsv, z.array(RequirementState).max(8)).optional(),
+  assignee: z.union([z.literal('me'), z.literal('unassigned'), Uuid]).optional(),
+  cursor: z.string().max(200).optional(),
+});
+export const RequirementListPage = z.object({
+  generatedAt: IsoDateTime, project: z.union([z.literal('all'), Uuid]),
+  filters: z.object({ state: z.array(RequirementState), assignee: z.union([z.literal('me'), z.literal('unassigned'), Uuid]).nullable() }),
+  items: z.array(Requirement).max(50), nextCursor: z.string().nullable(), total: z.number().int().min(0),
+});
+
+export const CreateRequirementRequest = z.object({   // §23.4 (R45)
+  projectId: Uuid,
+  title: z.string().trim().min(3).max(200),
+  businessObjective: z.string().trim().min(10).max(4000),
+  acceptanceCriteria: z.array(z.string().trim().min(1).max(1000)).max(20).default([]),
+  assigneeUserId: Uuid.optional(),
+});
+export const RejectRequirementRequest = z.object({ reason: z.string().trim().min(1).max(500) });
+export const RequirementIdParams = z.object({ id: Uuid });
+```
+
+Route table (all Problems `application/problem+json`; 401 without a session on every session route):
+
+| Route | Auth / role | Body | 2xx | Problems |
+|-------|-------------|------|-----|----------|
+| `GET /requirements` | session; any role; `visibleProjects` | `RequirementListQuery` | 200 `RequirementListPage` | 400 `invalid-cursor`/query |
+| `POST /requirements` | session; `canCreateRequirement`; `projectId` visible | `CreateRequirementRequest` | 201 `RequirementDetail` + `Location` | 403 `forbidden`, 404 (invisible project), 400 `validation` |
+| `GET /requirements/{id}` | session; any role | — | 200 `RequirementDetail` | 404 |
+| `POST /requirements/{id}/submit` | session; `canCreateRequirement` | — | 200 `RequirementDetail` | 403, 404, 409 `invalid-transition` |
+| `POST /requirements/{id}/approve` | session; `canDecide` | — | 200 `RequirementDetail` | 403, 404, 409 `invalid-transition` (incl. exactly-once) |
+| `POST /requirements/{id}/reject` | session; `canDecide` | `RejectRequirementRequest` | 200 `RequirementDetail` | 403, 404, 409, 400 |
+
+## 24. Workflow list shapes (`packages/contracts/src/workflow-list.ts`, Zod) — research R38
+
+```ts
+export const WorkflowListQuery = z.object({
+  project: z.union([z.literal('all'), Uuid]).default('all'),
+  requirement: Uuid.optional(),
+  state: z.preprocess(splitCsv, z.array(WorkflowState).max(9)).optional(),
+  stage: z.coerce.number().int().min(1).max(7).optional(),
+  cursor: z.string().max(200).optional(),
+});
+export const WorkflowListItem = z.object({          // FR-003 shape
+  id: Uuid, externalId: ExternalId, title: z.string(), project: ProjectRef,
+  state: WorkflowState, stateObservedAt: IsoDateTime,
+  stage: z.object({ index: z.number().int(), count: z.number().int(), name: z.string().nullable() }).nullable(),
+  agent: z.string().nullable(), pullRequestRef: z.string().nullable(),
+  requirement: z.object({ id: Uuid, title: z.string(), href: z.string() }).nullable(),
+  startedAt: IsoDateTime.nullable(), finishedAt: IsoDateTime.nullable(),
+  href: z.string(),                                 // '/workflows/{id}'
+});
+export const WorkflowListPage = z.object({
+  generatedAt: IsoDateTime, project: z.union([z.literal('all'), Uuid]),
+  filters: z.object({ requirement: Uuid.nullable(), state: z.array(WorkflowState), stage: z.number().int().nullable() }),
+  items: z.array(WorkflowListItem).max(50), nextCursor: z.string().nullable(), total: z.number().int().min(0),
+});
+```
+
+| Route | Auth / role | 2xx | Problems |
+|-------|-------------|-----|----------|
+| `GET /workflows` | session; any role; `visibleProjects` (invisible `project`/`requirement` → empty page, `total: 0`) | 200 `WorkflowListPage` | 400 `invalid-cursor`/query |
+
+Order `state_observed_at DESC, id DESC`; cursor b64url `['workflows', stateObservedAtIso, id]`; `WORKFLOWS_PAGE_SIZE = 50`.
+
+## 25. Analysis ingest shapes (`packages/contracts/src/ingest.ts`, extended) — research R35
+
+```ts
+export const RequirementAnalysisIngest = z.object({
+  agent: Line(80), observedAt: IsoDateTime, summary: Line(400).nullable().optional(),
+  acceptanceCriteria: z.array(Line(1000)).max(50), rules: z.array(Line(1000)).max(50), openQuestions: z.array(Line(1000)).max(20),
+});
+export const RequirementIngestResult = z.object({ outcome: z.enum(['accepted','stale']), id: Uuid, state: RequirementState });
+```
+
+| Route | Auth | Body | 2xx | Problems |
+|-------|------|------|-----|----------|
+| `PUT /ingest/requirements/{externalId}/analysis` | bearer ingestion principal (`app.requirePrincipal`), scoped to the requirement's project | `RequirementAnalysisIngest` | 200 `RequirementIngestResult` (`accepted` → state `READY` or `NEEDS_CLARIFICATION`; `stale` → unchanged) | 401, 403 `forbidden` (principal not scoped), 404 (unknown `externalId`), 409 `invalid-transition` (state not `ANALYZING`/`NEEDS_CLARIFICATION`), 400 |
+
+Every call appends an `ingestion_log` row (`route = 'PUT /ingest/requirements/{externalId}/analysis'`, outcome).
+
+## 26. Jira webhook shapes (`packages/contracts/src/integrations.ts`, Zod) — research R36
+
+```ts
+export const JiraWebhookEvent = z.object({
+  timestamp: z.number().int().optional(),
+  webhookEvent: z.string().max(80),                 // 'jira:issue_created' | 'jira:issue_updated' | 'jira:issue_deleted' | other → ignored
+  issue: z.object({
+    id: z.string().max(40), key: z.string().regex(/^[A-Z][A-Z0-9_]+-\d+$/), self: z.string().url().optional(),
+    fields: z.object({
+      summary: z.string().max(2000),
+      description: z.union([z.string(), z.record(z.string(), z.unknown()), z.null()]).optional(),   // string or ADF document
+      updated: z.string().optional(),               // Jira timestamp; parsed leniently
+      project: z.object({ key: z.string().max(64) }),
+      status: z.object({ name: z.string(), statusCategory: z.object({ key: z.string() }).optional() }).optional(),
+      assignee: z.object({ emailAddress: z.string().email().optional() }).nullable().optional(),
+    }).passthrough(),
+  }).passthrough(),
+}).passthrough();
+export const JiraWebhookResult = z.object({ outcome: z.enum(['created','updated','flagged','stale','ignored']), requirementId: Uuid.nullable() });
+```
+
+| Route | Auth | Body | 2xx | Problems |
+|-------|------|------|-----|----------|
+| `POST /integrations/jira/webhook` | `x-hub-signature: sha256=<hex HMAC-SHA256(JIRA_WEBHOOK_SECRET, raw body)>`, `timingSafeEqual`; no session | raw JSON ≤ 256 KB, validated as `JiraWebhookEvent` after verification | 202 `JiraWebhookResult` | 401 `unauthenticated` (missing/invalid signature or unconfigured secret), 413 (body limit), 400 `validation`, 429 (route limit 120/min/IP) |
+
+## 27. Audit and transition vocabulary
+
+`AUDIT_ACTIONS` (US2 `approval-center.ts`) gains `requirement.submitted`, `requirement.approved`, `requirement.rejected`, `requirement.flagged`, `requirement.workflow_created`; `target_type = 'requirement'`, `target_id = requirements.id`, `workflow_id` set for `approved`/`workflow_created`/`flagged`, `details` carries `{ externalId, fromState, toState, reason?, jiraKey?, flag? }` — never the body text of the requirement. `AuditEventView` (US2) is reused unchanged.
+
+## 28. Pure state-machine rules (`packages/contracts/src/requirement-rules.ts`, zod-free, subpath `@cdevi/contracts/requirement-rules`)
+
+```ts
+export const REQUIREMENT_STATES = ['DRAFT','ANALYZING','NEEDS_CLARIFICATION','READY','APPROVED','IN_IMPLEMENTATION','COMPLETED','REJECTED'] as const;
+export type RequirementState = (typeof REQUIREMENT_STATES)[number];
+export const REQUIREMENT_TRANSITIONS: Readonly<Record<'CREATE' | RequirementState, readonly RequirementState[]>> = {
+  CREATE: ['DRAFT'],
+  DRAFT: ['ANALYZING','REJECTED'],
+  ANALYZING: ['READY','NEEDS_CLARIFICATION'],
+  NEEDS_CLARIFICATION: ['ANALYZING','READY','NEEDS_CLARIFICATION','REJECTED'],
+  READY: ['APPROVED','REJECTED'],
+  APPROVED: ['IN_IMPLEMENTATION','COMPLETED'],
+  IN_IMPLEMENTATION: ['COMPLETED'],
+  COMPLETED: [], REJECTED: [],
+};
+export const canTransitionRequirement = (from: RequirementState | null, to: RequirementState) => REQUIREMENT_TRANSITIONS[from ?? 'CREATE'].includes(to);
+export const isTerminalRequirement = (s: RequirementState) => s === 'COMPLETED' || s === 'REJECTED';
+export const stateAfterAnalysis = (openQuestions: number): RequirementState => openQuestions === 0 ? 'READY' : 'NEEDS_CLARIFICATION';
+export function requirementStateForWorkflow(current: RequirementState, workflow: WorkflowState): RequirementState | null;   // R33 table
+export function requirementActions(state: RequirementState, role: Role): RequirementActions;   // uses canCreateRequirement / canDecide from decision-rules; reasons[] explain disabled actions ("Only approvers and administrators can approve", "Analysis has not finished")
+export const REQUIREMENTS_PAGE_SIZE = 50; export const WORKFLOWS_PAGE_SIZE = 50;
+export function encodeRequirementCursor(keys: { createdAt: string; id: string }): string;  export function decodeRequirementCursor(cursor: string): { createdAt: string; id: string };  // b64url ['requirements', createdAt, id]; throws InvalidCursorError
+export function encodeWorkflowCursor(keys: { stateObservedAt: string; id: string }): string; export function decodeWorkflowCursor(cursor: string): { stateObservedAt: string; id: string };
+export const requirementHrefs = { requirement: (id: string) => `/requirements/${id}`, workflow: (id: string) => `/workflows/${id}`, list: (q: { project?: string; state?: RequirementState[]; assignee?: string }) => string };
+export const isSafeExternalUrl = (url: string) => /^https:\/\//.test(url);
+export type JiraMappedEvent = { kind: 'create' | 'update' | 'flag' | 'ignore'; key: string; projectKey: string; title: string; objective: string; url: (base: string) => string; updatedAt: string | null; flag: 'deleted' | 'closed' | null; assigneeEmail: string | null };
+export function mapJiraEvent(event: JiraWebhookEventLike): JiraMappedEvent;   // R36 table; 'done' status category → flag 'closed'
+export function adfToPlainText(doc: unknown, max = 4000): string;              // walks ADF `content[].text`, joins paragraphs with '\n', truncates
+export const REQUIREMENT_STATE_WORDS: Readonly<Record<RequirementState, string>>;   // 'needs clarification' etc. — must equal the design-system table (R41); asserted equal in a test
+```
+
+Browser code imports only this subpath, `/vocabulary` and `/read-model`; `requirements.ts`, `workflow-list.ts`, `integrations.ts` (Zod) stay server-side.
+
+## 29. Transactions
+
+| Operation | Isolation | Steps |
+|-----------|-----------|-------|
+| `POST /requirements` | default | visibility + role check → `INSERT requirements` (`external_id = 'req-' || 12 hex`, retry once on unique violation) → `INSERT requirement_analysis_items` (human criteria, `ai_generated=false`, `source='user:<name>'`) → `requirement_transitions (NULL→DRAFT)` → detail |
+| `…/submit` | default | `SELECT … FOR UPDATE` → `canTransitionRequirement(state,'ANALYZING')` else 409 → `UPDATE state, submitted_*` → transition row (user) → `audit_events requirement.submitted` → detail |
+| `…/approve` | default | R37 steps 1–10 (lock → READY check → workflow + 7 stages + transitions → APPROVED → transition → 2 audit rows) |
+| `…/reject` | default | lock → state ∈ DRAFT/NEEDS_CLARIFICATION/READY → `UPDATE state='REJECTED', rejected_*` → transition (reason) → `audit_events requirement.rejected` |
+| analysis ingest | default | principal scope → lock → state check → `observedAt` watermark → `DELETE … WHERE requirement_id AND ai_generated` → `INSERT` items → `UPDATE analysis_*, state` → transition (agent) → `ingestion_log` |
+| Jira webhook | default | verify (outside tx) → mapping lookup → tx with resolved organization: create/update/flag; flag path additionally locks the linked workflow, `canTransition(state,'BLOCKED')` → `UPDATE workflows`, current stage → BLOCKED, `workflow_transitions (source='jira-webhook')`, `audit_events requirement.flagged` |
+| reads (`GET /requirements`, `GET /requirements/{id}`, `GET /workflows`) | `REPEATABLE READ` | page + count (list); header + items + transitions (≤ 40) + audit (≤ 20) + linked workflow (detail) |
+
+## 30. Seed additions (research R44)
+
+`packages/db/src/seed/requirements.ts` exports `buildRequirements(base)`, `EXPECTED_REQUIREMENTS`, `REQUIREMENT_SHOWCASE = { draft: 'req-seed-001', analyzing: 'req-seed-002', needsClarification: 'req-seed-003', ready: 'req-seed-004', approved: 'req-seed-005', inImplementation: 'req-seed-006', completed: 'req-seed-007', rejected: 'req-seed-008', jira: 'req-seed-003' }` and `JIRA_MAPPING`. `seed/index.ts` inserts, after `dashboard-demo`: 1 mapping, 8 requirements (fixed `created_at = base − (9 − n) days`), 28 analysis items (26 AI), the transition history per row, 3 `audit_events`, and three `UPDATE workflows SET requirement_id` links (first `QUEUED` S-500 by `external_id` ← 005, `SHOWCASE_WAITING` ← 006, first `COMPLETED` S-500 by `external_id` ← 007). No other table changes; `EXPECTED_BUCKETS`, `EXPECTED_SHOWCASE`, `EXPECTED_DASHBOARD` untouched.
