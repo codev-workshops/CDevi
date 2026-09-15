@@ -8,7 +8,11 @@ let n = 0;
 const uuid = () => `00000000-0000-7000-8000-${(++n).toString(16).padStart(12, '0')}`;
 
 export const WORKFLOW_ID = uuid();
-const WORKFLOW = { id: WORKFLOW_ID, externalId: 's500-001', title: 'Add rate limiting to /api/auth' };
+const WORKFLOW = {
+  id: WORKFLOW_ID,
+  externalId: 's500-001',
+  title: 'Add rate limiting to /api/auth',
+};
 
 const ev = (minsAgo: number, kind: AgentRunEvent['kind'], message: string): AgentRunEvent => ({
   at: at(minsAgo),
@@ -17,15 +21,14 @@ const ev = (minsAgo: number, kind: AgentRunEvent['kind'], message: string): Agen
 });
 const step = (label: string, status: RunStep['status']): RunStep => ({ label, status });
 
-const evidence = (over: Partial<EvidenceRef> & Pick<EvidenceRef, 'kind' | 'label'>): EvidenceRef => ({
+const evidence = (
+  over: Partial<EvidenceRef> & Pick<EvidenceRef, 'kind' | 'label'>,
+): EvidenceRef => ({
   accessible: true,
   ...over,
 });
 
-export const decision = (
-  position: number,
-  over: Partial<AgentDecision> = {},
-): AgentDecision => ({
+export const decision = (position: number, over: Partial<AgentDecision> = {}): AgentDecision => ({
   id: uuid(),
   position,
   decidedAt: at(30 - position),
@@ -142,12 +145,16 @@ export function runCompleted(over: Partial<AgentRunDetail> = {}): AgentRunDetail
       step('Wire middleware into /api/auth', 'completed'),
       step('Typecheck', 'completed'),
     ],
-    timeline: [ev(200, 'tool', 'Created src/auth/limiter.ts'), ev(140, 'tool', 'Ran pnpm typecheck — clean')],
+    timeline: [
+      ev(200, 'tool', 'Created src/auth/limiter.ts'),
+      ev(140, 'tool', 'Ran pnpm typecheck — clean'),
+    ],
     decisions: [
       decision(1, {
         decidedAt: at(205),
         action: 'Implement the limiter as a new module rather than extending authMiddleware',
-        reason: 'Keeps the middleware single-purpose and lets the limiter be unit-tested in isolation.',
+        reason:
+          'Keeps the middleware single-purpose and lets the limiter be unit-tested in isolation.',
         evidence: [
           evidence({
             kind: 'artifact',
@@ -186,26 +193,37 @@ export const runFailedStep = (): AgentRunDetail =>
     steps: [step('Review the diff', 'completed'), step('Run the policy check', 'failed')],
   });
 export const runHighRisk = (): AgentRunDetail =>
-  runRunning({ decisions: [decision(1, { riskLevel: 'HIGH', policyOutcome: 'APPROVAL_REQUIRED' })] });
+  runRunning({
+    decisions: [decision(1, { riskLevel: 'HIGH', policyOutcome: 'APPROVAL_REQUIRED' })],
+  });
 
 /** RUNNING with every timestamp 40 minutes old → `runFreshness === 'stale'` at NOW. */
 export const runStale = (): AgentRunDetail =>
   runRunning({
     startedAt: at(60),
     durationMs: 60 * 60_000,
-    timeline: [ev(50, 'tool', 'Read the diff of 4 files'), ev(40, 'note', 'Waiting on the policy service')],
+    timeline: [
+      ev(50, 'tool', 'Read the diff of 4 files'),
+      ev(40, 'note', 'Waiting on the policy service'),
+    ],
     decisions: [],
   });
 
 /** Every list at its contract bound (50 timeline, 20 steps, 50 decisions × 20 evidence). */
 export function runMaxBounds(): AgentRunDetail {
   return runRunning({
-    steps: Array.from({ length: 20 }, (_, i) => step(`Step ${i + 1}`, i < 10 ? 'completed' : i === 10 ? 'running' : 'pending')),
+    steps: Array.from({ length: 20 }, (_, i) =>
+      step(`Step ${i + 1}`, i < 10 ? 'completed' : i === 10 ? 'running' : 'pending'),
+    ),
     timeline: Array.from({ length: 50 }, (_, i) => ev(50 - i, 'tool', `Event ${i + 1}`)),
     decisions: Array.from({ length: 50 }, (_, i) =>
       decision(i + 1, {
         evidence: Array.from({ length: 20 }, (_, j) =>
-          evidence({ kind: 'url', label: `Evidence ${j + 1}`, href: `https://example.test/${i}/${j}` }),
+          evidence({
+            kind: 'url',
+            label: `Evidence ${j + 1}`,
+            href: `https://example.test/${i}/${j}`,
+          }),
         ),
       }),
     ),

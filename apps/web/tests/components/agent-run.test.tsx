@@ -126,7 +126,9 @@ describe('Agent Run Inspector (specs/001 US5)', () => {
     expect(log).toHaveTextContent('tool · Read the diff of 4 files');
     expect(log).toHaveTextContent('error · Policy check timed out once; retried');
     expect(log.querySelector('.cd-ex')).toHaveTextContent('error · Policy check timed out once');
-    expect(log).toHaveTextContent('decision · Opening a pull request needs human approval (policy)');
+    expect(log).toHaveTextContent(
+      'decision · Opening a pull request needs human approval (policy)',
+    );
 
     await userEvent.click(decisionsTab());
     const list = screen.getByRole('list', { name: 'Decisions' });
@@ -242,7 +244,9 @@ describe('Agent Run Inspector (specs/001 US5)', () => {
         '4 of 4 steps completed',
       ),
     );
-    expect(screen.getByRole('list', { name: 'Progress' }).querySelector('[aria-current]')).toBeNull();
+    expect(
+      screen.getByRole('list', { name: 'Progress' }).querySelector('[aria-current]'),
+    ).toBeNull();
     expect(timelineTab()).toHaveAttribute('aria-selected', 'true');
     expect(timelineTab()).toHaveFocus();
     expect(screen.getByText('Run updated')).toBeInTheDocument();
@@ -315,9 +319,13 @@ describe('Agent Run Inspector (specs/001 US5)', () => {
     expect(decisionsTab()).toHaveTextContent('Decisions (0)');
     unmount();
 
-    const { unmount: u2 } = renderApp(<AgentRunScreen initial={runRunningEmptySteps()} now={NOW} />);
+    const { unmount: u2 } = renderApp(
+      <AgentRunScreen initial={runRunningEmptySteps()} now={NOW} />,
+    );
     const progress = screen.getByRole('region', { name: 'Progress' });
-    expect(progress).toHaveTextContent('The runtime has not reported structured progress for this run.');
+    expect(progress).toHaveTextContent(
+      'The runtime has not reported structured progress for this run.',
+    );
     expect(progress.querySelector('[role="progressbar"]')).toBeNull();
     u2();
 
@@ -325,7 +333,9 @@ describe('Agent Run Inspector (specs/001 US5)', () => {
     const steps = within(screen.getByRole('list', { name: 'Progress' })).getAllByRole('listitem');
     expect(steps[1]).toHaveTextContent('failed');
     expect(within(steps[1]!).getByText('failed')).toHaveClass('cd-fail');
-    expect(screen.getByRole('list', { name: 'Progress' }).querySelector('[aria-current]')).toBeNull();
+    expect(
+      screen.getByRole('list', { name: 'Progress' }).querySelector('[aria-current]'),
+    ).toBeNull();
   });
 
   it('empty decisions tab shows the info notice when selected', async () => {

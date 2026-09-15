@@ -107,7 +107,9 @@ describe('Workflow Detail (specs/001 US1)', () => {
     expect(testLinks[0]).toHaveTextContent('Inspect run · Test Agent');
     expect(testLinks[1]).toHaveAttribute('href', `/agents/runs/${r2!.id}`);
     expect(testLinks[1]).toHaveAccessibleName('Inspect run 2 of 2 by Test Agent, failed');
-    const words = Array.from(test.querySelectorAll('.cd-pill[data-state]')).map((p) => p.textContent);
+    const words = Array.from(test.querySelectorAll('.cd-pill[data-state]')).map(
+      (p) => p.textContent,
+    );
     expect(words).toEqual(['completed', 'completed', 'failed']);
 
     const cur = steps[5]!;

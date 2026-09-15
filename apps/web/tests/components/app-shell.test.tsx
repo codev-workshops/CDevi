@@ -82,7 +82,9 @@ describe('App shell (FR-001, FR-003, FR-030, ui-inbox-screen.md §1)', () => {
       </AppFrame>,
     );
     const nav = screen.getByRole('navigation');
-    const current = within(nav).getAllByRole('link').filter((l) => l.getAttribute('aria-current'));
+    const current = within(nav)
+      .getAllByRole('link')
+      .filter((l) => l.getAttribute('aria-current'));
     expect(current).toHaveLength(1);
     expect(current[0]).toHaveTextContent('Agents');
     expect(current[0]).toHaveAttribute('href', '/agents');
