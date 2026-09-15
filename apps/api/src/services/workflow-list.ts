@@ -146,7 +146,10 @@ export async function listWorkflows(
     items: items.map(toItem),
     nextCursor:
       rows.rows.length > WORKFLOWS_PAGE_SIZE && last
-        ? encodeWorkflowCursor({ stateObservedAt: last.state_observed_at.toISOString(), id: last.id })
+        ? encodeWorkflowCursor({
+            stateObservedAt: last.state_observed_at.toISOString(),
+            id: last.id,
+          })
         : null,
     total,
   };

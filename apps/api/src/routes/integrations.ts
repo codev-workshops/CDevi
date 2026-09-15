@@ -21,7 +21,9 @@ export default async function integrationRoutes(
 ) {
   const secret = opts.jiraWebhookSecret;
   if (!secret)
-    app.log.warn('JIRA_WEBHOOK_SECRET is not set: POST /integrations/jira/webhook rejects every call');
+    app.log.warn(
+      'JIRA_WEBHOOK_SECRET is not set: POST /integrations/jira/webhook rejects every call',
+    );
 
   app.removeAllContentTypeParsers();
   app.addContentTypeParser('*', { parseAs: 'buffer' }, (_req, body, done) => done(null, body));

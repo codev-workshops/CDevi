@@ -2,7 +2,10 @@ import { forwardRef } from 'react';
 import { requirementStateToPill, type RequirementState } from '../../tokens';
 import { Pill, type PillProps } from './Pill';
 
-export interface RequirementStatePillProps extends Omit<PillProps, 'variant' | 'pulse' | 'children'> {
+export interface RequirementStatePillProps extends Omit<
+  PillProps,
+  'variant' | 'pulse' | 'children'
+> {
   state: RequirementState;
   /** Override the displayed word (e.g. localisation). The state's word is the default. */
   children?: string;

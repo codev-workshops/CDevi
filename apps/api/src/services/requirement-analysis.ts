@@ -6,7 +6,11 @@
  * 1..n per kind, `source = agent:<name>`), never touches human-authored items, and moves the requirement to READY or
  * NEEDS_CLARIFICATION through `stateAfterAnalysis`. Every call leaves one `ingestion_log` row.
  */
-import type { RequirementAnalysisIngest, RequirementIngestResult, RequirementState } from '@cdevi/contracts';
+import type {
+  RequirementAnalysisIngest,
+  RequirementIngestResult,
+  RequirementState,
+} from '@cdevi/contracts';
 import { canTransitionRequirement, stateAfterAnalysis } from '@cdevi/contracts/requirement-rules';
 import type pg from 'pg';
 import { ProblemError, problems } from '../lib/problem';
@@ -59,7 +63,13 @@ export async function ingestRequirementAnalysis(
     await client.query('ROLLBACK').catch(() => {});
     if (e instanceof ProblemError) {
       const outcome: Outcome = e.status === 403 ? 'forbidden' : 'rejected';
-      await log(pool, principal, externalId, outcome, `${e.status} ${e.title}: ${e.detail ?? ''}`.trim());
+      await log(
+        pool,
+        principal,
+        externalId,
+        outcome,
+        `${e.status} ${e.title}: ${e.detail ?? ''}`.trim(),
+      );
     }
     throw e;
   } finally {
@@ -93,9 +103,10 @@ async function apply(
   if (!canTransitionRequirement(row.state, to))
     throw problems.invalidTransition(`Cannot move a ${row.state} requirement to ${to}.`);
 
-  await client.query(`DELETE FROM requirement_analysis_items WHERE requirement_id = $1 AND ai_generated`, [
-    row.id,
-  ]);
+  await client.query(
+    `DELETE FROM requirement_analysis_items WHERE requirement_id = $1 AND ai_generated`,
+    [row.id],
+  );
   const source = `agent:${body.agent}`;
   const kinds: [string, string[]][] = [
     ['acceptance_criterion', body.acceptanceCriteria],

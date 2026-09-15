@@ -207,7 +207,9 @@ export async function listRequirements(
   if (query.cursor) {
     const k = decodeRequirementCursor(query.cursor);
     params.push(k.createdAt, k.id);
-    where.push(`(r.created_at, r.id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`);
+    where.push(
+      `(r.created_at, r.id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`,
+    );
   }
   const rows = await client.query<ListRow>(
     `SELECT ${ROW_COLUMNS} ${ROW_JOINS} WHERE ${where.join(' AND ')}
@@ -632,7 +634,11 @@ export async function approveRequirement(
     targetType: 'workflow',
     targetId: workflowId,
     result: 'QUEUED',
-    details: { requirementId: row.id, externalId: `wf-${row.external_id}`, stages: SDLC_STAGES.length },
+    details: {
+      requirementId: row.id,
+      externalId: `wf-${row.external_id}`,
+      stages: SDLC_STAGES.length,
+    },
   });
   return row.id;
 }

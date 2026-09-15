@@ -58,7 +58,12 @@ export default async function requirementRoutes(app: FastifyInstance) {
     if (!detail) throw problems.notFound("This requirement isn't available to you.");
     reply.header('server-timing', `${timing};dur=${(performance.now() - started).toFixed(1)}`);
     request.log.info(
-      { userId: user.id, requirementId: detail.requirement.id, action: timing, state: detail.requirement.state },
+      {
+        userId: user.id,
+        requirementId: detail.requirement.id,
+        action: timing,
+        state: detail.requirement.state,
+      },
       'requirement action',
     );
     return detail;
