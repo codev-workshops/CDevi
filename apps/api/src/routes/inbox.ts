@@ -12,7 +12,7 @@ export interface InboxRouteOptions {
 }
 
 const sseFrame = (c: InboxChange) =>
-  `id: ${c.seq}\nevent: inbox.changed\ndata: ${JSON.stringify({ projectId: c.projectId, workflowId: c.workflowId })}\n\n`;
+  `id: ${c.seq}\nevent: inbox.changed\ndata: ${JSON.stringify({ projectId: c.projectId, workflowId: c.workflowId, requirementId: c.requirementId })}\n\n`;
 
 export default async function inboxRoutes(app: FastifyInstance, opts: InboxRouteOptions) {
   const heartbeatMs = opts.heartbeatMs ?? 25_000;
@@ -117,8 +117,13 @@ export default async function inboxRoutes(app: FastifyInstance, opts: InboxRoute
       const lastSeq = last ? Number(last) : NaN;
       let replayedUpTo = 0;
       if (Number.isFinite(lastSeq) && lastSeq >= 0) {
-        const r = await app.pool.query<{ seq: string; project_id: string; workflow_id: string }>(
-          `SELECT seq, project_id, workflow_id FROM inbox_change_log WHERE organization_id = $1 AND seq > $2 ORDER BY seq LIMIT 1000`,
+        const r = await app.pool.query<{
+          seq: string;
+          project_id: string;
+          workflow_id: string | null;
+          requirement_id: string | null;
+        }>(
+          `SELECT seq, project_id, workflow_id, requirement_id FROM inbox_change_log WHERE organization_id = $1 AND seq > $2 ORDER BY seq LIMIT 1000`,
           [user.organizationId, lastSeq],
         );
         for (const row of r.rows) {
@@ -131,6 +136,7 @@ export default async function inboxRoutes(app: FastifyInstance, opts: InboxRoute
                 organizationId: user.organizationId,
                 projectId: row.project_id,
                 workflowId: row.workflow_id,
+                requirementId: row.requirement_id,
               }),
             );
         }

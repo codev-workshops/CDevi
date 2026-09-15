@@ -29,6 +29,8 @@ export interface BuildOptions {
   notify?: boolean | undefined;
   /** SSE heartbeat interval (tests shorten it). */
   heartbeatMs?: number | undefined;
+  /** Shared secret for `x-hub-signature` on the Jira webhook; undefined → every webhook call is 401. */
+  jiraWebhookSecret?: string | undefined;
 }
 
 declare module 'fastify' {
