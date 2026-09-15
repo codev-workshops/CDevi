@@ -1,8 +1,8 @@
-# Implementation Plan: SDLC Control Plane MVP — User Stories 1 (Workflow Detail) and 2 (Approval Center)
+# Implementation Plan: SDLC Control Plane MVP — User Stories 1 (Workflow Detail), 2 (Approval Center) and 3 (Dashboard)
 
-**Branch**: `feature/US1` (Part A, landed) · `feature/US2` (Part B) | **Date**: 2026-09-14 | **Spec**: [spec.md](spec.md) — User Stories 1 and 2
+**Branch**: `feature/US1` (Part A, landed) · `feature/US2` (Part B, landed) · `feature/US3` (Part C) | **Date**: 2026-09-14 (A, B) · 2026-09-15 (C) | **Spec**: [spec.md](spec.md) — User Stories 1, 2 and 3
 
-> Part A below is the User Story 1 plan as landed. **Part B — User Story 2 (Approval Center)** follows at the end of this document and builds on Part A without changing it.
+> Part A below is the User Story 1 plan as landed. **Part B — User Story 2 (Approval Center)** follows and builds on Part A without changing it. **Part C — User Story 3 (Dashboard)** is appended at the end and builds on A and B without changing them.
 
 # Part A — User Story 1 (Workflow Detail)
 
@@ -297,5 +297,144 @@ Re-evaluated after Phase 1 (research R11–R20, data-model §10–17, contracts/
 | II | tasks.md Phase 5 lists the failing test before each implementation task; concurrency and role tests named for FR-015 / FR-032; the Independent Test is one Playwright spec. **PASS** |
 | III | Every region in ui-approval-center.md §2–3 names an existing component; DR-02 holds in every state (§Design System Compliance); ten defined states; axe + keyboard contract. **PASS** |
 | IV | Eight budgets with methods; list bounded to 200; single transaction per operation; `Server-Timing` on reads. **PASS** |
+
+**Gate result (post-design)**: PASS.
+
+---
+
+# Part C — User Story 3 (Dashboard)
+
+**Branch**: `feature/US3` (from `develop`; PR targets `develop`) | **Date**: 2026-09-15 | **Spec**: [spec.md](spec.md) — User Story 3 (lines 58–75), FR-023, plus FR-025 (project selector with "all projects"), FR-026 (HIGH/CRITICAL prominent), FR-034 (live propagation), FR-035 (header counts). Success criteria SC-002, SC-003, SC-007, SC-010. Other stories remain out of scope; in particular the Workflow Center (`/workflows` list) and review findings (US6) are **not** built here — approved scope decisions 1 and 2 in research.md Part C.
+
+**Input**: research.md R21–R30, data-model.md §18–21, contracts/ui-dashboard.md, quickstart.md §4, tasks.md Phases 7–8.
+
+## Summary
+
+Replace the `/dashboard` placeholder with the **Dashboard**: one read-only screen that answers *what is happening* (active workflows, running agents, PRs generated, open failures, and a stage-1..7 pipeline), *what needs me* (pending approvals, pending clarifications, failed and blocked workflows — SC-002), *is engineering healthy* (test pass rate, agent success rate, human intervention rate for a selected window), *what is the AI doing* (≤ 12 active workflow cards with identifier, title, stage, progress, agent, elapsed time and state) and *is anything risky* (pending HIGH/CRITICAL approvals and HIGH/CRITICAL audit events in the window, plus an explicit "security findings — not connected yet" state). Every figure is a link to the filtered list behind it (FR-023); the project selector offers "All projects" (FR-025); the screen refetches on the existing `inbox.changed` stream (FR-034). Behind it, **one new read route** `GET /api/dashboard?project=all|<uuid>&window=24h|7d|30d` served by `services/dashboard.ts`: eight bounded aggregate statements in one `REPEATABLE READ` transaction over the existing tables, shaped by the pure `buildDashboardSnapshot()` in `@cdevi/contracts/dashboard-model`. **No new table**; migration `0004_dashboard.sql` adds five indexes for SC-007. The seed gains an administrator-only fifth project `dashboard-demo` that produces the Independent Test figures (18 / 4 / 2 / 97.4 %) without changing S-500. No design-system change.
+
+## Technical Context
+
+**Language/Version**: unchanged (TypeScript 5.9 strict, Node 26, React 19.2, ES modules)
+
+**Primary Dependencies**: unchanged — nothing is added to any `package.json`. Web: Next.js 16 App Router (server first paint, client refresh). API: Fastify 5 + `fastify-type-provider-zod`. DB: hand-written SQL + Drizzle mirror. Contracts: zod 4 → OpenAPI 3.1; new zod-free subpath `@cdevi/contracts/dashboard-model` (package.json `exports` entry, like `/decision-rules`). Design system 1.3.0 (no bump — see Design System Compliance)
+
+**Storage**: PostgreSQL 17. `0004_dashboard.sql`: **indexes only** — `test_runs_org_project_finished_idx`, `agent_runs_org_project_finished_idx` (partial `finished_at IS NOT NULL`), `audit_events_org_risk_time_idx` (partial `risk_level IN ('HIGH','CRITICAL')`), `approvals_workflow_idx`, `clarifications_workflow_idx` (data-model §18). No table, column, trigger, RLS or grant change; existing NOTIFY triggers are sufficient for FR-034
+
+**Read model** (R22, R24): `services/dashboard.ts › dashboardSnapshot(client, scope, query, now)` — statements Q1–Q8 (workflow counts + pipeline + PRs; pending approvals incl. HIGH/CRITICAL; pending clarifications; test-run sums; agent-run outcomes; human-intervention numerator/denominator; HIGH/CRITICAL audit events; ≤ 12 active cards), all scoped by `organization_id` and `visibleProjects()`; the response is assembled by the pure `buildDashboardSnapshot(rows, now, window, project)` so every derivation (rates as numerator/denominator, pipeline names, progress, elapsed, hrefs) is unit-tested without a database and shared with the web. Route: `routes/dashboard.ts` (`GET /dashboard`, `preHandler: app.requireUser`, `DashboardQuery`, `Server-Timing`)
+
+**Query**: `project` = `all` | uuid (default `all`; unknown/invisible uuid → zeros, like `GET /api/approvals`); `window` = `24h` | `7d` | `30d` (default `7d`), closed on `app.now()`; windowed figures are PRs generated, the three health rates and HIGH/CRITICAL audit events; all other figures are point-in-time (R21)
+
+**Testing**: Vitest — `contracts` (pure model: window, hrefs, rates, pipeline, progress, ordering, snapshot invariants; Zod schemas; OpenAPI snapshot), `db` (0004 indexes present and used — `EXPLAIN` on Q4/Q5/Q7; seed `dashboard-demo` figures and `EXPECTED_DASHBOARD`; S-500 invariants unchanged), `api` (integration on real Postgres, fixed clock: every figure and href for `dashboard-demo`, `all` vs uuid vs invisible uuid per role, window switching, validation problems, `Server-Timing` at the SC-007 fixture of 500 workflows / 5 000 agent runs / 50 000 audit events inserted by the test with `generate_series`), `web` (component + axe in every ui-dashboard.md §4 state: loading, populated, empty, error, unavailable; project/window selects; refetch on `inbox.changed`; no saffron; HIGH/CRITICAL `RiskBadge`). Playwright `apps/web/tests/e2e/dashboard.spec.ts` = the Independent Test (administrator selects "Dashboard Demo": 18 / 4 / 2 / 97.4 % / not connected; every figure's link target; live update ≤ 5 s after an ingested transition; keyboard walk; page axe; initial content ≤ 2 s). Test names start with the FR/SC id; red → green order in tasks.md Phase 7
+
+**Target Platform / Project Type**: unchanged (web app in the existing monorepo; CI `ci.yml` unchanged)
+
+**Performance Goals** (Principle IV; workload = SC-007 organization: 500 workflows, 5 000 agent runs, 50 000 audit events, measured on CI `ubuntu-latest` with the Postgres service; and the seeded database for e2e). These set the budgets spec.md line 300 defers to the plan:
+- Dashboard initial content (header counts and needs-me visible) ≤ 2 s p95 (SC-007) — Playwright trace over 10 runs in `dashboard.spec.ts`; server first paint carries the full snapshot
+- `GET /api/dashboard` ≤ 300 ms p95 at the SC-007 fixture — `Server-Timing` asserted in `apps/api/tests/dashboard.test.ts` over 20 calls; eight index-backed statements, one transaction, no statement returns more than 12 rows
+- Payload ≤ 8 KB (JSON, ≤ 12 cards) — asserted on `content-length` in the api test
+- `inbox.changed` → refetched snapshot rendered ≤ 5 s p95, ≤ 1 s median (SC-003, FR-034) — `dashboard.spec.ts` measures the needs-me count after an ingested transition; debounce 300 ms; refetch re-render ≤ 100 ms (component test with fake timers)
+- Needs-me area reflects a `WAITING_FOR_HUMAN`/`BLOCKED` entry ≤ 5 s (SC-002) — e2e ingests one transition of each kind and measures the needs-me counts
+- Route JS ≤ 200 KB gzip (`check:size`; browser imports only `@cdevi/contracts/dashboard-model`, `/read-model`, `/vocabulary`)
+- Active cards bounded to 12 (`ACTIVE_CARD_LIMIT`), pipeline fixed at 7 + unstaged, header counts fixed at 4 — no unbounded list anywhere on the screen
+- Seed growth: `pnpm db:seed` and the e2e global-setup grow by 24 workflows / 43 stages / 44 runs / 6 test runs — < 5 % of S-500, no measurable change to the existing Inbox budgets (`perf:api` unchanged)
+
+**Constraints**: **no saffron control on the Dashboard** (read-only screen; the one saffron action lives on the Approval Center the needs-me links open — R28); HIGH/CRITICAL rendered with `RiskBadge` wherever they appear (FR-026); every workflow state as a `StatePill` word; rates with a zero denominator render "—" with a reason, never `0 %`/`NaN`; "security findings" is a neutral not-connected state, never saffron or green; WCAG 2.2 AA; Problems without internals; `.env` never committed
+
+**Scale/Scope**: 1 screen, 1 route, 1 index-only migration, 1 seed module, ~9 pure functions, ≈ 55 tests
+
+## Constitution Check
+
+| Principle | Check | Result |
+|-----------|-------|--------|
+| I — Specification and contracts first | `DashboardQuery`/`DashboardSnapshot` Zod schemas + pure model in `@cdevi/contracts` → OpenAPI fragment (snapshot-tested) → API validation → web types; ui-dashboard.md written before code; migration hand-written (indexes) and mirrored in `schema.ts` | PASS |
+| II — Tests before behaviour | Every task in tasks.md Phase 7 has a failing test first; pure derivations tested without a DB; live suites identified (`db`, `api`, e2e); SC-007 fixture is a test, not a claim; fixed clock | PASS |
+| III — Design system, defined states, accessibility | Every region maps to an existing component (below); §4 of the screen contract defines loading / populated / empty / error / unavailable / refreshing; axe in component tests and Playwright; keyboard/focus contract §5; no saffron on a screen without a direct action | PASS |
+| IV — Performance budgets | Eight numeric budgets with measurement methods above; every list bounded; one transaction per read; indexes proven by `EXPLAIN` in a test | PASS |
+| Security (constitution §Security) | Session auth on the route; project visibility via `visibleProjects`; invisible project → zeros (no existence leak); read-only (no writes, no CSRF surface); Problems carry no SQL/stack; seed data never grants memberships | PASS |
+
+**Gate result (pre-design)**: PASS — no violations to justify.
+
+## Project Structure
+
+### Documentation (this feature)
+
+```
+specs/001-sdlc-control-plane-mvp/
+├── plan.md              # Part A (US1) + Part B (US2) + Part C (US3, this section)
+├── research.md          # R1–R10 (US1) + R11–R20 (US2) + R21–R30 (US3)
+├── data-model.md        # §1–9 (US1) + §10–17 (US2) + §18–21 (US3)
+├── quickstart.md        # §2 US1 + §3 US2 + §4 US3
+├── tasks.md             # Phases 1–4 (US1) + 5–6 (US2) + 7–8 (US3)
+└── contracts/
+    ├── openapi.yaml               # generated fragment: US1 + US2 routes + GET /dashboard (regenerated in Phase 7a)
+    ├── ui-workflow-detail-screen.md
+    ├── ui-approval-center.md
+    ├── decision-rules.md
+    └── ui-dashboard.md            # US3 screen (NEW)
+```
+
+### Source Code (repository root) — NEW vs EXTENDED
+
+```
+packages/contracts/
+├── src/dashboard.ts             # NEW: DashboardQuery, WindowKey, Figure, Rate, PipelineStage, ActiveWorkflowCard, DashboardSnapshot (Zod)
+├── src/dashboard-model.ts       # NEW (zod-free): ACTIVE_STATES, SDLC_STAGES, ACTIVE_CARD_LIMIT, WINDOW_MS, windowFor, dashboardHrefs, ratePercent, stageProgress, elapsedMs, orderActiveCards, pipelineFrom, buildDashboardSnapshot
+├── src/index.ts                 # EXTENDED: export * from './dashboard', './dashboard-model'
+├── src/openapi.ts               # EXTENDED: GET /dashboard path + schemas in buildWorkflowDetailOpenApi (title "… (specs/001 US1–US3)", tag dashboard)
+├── package.json                 # EXTENDED: exports["./dashboard-model"]
+└── tests/dashboard-model.test.ts (NEW), tests/schemas.test.ts (EXTENDED), tests/openapi.test.ts (EXTENDED)
+
+packages/db/
+├── migrations/0004_dashboard.sql  # NEW: five indexes (data-model §18)
+├── src/schema.ts                  # EXTENDED: index mirrors
+├── src/seed/dashboard.ts          # NEW: buildDashboardShowcase(base), EXPECTED_DASHBOARD, DASHBOARD_PROJECT
+├── src/seed/index.ts              # EXTENDED: insert dashboard-demo project + workflows/stages/runs/test runs after S-500; export EXPECTED_DASHBOARD
+└── tests/schema.test.ts (EXTENDED: 0004), tests/seed.test.ts (EXTENDED: dashboard figures; DB totals include EXPECTED_DASHBOARD)
+
+apps/api/
+├── src/services/dashboard.ts    # NEW: dashboardSnapshot(client, scope, query, now) — Q1–Q8 + buildDashboardSnapshot
+├── src/routes/dashboard.ts      # NEW: GET /dashboard
+├── src/app.ts                   # EXTENDED: register dashboardRoutes; DashboardSnapshot in swagger components
+└── tests/dashboard.test.ts      # NEW (incl. SC-007 fixture builder in tests/helpers.ts — EXTENDED)
+
+apps/web/
+├── app/(app)/dashboard/page.tsx           # NEW: server — cookie + ?window → apiFetch('/api/dashboard…')
+├── app/(app)/dashboard/DashboardScreen.tsx # NEW: client — selects, regions, SSE refetch
+├── app/(app)/[section]/page.tsx           # EXTENDED: drop the /dashboard fall-through
+├── lib/session.ts                         # EXTENDED: getDashboardSnapshot(project, window) (cached, like getApprovalCenterSnapshot)
+├── tests/fixtures/dashboard.ts            # NEW: typed DashboardSnapshot fixtures (populated / empty / zero-denominator)
+├── tests/components/dashboard.test.tsx    # NEW
+└── tests/e2e/dashboard.spec.ts            # NEW; tests/e2e/__screenshots__/00-inbox-visual.spec.ts/*.png REFRESHED (seed grew — R30)
+
+docs/architecture.md   # EXTENDED: §4 Dashboard landed, §6 placeholder query contracts, §8 layout
+AGENTS.md              # EXTENDED: GET /api/dashboard in "Backend and web app work"; dashboard-model subpath
+```
+
+**Structure Decision**: the existing monorepo; no new package, no new workspace script. `dashboard-demo` is seed data, not a fixture file.
+
+## Design System Compliance
+
+- **Components used** (all existing, 1.3.0): `Topbar`, `PageMeta`, `Field`, `Select`, `Pill`, `StatGrid`, `Stat`, `Card`, `List`, `ListRow`, `Bars`, `Meter`, `Mono`, `StatePill`, `RiskBadge`, `Notice`, `Button` (ghost only, for Retry / Show all). **No new component, CSS or token → no version bump, no CHANGELOG entry.** (R28 records why a `KpiTile` is not added.)
+- **Saffron rule (DR-02)**: **none on the Dashboard**. The screen offers no direct human action — every needs-me figure is a link to the Approval Center or Workflow Center where the single saffron action lives. If a later story adds an inline "Approve" to a Dashboard card, that card must follow ui-approval-center.md §3.5 and the rule is re-evaluated then. Tests assert `.cd-saffron` count 0 in every state.
+- **Vocabulary mapping**: workflow state on every card via `StatePill`; HIGH and CRITICAL via `RiskBadge` in the risk region labels and on cards whose workflow has a pending HIGH/CRITICAL approval (FR-026); stage names from `SDLC_STAGES`; the "live / reconnecting" `Pill variant="neutral"` as on the Inbox.
+- **Claims vs evidence (DR-03)**: the Dashboard renders platform evidence only (counts, rates from `test_runs`/`agent_runs`, audit events). No agent `Message` is rendered; the "not connected yet" notice states the absence of evidence rather than a zero.
+- **States**: contract §4 — loading, populated, empty (no workflows in scope), error (+ Retry), unavailable (security findings only), refreshing — each has a component and copy.
+- **Accessibility verification**: component axe in every §4 state; Playwright page axe on the populated screen; keyboard contract §5 (Tab order through selects → figures → pipeline → cards; every figure is a real link with an accessible name that includes the figure and its label, e.g. "18 active workflows"); `Bars` carries a text summary; `Meter`s are labelled; names asserted per §6.
+- **UI performance budgets**: see Performance Goals.
+
+## Complexity Tracking
+
+_No constitution violations — nothing to justify._ (The fifth seed project is data, not a new mechanism; the five indexes are the minimal SC-007 measure and are proven by a test.)
+
+## Post-Design Constitution Re-check
+
+Re-evaluated after Phase 1 (research R21–R30, data-model §18–21, contracts/ui-dashboard.md, quickstart §4):
+
+| Principle | Re-check |
+|-----------|----------|
+| I | One source: Zod + pure model → OpenAPI fragment (snapshot test) → API → web. Every figure's definition (R24) and href (R25) is a pure function with a test; the SQL only counts. Indexes mirrored in `schema.ts`. **PASS** |
+| II | tasks.md Phase 7 lists the failing test before each implementation task in every layer; the SC-007 fixture and `EXPLAIN` assertions are tests; the Independent Test is one Playwright spec; visual baseline refresh is an explicit task, not a side effect. **PASS** |
+| III | Every region in ui-dashboard.md §2 names an existing component; DR-02 holds trivially (no saffron); six defined states; zero-denominator and not-connected states are explicit; axe + keyboard contract. **PASS** |
+| IV | Eight budgets with methods; cards ≤ 12, pipeline fixed, one transaction, `Server-Timing`, payload bound. **PASS** |
 
 **Gate result (post-design)**: PASS.

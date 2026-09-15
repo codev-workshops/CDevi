@@ -11,6 +11,7 @@
     "./openapi": "./src/openapi.ts",
     "./read-model": "./src/read-model.ts",
     "./decision-rules": "./src/decision-rules.ts",
+    "./dashboard-model": "./src/dashboard-model.ts",
     "./vocabulary": "./src/vocabulary.ts"
   },
   "scripts": {

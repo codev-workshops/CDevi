@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -646,6 +648,206 @@ describe.skipIf(skip)('migration 0003_approval_center (specs/001 data-model.md ย
         ).rows[0].c,
       );
       expect(after).toBe(before + 1);
+      await client.query('rollback');
+    } finally {
+      client.release();
+    }
+  });
+});
+
+describe.skipIf(skip)('migration 0004_dashboard (specs/001 data-model.md ยง18)', () => {
+  const admin4 = new pg.Pool({ connectionString: process.env['DATABASE_MIGRATOR_URL'] });
+  const DASHBOARD_INDEXES = {
+    test_runs: 'test_runs_org_project_finished_idx',
+    agent_runs: 'agent_runs_org_project_finished_idx',
+    audit_events: 'audit_events_org_risk_time_idx',
+    approvals: 'approvals_workflow_idx',
+    clarifications: 'clarifications_workflow_idx',
+  } as const;
+  const TABLES_AFTER_0003 = [
+    'organizations',
+    'projects',
+    'users',
+    'project_memberships',
+    'sessions',
+    'ingestion_principals',
+    'workflows',
+    'workflow_transitions',
+    'approvals',
+    'clarifications',
+    'ingestion_log',
+    'inbox_change_log',
+    'workflow_stages',
+    'agent_runs',
+    'artifacts',
+    'test_runs',
+    'audit_events',
+    'schema_migrations',
+  ];
+  beforeAll(async () => {
+    const { migrate } = await import('../src/migrate');
+    await migrate({ log: () => {} });
+  });
+  afterAll(async () => {
+    await admin4.end();
+  });
+
+  const indexDef = async (name: string) =>
+    (await admin4.query(`select tablename, indexdef from pg_indexes where indexname=$1`, [name]))
+      .rows[0] as { tablename: string; indexdef: string } | undefined;
+
+  it('SC-007 0004 creates the five dashboard indexes on their tables and records itself', async () => {
+    for (const [table, name] of Object.entries(DASHBOARD_INDEXES)) {
+      const def = await indexDef(name);
+      expect(def, name).toBeDefined();
+      expect(def?.tablename, name).toBe(table);
+    }
+    const applied = (
+      await admin4.query(`select name from schema_migrations where name='0004_dashboard.sql'`)
+    ).rowCount;
+    expect(applied).toBe(1);
+  });
+
+  it('SC-007 test_runs and agent_runs indexes are partial on finished_at IS NOT NULL over (organization_id, project_id, finished_at)', async () => {
+    for (const name of [DASHBOARD_INDEXES.test_runs, DASHBOARD_INDEXES.agent_runs]) {
+      const def = (await indexDef(name))?.indexdef ?? '';
+      expect(def, name).toMatch(/\(organization_id, project_id, finished_at\)/);
+      expect(def, name).toMatch(/WHERE \(finished_at IS NOT NULL\)/);
+    }
+  });
+
+  it('SC-007 audit_events_org_risk_time_idx is partial on HIGH/CRITICAL over (organization_id, project_id, occurred_at DESC)', async () => {
+    const def = (await indexDef(DASHBOARD_INDEXES.audit_events))?.indexdef ?? '';
+    expect(def).toMatch(/\(organization_id, project_id, occurred_at DESC\)/);
+    expect(def).toMatch(
+      /WHERE \(risk_level = ANY \(ARRAY\['HIGH'::risk_level, 'CRITICAL'::risk_level\]\)\)/,
+    );
+  });
+
+  it('SC-007 approvals_workflow_idx and clarifications_workflow_idx are plain (workflow_id) indexes', async () => {
+    for (const name of [DASHBOARD_INDEXES.approvals, DASHBOARD_INDEXES.clarifications]) {
+      const def = (await indexDef(name))?.indexdef ?? '';
+      expect(def, name).toMatch(/\(workflow_id\)$/);
+      expect(def, name).not.toContain('WHERE');
+    }
+  });
+
+  it('SC-007 0004 adds no tables, columns, triggers, policies or grants (indexes only)', async () => {
+    const tables = (
+      await admin4.query(
+        `select tablename from pg_tables where schemaname='public' order by tablename`,
+      )
+    ).rows.map((r) => r.tablename as string);
+    expect(tables).toEqual([...TABLES_AFTER_0003].sort());
+    const columnCounts = Object.fromEntries(
+      (
+        await admin4.query(
+          `select table_name, count(*)::int n from information_schema.columns where table_schema='public' and table_name = any($1) group by table_name`,
+          [Object.keys(DASHBOARD_INDEXES)],
+        )
+      ).rows.map((r) => [r.table_name, r.n]),
+    );
+    expect(columnCounts).toEqual({
+      test_runs: 17,
+      agent_runs: 15,
+      audit_events: 15,
+      approvals: 20,
+      clarifications: 19,
+    });
+    const sql = readFileSync(
+      resolve(import.meta.dirname, '../migrations/0004_dashboard.sql'),
+      'utf8',
+    )
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('--'))
+      .join('\n');
+    expect(sql).not.toMatch(
+      /CREATE TABLE|ALTER TABLE|CREATE TRIGGER|CREATE POLICY|GRANT|CREATE FUNCTION/i,
+    );
+    expect(sql.match(/CREATE INDEX/g)).toHaveLength(5);
+  });
+
+  it('SC-007 windowed test-run, agent-run and HIGH/CRITICAL audit aggregates use the 0004 indexes at 500 workflows / 5 000 agent runs / 50 000 audit events', async () => {
+    const client = await admin4.connect();
+    try {
+      await client.query('begin');
+      const org = (
+        await client.query(`insert into organizations(name) values ('sc7-org') returning id`)
+      ).rows[0].id as string;
+      const projects = (
+        await client.query(
+          `insert into projects(organization_id, key, name) select $1, 'sc7-'||g, 'SC7 '||g from generate_series(1,4) g returning id`,
+          [org],
+        )
+      ).rows.map((r) => r.id as string);
+      await client.query(
+        `insert into workflows(organization_id, project_id, external_id, title, state, state_observed_at, started_at, finished_at)
+         select $1, ($2::uuid[])[(g % 4) + 1], 'sc7-w'||g, 'W '||g, 'COMPLETED', now() - (g % 60) * interval '1 day', now() - (g % 60) * interval '1 day' - interval '2 hours', now() - (g % 60) * interval '1 day'
+         from generate_series(1,500) g`,
+        [org, projects],
+      );
+      await client.query(
+        `insert into workflow_stages(organization_id, project_id, workflow_id, position, name, state, state_observed_at)
+         select organization_id, project_id, id, 1, 'Implementation', 'COMPLETED', state_observed_at from workflows where organization_id=$1`,
+        [org],
+      );
+      await client.query(
+        `with s as (select id, project_id, workflow_id, row_number() over (order by id) rn from workflow_stages where organization_id=$1)
+         insert into agent_runs(organization_id, project_id, workflow_id, stage_id, external_id, agent, state, started_at, finished_at)
+         select $1, s.project_id, s.workflow_id, s.id, 'sc7-r'||g, 'Implementation Agent',
+                case when g % 10 = 0 then 'FAILED' else 'COMPLETED' end::workflow_state,
+                now() - (g % 60) * interval '1 day' - interval '1 hour', now() - (g % 60) * interval '1 day'
+         from generate_series(1,5000) g join s on s.rn = (g % 500) + 1`,
+        [org],
+      );
+      await client.query(
+        `with s as (select id, project_id, workflow_id, row_number() over (order by id) rn from workflow_stages where organization_id=$1)
+         insert into test_runs(organization_id, project_id, workflow_id, stage_id, external_id, category, status, total, passed, failed, started_at, finished_at)
+         select $1, s.project_id, s.workflow_id, s.id, 'sc7-t'||g, 'unit', 'PASSED', 100, 97, 3,
+                now() - (g % 60) * interval '1 day' - interval '1 hour', now() - (g % 60) * interval '1 day'
+         from generate_series(1,5000) g join s on s.rn = (g % 500) + 1`,
+        [org],
+      );
+      await client.query(
+        `insert into audit_events(organization_id, project_id, actor_type, actor_name, action, target_type, target_id, risk_level, result, occurred_at)
+         select $1, ($2::uuid[])[(g % 4) + 1], 'user', 'Tess', 'approval.approved', 'approval', gen_random_uuid(),
+                (array['LOW','MEDIUM','HIGH','CRITICAL']::risk_level[])[(g % 4) + 1], 'RUNNING', now() - (g % 60) * interval '1 day'
+         from generate_series(1,50000) g`,
+        [org, projects],
+      );
+      await client.query('analyze workflows, workflow_stages, agent_runs, test_runs, audit_events');
+
+      const from = new Date(Date.now() - 7 * 24 * 3600 * 1000);
+      const plans: Record<string, { sql: string; params: unknown[] }> = {
+        [DASHBOARD_INDEXES.test_runs]: {
+          sql: `select coalesce(sum(passed),0) p, coalesce(sum(passed+failed),0) t from test_runs where organization_id=$1 and project_id = any($2) and finished_at >= $3 and finished_at < $4`,
+          params: [org, projects, from, new Date()],
+        },
+        [DASHBOARD_INDEXES.agent_runs]: {
+          sql: `select count(*) filter (where state='COMPLETED') c, count(*) f from agent_runs where organization_id=$1 and project_id = any($2) and finished_at >= $3 and finished_at < $4`,
+          params: [org, projects, from, new Date()],
+        },
+        [DASHBOARD_INDEXES.audit_events]: {
+          sql: `select count(*) from audit_events where organization_id=$1 and project_id = any($2) and risk_level in ('HIGH','CRITICAL') and occurred_at >= $3 and occurred_at < $4`,
+          params: [org, projects, from, new Date()],
+        },
+      };
+      const walk = (node: Record<string, unknown>, out: Record<string, unknown>[]) => {
+        out.push(node);
+        for (const child of (node['Plans'] as Record<string, unknown>[] | undefined) ?? [])
+          walk(child, out);
+        return out;
+      };
+      for (const [index, { sql, params }] of Object.entries(plans)) {
+        const res = await client.query(`explain (format json) ${sql}`, params);
+        const nodes = walk(res.rows[0]['QUERY PLAN'][0]['Plan'], []);
+        const scans = nodes.filter((n) => String(n['Node Type']).includes('Scan'));
+        expect(
+          scans.some((n) => n['Index Name'] === index),
+          `${index}: ${scans.map((n) => `${n['Node Type']}(${n['Index Name'] ?? n['Relation Name']})`).join(', ')}`,
+        ).toBe(true);
+        expect(scans.some((n) => n['Node Type'] === 'Seq Scan')).toBe(false);
+      }
       await client.query('rollback');
     } finally {
       client.release();

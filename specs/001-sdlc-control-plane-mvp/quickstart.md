@@ -152,3 +152,82 @@ Concurrency check: open the same pending approval in two browsers (approver and 
 | `GET /api/approvals` ≤ 200 ms p95, `GET /api/approvals/{id}` ≤ 150 ms p95, decision POST ≤ 250 ms p95 | `Server-Timing` / duration asserted in the api tests over 20 calls |
 | Decision → header count ≤ 5 s p95 | e2e measures after each of the three decisions |
 | Route JS ≤ 200 KB gzip | `pnpm check:size` |
+
+---
+
+## 4. User Story 3 — Dashboard
+
+### 4.1 Prerequisites
+
+Same as §3.1: `.env`, `docker compose up -d`, `pnpm db:migrate` (now applies `0004_dashboard.sql`, indexes only), `pnpm db:seed`, `pnpm dev`. The seed prints the demo credentials once; the Dashboard Independent Test uses the **administrator** (`admin@cdevi.demo`) because the `Dashboard Demo` project has no memberships and is visible only through the administrator rule.
+
+### 4.2 Independent Test (spec lines 62–63)
+
+Automated as `apps/web/tests/e2e/dashboard.spec.ts` (`FR-023 …`, `SC-007 …`, `SC-010 …`); by hand:
+
+1. Sign in as the administrator. Open **Dashboard** (nav). The screen renders server-side with **All projects** and **Last 7 days**.
+2. In the **Project** select choose **Dashboard Demo**. Every figure refetches (`GET /api/dashboard?project=<uuid>&window=7d`) and the screen shows:
+
+| Region | Figure | Expected | Link opens |
+|--------|--------|----------|------------|
+| Header | active workflows | **18** | `/workflows?state=QUEUED,RUNNING,RETRYING,WAITING,WAITING_FOR_HUMAN,BLOCKED,FAILED` |
+| Header | running agents | 7 | `/workflows?state=RUNNING,RETRYING` |
+| Header | PRs generated · Last 7 days | 6 | `/workflows?hasPr=true&window=7d` |
+| Header | open failures | 2 | `/workflows?state=FAILED,BLOCKED` |
+| Pipeline | Requirement · Analysis · Architecture · Implementation · Testing · Review · PR | 3 · 2 · 1 · 4 · 3 · 3 · 2 | `/workflows?stage=1` … `/workflows?stage=7` |
+| What needs me | approvals | **4** | `/approvals` |
+| What needs me | clarifications | **2** | `/approvals?kind=clarification` |
+| What needs me | failed workflows | 1 | `/workflows?state=FAILED` |
+| What needs me | blocked workflows | 1 | `/workflows?state=BLOCKED` |
+| Health | Test pass rate | **97.4 %** (974 / 1000) | `/testing?window=7d` |
+| Health | Agent success rate | 94.6 % (35 / 37) | `/agents?window=7d` |
+| Health | Human intervention rate | 33.3 % (8 / 24) | `/workflows?intervention=human&window=7d` |
+| Risk | HIGH / CRITICAL pending approvals | 2 (badges HIGH, CRITICAL) | `/approvals?risk=HIGH,CRITICAL` |
+| Risk | HIGH / CRITICAL audit events · Last 7 days | 0 | `/audit?risk=HIGH,CRITICAL&window=7d` |
+| Risk | security findings | **—** with the neutral notice "Not connected yet — review findings arrive with PR Review (User Story 6)." (no saffron, no green) | `/reviews` |
+| Active workflows (18) | 12 cards, newest state change first | each shows `s500-dNN`, title, "Stage n of 7 · {stage}", a Progress meter, agent, elapsed, a state pill | `/workflows/{id}`; "Show all 18" → active workflows href |
+
+3. Click **Requirement** (pipeline) — the browser opens `/workflows?stage=1` (placeholder section today; the query string is preserved). Use Back. Click **4 approvals** → the Approval Center lists the four `Dashboard Demo` items (the project cookie is shared). Back. Click a card → Workflow Detail.
+4. Switch **Window** to **Last 30 days**: PRs generated stays 6, the three rates are unchanged (all dashboard-demo evidence lies within 3 days), the labels read "Last 30 days". Switch to **Last 24 hours**: test pass rate and agent success rate show **—** with "No test runs in this window" / "No finished agent runs in this window" (nothing finished in the last day); PRs generated drops to 1 (the pending PR-merge workflow observed today).
+5. Live update (FR-034, SC-003): in a terminal move one running workflow to a human gate —
+
+```bash
+curl -s -X PUT localhost:3001/api/ingest/workflows/s500-d05 -H "authorization: Bearer $INGEST_TOKEN" -H 'content-type: application/json' \
+  -d '{"state":"WAITING_FOR_HUMAN","observedAt":"'"$(date -u +%FT%TZ)"'","reason":"needs sign-off"}'
+```
+
+Within 5 s and without reloading: running agents 7 → 6, the `s500-d05` card's pill reads `waiting for human`, and (once an approval is ingested for it) approvals 4 → 5 in both the Dashboard and the header count.
+
+6. Select **All projects**: the figures now include S-500 (active workflows 118, approvals 28, clarifications 14 …) — the same header counts the Inbox shows.
+
+### 4.3 How the seed produces the figures — and what it does not touch (research R30, data-model §21)
+
+`pnpm db:seed` runs `buildS500(base)` unchanged, then `buildDashboardShowcase(base)` which adds one project **`dashboard-demo`** ("Dashboard Demo", no memberships) with 24 workflows `s500-d01…s500-d24`:
+
+- **18 active** = 2 QUEUED + 6 RUNNING + 1 RETRYING + 1 WAITING + 6 WAITING_FOR_HUMAN + 1 BLOCKED + 1 FAILED, with `stage_index` 3/2/1/4/3/3/2 across stages 1–7. The other 6 are 5 COMPLETED (each with a `pull_request_ref`, finished 1–3 days before the clock) + 1 CANCELLED.
+- **4 pending approvals** (CRITICAL, HIGH, MEDIUM, LOW) and **2 pending clarifications** on the six WAITING_FOR_HUMAN workflows; two COMPLETED workflows carry a *decided* approval (counted by the intervention rate, not by "pending").
+- **97.4 %** = 974 passed / 1 000 (passed + failed): five test runs `180 / 177 / 3` on the COMPLETED workflows + one `100 / 89 / 11` on the FAILED workflow, all `finished_at` inside the last 3 days.
+- **Security findings**: no table, no row — the API returns `connected: false` and the screen renders the neutral state.
+- Determinism: the module draws from its own `mulberry32(SEED_RNG + 1)` stream and uses the fixed clock of `pnpm test:api` / `pnpm test:e2e`; S-500 draws are unaffected, so `EXPECTED_BUCKETS`, `EXPECTED_SHOWCASE`, `DECISION_SHOWCASE`, `s500-001`, `s500-045`, `s500-apr-req`, `s500-apr-pr` and `s500-clr-01` are byte-for-byte what they were.
+
+**The S-500 dataset cannot itself produce 18 / 4 / 2**: US1/US2 tests pin 100 running, 24 pending approvals and 12 pending clarifications for the whole organization (`EXPECTED_BUCKETS`, `seed.test.ts`, the Inbox e2e `toHaveCount(100)`), so the Independent Test figures are met **per selected project** (FR-023, FR-025), which is what the story tests. Exact consequences for existing tests, all additive:
+
+| Existing assertion | Change |
+|--------------------|--------|
+| `packages/db/tests/seed.test.ts` — `SC-005 seed inserts …` DB totals: `workflows` 500 (×2), pending approvals 24, pending clarifications 12, `workflow_stages`/`agent_runs`/`test_runs` = `EXPECTED_SHOWCASE.*` | add the new constant `EXPECTED_DASHBOARD = { workflows: 24, active: 18, approvals: 4, clarifications: 2, stages: 43, runs: 44, testRuns: 6 }` and assert `EXPECTED_BUCKETS.total + EXPECTED_DASHBOARD.workflows` (524), `24 + 4`, `12 + 2`, `EXPECTED_SHOWCASE.stages + 43`, `.runs + 44`, `.testRuns + 6`; `artifacts` unchanged (10); `audit_events` still 0 |
+| Pure tests on `buildS500()` (`EXPECTED_BUCKETS`, `EXPECTED_SHOWCASE`, US2 `DECISION_SHOWCASE`) | unchanged — `buildS500` is not modified |
+| `apps/api/tests/*` (`≥ 24`, `≥ 12`, `s500-001`, `s500-045`, `s500-apr-*`, `s500-clr-01`) | unchanged |
+| `apps/web/tests/e2e/inbox-journey.spec.ts` — administrator Running tab `toHaveCount(100)` after one Load more, last row `queued`; approver/engineer/viewer project and membership counts | unchanged: page size 50, the tab now holds 110 rows (88 started before 22 queued in `started_at DESC NULLS LAST`), non-administrators have no `dashboard-demo` membership |
+| `apps/web/tests/e2e/00-inbox-visual.spec.ts` — administrator "Needs you" screenshots (`__screenshots__/…/inbox-needs-you-{light,dark}.png`) | **must be refreshed** in the same commit as the seed (`pnpm -F @cdevi/web exec playwright test 00-inbox-visual --update-snapshots`): 8 new needs-you rows (CRITICAL, HIGH, MEDIUM, LOW approvals, 2 clarifications, 1 blocked, 1 failed) enter the risk-ordered first page; `toHaveCount(50)` still holds (first page) |
+
+If reviewers prefer `pnpm db:seed` to stay identical, the fallback is an opt-in `pnpm db:seed --dashboard` used by `test:api`/`test:e2e` global-setup — same test changes, one more flag (R30 alternatives).
+
+### 4.4 Performance budgets (plan Part C)
+
+| Budget | Method |
+|--------|--------|
+| Initial content ≤ 2 s p95 at 500 workflows / 5 000 agent runs / 50 000 audit events (SC-007) | Playwright trace, 10 runs (`dashboard.spec.ts`) |
+| `GET /api/dashboard` ≤ 300 ms p95 at the SC-007 fixture; payload ≤ 8 KB | `Server-Timing` and `content-length` asserted in `apps/api/tests/dashboard.test.ts` over 20 calls; the fixture is inserted by the test with `generate_series` |
+| `inbox.changed` → refreshed figure ≤ 5 s p95, ≤ 1 s median (SC-002, SC-003) | e2e measures after the step-5 ingest |
+| Refetch re-render ≤ 100 ms; cards ≤ 12 | component test (fake timers); pure `ACTIVE_CARD_LIMIT` test |
+| Route JS ≤ 200 KB gzip | `pnpm check:size` |

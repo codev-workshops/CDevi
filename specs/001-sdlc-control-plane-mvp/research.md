@@ -198,3 +198,195 @@
 - §4 interaction table: "Approve / reject / answer clarification" → landed (`POST /api/approvals/{id}/approve|reject`, `POST /api/clarifications/{id}/answer`).
 - §5: audit events persisted in `audit_events` (append-only) for human decisions; policy column reserved.
 - §8 repository layout: `packages/db/migrations/0003_approval_center.sql`, `apps/api/src/services/decisions.ts`, `apps/api/src/routes/approvals.ts`, `apps/web/app/(app)/approvals/`.
+
+---
+
+# Part C — User Story 3 (Dashboard): R21–R30
+
+Scope reminder (approved, not reopened): no review/finding tables (US6); `/workflows` stays the `[section]` placeholder — Dashboard links carry the query params the Workflow Center will honour; no new tables — the Dashboard is a read model over `workflows`, `workflow_stages`, `agent_runs`, `artifacts`, `test_runs`, `approvals`, `clarifications`, `workflow_transitions`, `audit_events`; only an index-only migration `0004_dashboard.sql`.
+
+## R21 — Time window: `window = 24h | 7d | 30d`, default `7d`, closed on `now`
+
+**Decision**: `DashboardQuery { project: 'all' | Uuid = 'all', window: '24h' | '7d' | '30d' = '7d' }`. The window is `[now − W, now]` with `now = app.now()` (fixed clock in tests, R-003 pattern). It applies **only to rate and event figures**: PRs generated, test pass rate, agent success rate, human intervention rate, HIGH/CRITICAL audit events. Point-in-time figures (active workflows, running agents, pipeline, needs-me, open failures, pending HIGH/CRITICAL approvals, active cards) ignore the window — they describe *now*. The snapshot echoes `window: { key, from, to }` so the UI labels every windowed figure ("last 7 days").
+
+**Rationale**: `7d` is already the Inbox "Done" horizon (`DONE_WINDOW_MS` in `@cdevi/contracts/read-model`), so the two screens agree by default; `24h` answers "what happened since yesterday", `30d` is the leadership cadence. A closed enum keeps the query cacheable and bounded (no arbitrary `from/to`, which would allow unbounded scans at SC-007 scale). Mixing windowed and current figures is what the story asks for ("pending" vs "in the window") and is made explicit per figure in data-model §19.
+
+**Alternatives considered**: free `from`/`to` (unbounded, rejected); a single fixed 7-day window (no leadership view, rejected); windowing every figure including pipeline counts (a workflow that entered a stage 8 days ago would vanish — misleading, rejected).
+
+## R22 — Aggregation shape: eight bounded statements in one `REPEATABLE READ` transaction
+
+**Decision**: `services/dashboard.ts › dashboardSnapshot(client, scope, query, now)` runs, in one `app.tx({ isolation: 'REPEATABLE READ' })` (same as Workflow Detail R4 and the Approval Center), these statements, all scoped by `organization_id = $org AND project_id = ANY($projects)` where `$projects` = `visibleProjects()` (or the single requested project if visible):
+
+| # | Statement | Feeds | Index (existing / `0004`) |
+|---|-----------|-------|---------------------------|
+| Q1 | `SELECT COUNT(*) FILTER (WHERE state IN <active>) …, COUNT(*) FILTER (WHERE state IN ('RUNNING','RETRYING')), COUNT(*) FILTER (WHERE state IN ('FAILED','BLOCKED')), COUNT(*) FILTER (WHERE state = 'FAILED'), COUNT(*) FILTER (WHERE state = 'BLOCKED'), 7 × COUNT(*) FILTER (WHERE state IN <active> AND stage_index = n), COUNT(*) FILTER (WHERE state IN <active> AND (stage_index IS NULL OR stage_index NOT BETWEEN 1 AND 7)), COUNT(*) FILTER (WHERE pull_request_ref IS NOT NULL AND COALESCE(finished_at, state_observed_at) >= $from) FROM workflows WHERE …` | counts, pipeline, needsMe.failed, needsMe.blocked | `workflows_org_project_state_idx` (existing) |
+| Q2 | `SELECT COUNT(*) FILTER (WHERE a.risk_level IN ('HIGH','CRITICAL')) AS high, COUNT(*) AS pending FROM approvals a JOIN workflows w ON w.id = a.workflow_id WHERE a.decision IS NULL AND w.state = 'WAITING_FOR_HUMAN' AND …` | needsMe.approvals, risk.pendingHighCritical | `approvals_pending_idx` (existing) |
+| Q3 | same over `clarifications c … WHERE c.answered_at IS NULL AND w.state = 'WAITING_FOR_HUMAN'` | needsMe.clarifications | `clarifications_pending_idx` (existing) |
+| Q4 | `SELECT COALESCE(SUM(passed),0), COALESCE(SUM(passed + failed),0) FROM test_runs WHERE finished_at >= $from AND finished_at <= $to AND …` | health.testPassRate | `test_runs_org_project_finished_idx` (**0004**, partial `finished_at IS NOT NULL`) |
+| Q5 | `SELECT COUNT(*) FILTER (WHERE state = 'COMPLETED'), COUNT(*) FILTER (WHERE state IN ('COMPLETED','FAILED')) FROM agent_runs WHERE finished_at BETWEEN $from AND $to AND …` | health.agentSuccessRate | `agent_runs_org_project_finished_idx` (**0004**, partial) |
+| Q6 | `SELECT COUNT(*) AS den, COUNT(*) FILTER (WHERE EXISTS (approvals a WHERE a.workflow_id = w.id) OR EXISTS (clarifications c WHERE c.workflow_id = w.id) OR EXISTS (workflow_transitions t WHERE t.workflow_id = w.id AND t.user_id IS NOT NULL)) AS num FROM workflows w WHERE (state IN <active> OR COALESCE(finished_at, state_observed_at) >= $from) AND …` | health.humanInterventionRate | `approvals_workflow_idx`, `clarifications_workflow_idx` (**0004**); `workflow_transitions_workflow_idx` (existing) |
+| Q7 | `SELECT COUNT(*) FROM audit_events WHERE risk_level IN ('HIGH','CRITICAL') AND occurred_at BETWEEN $from AND $to AND organization_id = $org AND (project_id = ANY($projects) OR ($all AND project_id IS NULL))` | risk.auditHighCritical | `audit_events_org_risk_time_idx` (**0004**, partial `risk_level IN ('HIGH','CRITICAL')`) |
+| Q8 | `SELECT w.id, external_id, title, agent, state, stage_index, stage_count, stage_name, started_at, state_observed_at FROM workflows w WHERE state IN <active> AND … ORDER BY state_observed_at DESC, id ASC LIMIT 12` | activeWorkflows | `workflows_org_project_state_idx` |
+
+`<active>` = the seven non-terminal states (`QUEUED, RUNNING, RETRYING, WAITING, WAITING_FOR_HUMAN, BLOCKED, FAILED`, i.e. `!isTerminal`). Every statement is an aggregate or `LIMIT 12`; the response is built by the pure `buildDashboardSnapshot(rows, now, window)` in `@cdevi/contracts/dashboard-model`, so the SQL only counts and the derivation is unit-tested without a database. The route emits `Server-Timing: db;dur=…` like the Approval Center.
+
+**Rationale**: SC-007 sets the workload (500 workflows / 5 000 agent runs / 50 000 audit events). Each statement touches one table through one index and returns ≤ 12 rows, so cost is proportional to the *filtered* subset, not to table size — the partial indexes in 0004 make the 50 000-row `audit_events` and 5 000-row `agent_runs` scans index-only. One transaction keeps the eight figures mutually consistent (a workflow cannot be counted as RUNNING in Q1 and appear as FAILED in Q8).
+
+**Alternatives considered**: one giant CTE statement (harder to attribute time and to keep each part index-friendly; same consistency guarantee already given by the transaction — rejected); a materialised view or a `dashboard_counters` table refreshed by trigger (a new table, contrary to the approved scope, and stale under SC-003 — rejected); computing rates from `inbox_change_log` (not a fact table — rejected).
+
+## R23 — Index-only migration `0004_dashboard.sql`
+
+**Decision**: five indexes, no tables, no columns, no grants (indexes inherit):
+
+```sql
+CREATE INDEX test_runs_org_project_finished_idx  ON test_runs  (organization_id, project_id, finished_at) WHERE finished_at IS NOT NULL;
+CREATE INDEX agent_runs_org_project_finished_idx ON agent_runs (organization_id, project_id, finished_at) WHERE finished_at IS NOT NULL;
+CREATE INDEX audit_events_org_risk_time_idx      ON audit_events (organization_id, project_id, occurred_at DESC) WHERE risk_level IN ('HIGH','CRITICAL');
+CREATE INDEX approvals_workflow_idx              ON approvals (workflow_id);
+CREATE INDEX clarifications_workflow_idx         ON clarifications (workflow_id);
+```
+
+`schema.ts` mirrors them in the Drizzle `index()` definitions; `packages/db/tests/schema.test.ts` asserts `pg_indexes` rows and that `EXPLAIN (FORMAT JSON)` of Q4/Q5/Q7 at the SC-007 fixture reports an index (bitmap or index-only) scan rather than a seq scan.
+
+**Rationale**: the existing `approvals_pending_idx` / `clarifications_pending_idx` are partial on pending items and cannot serve Q6's "ever had a human action" EXISTS; `audit_events_org_time_idx` is not selective on risk at 50 000 rows; `agent_runs_workflow_idx` and `test_runs` have no org/project/finished path.
+
+**Alternatives considered**: no new indexes (Q7 seq-scans 50 000 rows — measured risk to the 300 ms budget, rejected); covering indexes with `INCLUDE (passed, failed)` (premature; add if Q4 misses its budget).
+
+## R24 — Figure derivations (FR-023) from existing tables
+
+**Decision** (exact rules mirrored as pure functions in `@cdevi/contracts/dashboard-model`, data-model §19):
+
+| Figure | Definition | Windowed? |
+|--------|------------|-----------|
+| activeWorkflows | workflows whose state is not terminal (`!isTerminal`) | no |
+| runningAgents | workflows in `RUNNING` or `RETRYING` — the workflow's `agent` column is the agent at work | no |
+| prsGenerated | workflows with `pull_request_ref IS NOT NULL` whose `COALESCE(finished_at, state_observed_at)` lies in the window | yes |
+| openFailures | workflows in `FAILED` or `BLOCKED` ("incidents / failures") | no |
+| pipeline[n].count (n = 1..7) | active workflows with `stage_index = n`; `pipeline.unstaged` = active workflows with no valid `stage_index` (counted in activeWorkflows, shown as a footnote, never silently dropped) | no |
+| needsMe.approvals / .clarifications | pending items (`decision IS NULL` / `answered_at IS NULL`) on `WAITING_FOR_HUMAN` workflows — identical to the Approval Center `counts` (R16) so header, Approval Center and Dashboard agree | no |
+| needsMe.failed | workflows in `FAILED` | no |
+| needsMe.blocked | workflows in `BLOCKED` (SC-002 requires BLOCKED workflows to appear in the needs-me area; scenario 2 names approvals, clarifications and failed — blocked is the additive fourth count) | no |
+| health.testPassRate | `Σ passed / Σ (passed + failed)` over `test_runs` finished in the window (skipped tests are not evidence either way) | yes |
+| health.agentSuccessRate | `COMPLETED / (COMPLETED + FAILED)` over `agent_runs` finished in the window | yes |
+| health.humanInterventionRate | numerator: workflows with ≥ 1 approval **or** clarification (any decision state) **or** a `workflow_transitions` row with `user_id IS NOT NULL`; denominator: workflows that are active or finished/observed in the window | yes |
+| risk.pendingHighCritical | pending approvals with `risk_level IN ('HIGH','CRITICAL')` on `WAITING_FOR_HUMAN` workflows | no |
+| risk.auditHighCritical | `audit_events` with `risk_level IN ('HIGH','CRITICAL')` in the window (events without a project are counted only for `project=all`) | yes |
+| risk.securityFindings | **not connected** (R29) | — |
+
+Rates are transported as `{ numerator, denominator }`; `ratePercent()` returns `null` when the denominator is 0 and the UI renders "—" with "No {test runs \| agent runs \| workflows} in this window" (never `0 %`, never `NaN`). Percent is rounded to one decimal at render time (`97.4 %`), never in the API.
+
+**Rationale**: every figure is a set the user can open (FR-023), so each definition is phrased as a filter a list can reproduce (R25). "Running agents" reads `workflows.agent` because agent runs are only ingested for instrumented workflows (S-500 has 13 runs for 500 workflows) and a dashboard that shows "0 running agents" next to "60 running workflows" would be wrong. Human intervention counts *any* human touch (asked or acted) because the story defines it as "requiring at least one human action" — a pending approval already required one.
+
+**Alternatives considered**: runningAgents from `agent_runs.finished_at IS NULL` (sparse data, rejected — noted as the definition to switch to once US5 makes runs mandatory); pass rate including skipped in the denominator (penalises quarantined tests, rejected); intervention rate over *all* workflows ever (no window ⇒ meaningless trend, rejected).
+
+## R25 — Every figure has an href; the project scope is the shared cookie, not a query param
+
+**Decision**: hrefs are computed by the pure `dashboardHrefs(window)` and returned in the snapshot, so API tests pin them and the UI never builds URLs:
+
+| Figure | href |
+|--------|------|
+| activeWorkflows | `/workflows?state=QUEUED,RUNNING,RETRYING,WAITING,WAITING_FOR_HUMAN,BLOCKED,FAILED` |
+| runningAgents | `/workflows?state=RUNNING,RETRYING` |
+| prsGenerated | `/workflows?hasPr=true&window={key}` |
+| openFailures | `/workflows?state=FAILED,BLOCKED` |
+| pipeline[n] | `/workflows?stage={n}` (approved scope decision 2) |
+| pipeline.unstaged | `/workflows?stage=none` |
+| needsMe.approvals | `/approvals` |
+| needsMe.clarifications | `/approvals?kind=clarification` |
+| needsMe.failed | `/workflows?state=FAILED` |
+| needsMe.blocked | `/workflows?state=BLOCKED` |
+| health.testPassRate | `/testing?window={key}` |
+| health.agentSuccessRate | `/agents?window={key}` |
+| health.humanInterventionRate | `/workflows?intervention=human&window={key}` |
+| risk.pendingHighCritical | `/approvals?risk=HIGH,CRITICAL` |
+| risk.auditHighCritical | `/audit?risk=HIGH,CRITICAL&window={key}` |
+| risk.securityFindings | `/reviews` (placeholder; link is present but labelled "not connected yet") |
+| activeWorkflows[i] | `/workflows/{id}` (Workflow Detail, US1) |
+| "Show all N" under the cards | activeWorkflows href |
+
+The selected project travels in the `cdevi_project` cookie shared by every screen (R18, Inbox), so hrefs carry **no** `project=`; the target screen reads the same cookie. `/workflows`, `/testing`, `/agents`, `/audit`, `/reviews` are placeholder sections today; the params are the contract those screens must honour (recorded in the Architecture doc, R30). `/approvals?kind=` and `/approvals?risk=` are additive filters for the Approval Center (accepted by `ApprovalCenterQuery` in a later story; ignored today, list still opens).
+
+**Rationale**: FR-023 ("every figure MUST link to the filtered list behind it") is testable only if the href is data, not markup. Comma lists mirror the mandated `/audit?risk=HIGH,CRITICAL`.
+
+**Alternatives considered**: hrefs with `?project=` (duplicates the cookie and diverges when the user changes project elsewhere, rejected); no href for placeholder screens (violates FR-023, rejected); a `state=active` alias (invents vocabulary the Workflow Center does not have yet, rejected).
+
+## R26 — Live updates: refetch on `inbox.changed`, debounced 300 ms, no dashboard payload on the stream
+
+**Decision**: `DashboardScreen.tsx` subscribes with the existing `subscribeInboxStream({ onChange })` (same helper as Inbox and Approval Center) and refetches `GET /api/dashboard?project=…&window=…` at most once per 300 ms while events arrive; the "live / reconnecting" `Pill` mirrors the stream state. Every write that moves a figure (state transition, approval, clarification, decision, test run, agent run) already fires `notify_inbox_changed()`, so no new NOTIFY, event or trigger is added. Focus is preserved across refetch (rows keyed by `workflowId`, figures re-rendered in place).
+
+**Rationale**: FR-034/SC-003 need ≤ 5 s; the stream delivers in < 1 s and one aggregate call costs ≤ 300 ms (Part C budgets). Embedding a snapshot in the event would broadcast per-organization aggregates to every connected client on every change (N × cost) and leak project scope across users.
+
+**Alternatives considered**: polling every 5 s (wasteful, later than the stream, rejected); a dedicated `dashboard.changed` event (nothing to add beyond `inbox.changed`, rejected); server push of the snapshot (scope leak, rejected).
+
+## R27 — Web: `/dashboard` server first paint + client refresh; project selector with "All projects"
+
+**Decision**: `apps/web/app/(app)/dashboard/page.tsx` (server) reads `cdevi_project` and `?window=` → `apiFetch<DashboardSnapshot>('/api/dashboard?project=…&window=…', { cookie })`; error → contract §4 *error*; success → `<DashboardScreen initial={snapshot} me={me} />`. `DashboardScreen.tsx` (client) owns the project `Select` (writes the cookie and `?project=` exactly like Inbox / Approval Center — FR-025 with "All projects"), the window `Select` (`?window=`), the SSE subscription and the refetch. Remove `dashboard` from the `[section]` fall-through. Elapsed time and relative times are formatted client-side from `elapsedMs` / ISO strings with `humanDuration` / `humanAgo` (`@cdevi/contracts/read-model`); everything else is displayed as received.
+
+**Rationale**: identical composition to the two landed screens; server first paint meets SC-007's 2 s on cold load; the client only re-renders.
+
+**Alternatives considered**: client-only page (slower first paint, rejected); embedding the Dashboard into the Inbox home (different audience, rejected).
+
+## R28 — Design-system mapping: no new pattern
+
+**Decision**: header counts = `StatGrid` of `Stat` whose `value` is a Next `Link` (so the figure itself is the link, FR-023) and whose `label` carries the window when applicable; pipeline = `Card` with a `List aria-label="Pipeline"` of seven `ListRow`s (`leading` = stage number, `title` = stage name linking to `/workflows?stage=n`, `trailing` = count) plus a `Bars` chart (`role="img"`, labelled summary) for the visual read; needs-me = `Card` "What needs me" with four `Stat`s (approvals, clarifications, failed, blocked); health = `Card` with three `Meter`s (`label` = metric name, `value`/`max` = numerator/denominator, `muted` when the denominator is 0) each followed by the percent as a link; risk = `Card` "Risk" with two `Stat`s whose `label` includes `RiskBadge level="HIGH"` + `RiskBadge level="CRITICAL"` (FR-026) and a `Notice tone="info"` for security findings (R29); active cards = `List aria-label="Active workflows"` of ≤ 12 `ListRow`s with `Mono` identifier, `StatePill`, `Meter` progress (`label` "Progress"), agent, elapsed. No `Button variant="saffron"` anywhere on the screen (R29/contract §2.9): the Dashboard offers no direct action — the needs-me counts are links to the Approval Center, where the single saffron action lives.
+
+**Rationale**: DR-01 (state as a pill word), DR-02 (saffron = a person is needed **and** an action here; the Dashboard has counts, not actions), DR-03 (all figures are platform evidence — no agent claims are rendered), DR-05 layout. Each component above exists in design-system 1.3.0 → no bump, no CHANGELOG entry.
+
+**Alternatives considered**: a new `KpiTile` component (`Stat` inside `Card` covers it; adding a pattern requires DESIGN.md §8 work for no new semantics — rejected); saffron for the needs-me card (violates DR-02 on a read-only screen — rejected; revisit only if a direct "Approve" appears on the Dashboard); a chart library (bundle budget and a11y; `Bars` + the `List` give the accessible equivalent — rejected).
+
+## R29 — "Security findings: not connected yet" is an explicit, neutral state
+
+**Decision**: `risk.securityFindings = { connected: false, count: null, href: '/reviews' }` in US3. The UI renders `Stat value="—" label="Security findings"` plus `Notice tone="info"` "Not connected yet — review findings arrive with PR Review (User Story 6)." Neutral tokens only: never `Pill variant="wait"`/saffron (no person is needed) and never a green/"ok" treatment (0 is not evidence of safety). When US6 lands, `connected: true, count: n` and the href becomes `/reviews?severity=HIGH,CRITICAL`; the schema is designed for that without a breaking change.
+
+**Rationale**: approved scope decision 1; showing `0` would assert a fact the platform does not have (DR-03 evidence rule).
+
+**Alternatives considered**: omitting the figure (the Independent Test lists it, rejected); `count: 0` (false evidence, rejected).
+
+## R30 — Seed: a fifth project `dashboard-demo` produces the Independent Test figures without touching S-500
+
+**Decision**: add `packages/db/src/seed/dashboard.ts › buildDashboardShowcase(base)` writing one extra project (`key: 'dashboard-demo'`, name "Dashboard Demo") with 24 workflows (`s500-d01…s500-d24`), 43 stage rows, 44 agent runs and 6 test runs, inserted by `seed()` **after** `buildS500` and **without** any project membership (only administrators see it, via the administrator rule in `visibleProjects`). `buildS500(base)` and its outputs (`EXPECTED_BUCKETS`, `EXPECTED_SHOWCASE`, `DECISION_SHOWCASE`, ids `s500-001…s500-500`) are byte-for-byte unchanged, so every US1/US2 pure seed test keeps passing. With `project = dashboard-demo`, `window = 7d`, at the fixed clock:
+
+| Figure | Value | How the seed gets there |
+|--------|-------|-------------------------|
+| activeWorkflows | **18** | 2 QUEUED, 6 RUNNING, 1 RETRYING, 1 WAITING, 6 WAITING_FOR_HUMAN, 1 BLOCKED, 1 FAILED |
+| needsMe.approvals | **4** | 4 pending approvals (CRITICAL, HIGH, MEDIUM, LOW) on 4 of the 6 WAITING_FOR_HUMAN workflows |
+| needsMe.clarifications | **2** | 2 pending clarifications on the other 2 |
+| needsMe.failed | 1 | the FAILED workflow (stage 5) |
+| needsMe.blocked | 1 | the BLOCKED workflow (stage 4) |
+| openFailures | 2 | FAILED + BLOCKED |
+| runningAgents | 7 | 6 RUNNING + 1 RETRYING |
+| pipeline 1..7 | 3, 2, 1, 4, 3, 3, 2 | stage_index assignment in data-model §21 (sums to 18) |
+| prsGenerated | 6 | 5 COMPLETED with `pull_request_ref` finished 1–3 days ago + the MEDIUM PR-merge approval workflow |
+| health.testPassRate | **97.4 %** = 974 / 1000 | 6 test runs finished in the window: five `[180 total, 177 passed, 3 failed]` on the COMPLETED workflows + one `[100, 89, 11]` on the FAILED workflow |
+| health.agentSuccessRate | 94.6 % = 35 / 37 | 35 COMPLETED runs (7 per COMPLETED workflow) + 2 FAILED (the FAILED workflow, the RETRYING workflow's first attempt); 7 running runs are not finished |
+| health.humanInterventionRate | 33.3 % = 8 / 24 | 4 + 2 pending items + 2 COMPLETED workflows carrying a decided approval |
+| risk.pendingHighCritical | 2 | the CRITICAL and HIGH approvals |
+| risk.auditHighCritical | 0 | the seed still leaves `audit_events` empty (US2 test `SC-006 … leaves audit_events empty` unchanged) |
+| risk.securityFindings | not connected | R29 |
+| activeWorkflows cards | 12 of 18 | ordered `state_observed_at DESC`; "Show all 18" links to the Workflow Center |
+
+Consequences for existing **database-level** assertions (they count rows across the whole database, so they must add the new constant `EXPECTED_DASHBOARD = { workflows: 24, active: 18, approvals: 4, clarifications: 2, stages: 43, runs: 44, testRuns: 6 }`): `packages/db/tests/seed.test.ts` lines 164 and 166 (`500` → `EXPECTED_BUCKETS.total + EXPECTED_DASHBOARD.workflows`), 168 (`24` → `EXPECTED_BUCKETS.approvals + EXPECTED_DASHBOARD.approvals`), 169 (`12` → `+ EXPECTED_DASHBOARD.clarifications`), 185/186/188 (`EXPECTED_SHOWCASE.stages|runs|testRuns` → `+ EXPECTED_DASHBOARD.stages|runs|testRuns`); 187 (artifacts) unchanged. API tests use `≥ 24` / `≥ 12` and keep passing. E2E: `inbox-journey.spec.ts` keeps `toHaveCount(100)` after one "Load more" (page size 50; the administrator's Running tab now has 110 rows) and the last row stays `queued` (Running order is `started_at DESC NULLS LAST`: 88 started rows precede 22 queued rows, so row 100 is queued); the viewer's project option count is unaffected (no membership); `00-inbox-visual.spec.ts` screenshots of the administrator's "Needs you" list **change** (8 new needs-you rows enter the risk-ordered first page) and must be refreshed intentionally with `pnpm -F @cdevi/web exec playwright test 00-inbox-visual --update-snapshots` in the same commit as the seed (AGENTS.md sanctions this); the "Needs you" `toHaveCount(50)` still holds (first page). Nothing in US1 (`s500-001`, `s500-045`) or US2 (`s500-apr-req`, `s500-apr-pr`, `s500-clr-01`) moves.
+
+**Rationale**: the S-500 pending buckets (24 approvals, 12 clarifications, 100 running) are asserted exactly by US1/US2 tests and by `EXPECTED_BUCKETS`; they cannot become 4 / 2 / 18 under `all`. The story's figures are per *selected project* (FR-023, FR-025), so a dedicated project is the only way to hit them exactly without rewriting S-500. Administrator-only visibility keeps every role-scoped e2e assertion (viewer/engineer/approver membership counts, project filters) intact.
+
+**Alternatives considered**: mutating S-500 buckets (breaks `EXPECTED_BUCKETS`, seed tests, the 100-row Running assertion — rejected); making the Independent Test run against `all` (impossible without the previous option — rejected); a separate seed command (`pnpm db:seed:dashboard`) so the default seed is untouched (then `pnpm test:e2e` global-setup must call it anyway and the visual baseline still changes — same cost, more moving parts; rejected, but kept as the fallback if reviewers prefer an untouched `pnpm db:seed`).
+
+## Resolved questions (Part C)
+
+| Question | Answer |
+|----------|--------|
+| Window enum and default? | `24h \| 7d \| 30d`, default `7d`, closed on `app.now()` (R21) |
+| Query shape for SC-007? | 8 bounded statements, one `REPEATABLE READ` tx, 5 new indexes (R22, R23) |
+| How is each figure computed? | R24 table; pure mirror in `@cdevi/contracts/dashboard-model` |
+| Where does each figure link? | R25 table; hrefs are data in the snapshot |
+| Live updates? | `inbox.changed` → debounced refetch (R26) |
+| Security findings? | explicit `connected: false`, neutral (R29) |
+| Seed for 18 / 4 / 2 / 97.4 %? | fifth project `dashboard-demo`, administrator-only, S-500 untouched (R30) |
+| Any design-system change? | none (R28) |
+| Saffron on the Dashboard? | none — no direct action is offered (R28) |
+
+## Architecture document updates required (Part C)
+
+- §4 interaction table: "Dashboard" → landed (`GET /api/dashboard?project=&window=`), read model only.
+- §6 (query contracts for placeholder screens): `/workflows?stage=n|state=A,B|hasPr=true|intervention=human`, `/approvals?kind=clarification|risk=HIGH,CRITICAL`, `/testing?window=`, `/agents?window=`, `/audit?risk=HIGH,CRITICAL&window=`, `/reviews` — parameters the later Workflow Center / Testing / Agent Activity / Audit Log screens must honour.
+- §8 repository layout: `packages/db/migrations/0004_dashboard.sql`, `packages/db/src/seed/dashboard.ts`, `apps/api/src/services/dashboard.ts`, `apps/api/src/routes/dashboard.ts`, `apps/web/app/(app)/dashboard/`.

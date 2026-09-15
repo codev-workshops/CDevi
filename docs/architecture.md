@@ -1,6 +1,6 @@
 # CDevi System Architecture
 
-**Status**: Draft for MVP (rewritten 2026-09-11 for CDevi; updated 2026-09-14 by `specs/003-inbox-home`, the first feature to land `apps/web`, `apps/api`, `packages/contracts` and `packages/db`). **Reads**: constitution v1.1.0, `docs/SDLC Control Plane — High-Level UI Specification.md`, `specs/001-sdlc-control-plane-mvp`, `specs/002-adopt-design-system`, `specs/003-inbox-home`. Decisions here are defaults for `/speckit-plan`; a plan that needs to deviate records the reason in its research.md and updates this file in the same change.
+**Status**: Draft for MVP (rewritten 2026-09-11 for CDevi; updated 2026-09-14 by `specs/003-inbox-home`, the first feature to land `apps/web`, `apps/api`, `packages/contracts` and `packages/db`; updated 2026-09-15 by `specs/001` US3 Dashboard). **Reads**: constitution v1.1.0, `docs/SDLC Control Plane — High-Level UI Specification.md`, `specs/001-sdlc-control-plane-mvp`, `specs/002-adopt-design-system`, `specs/003-inbox-home`. Decisions here are defaults for `/speckit-plan`; a plan that needs to deviate records the reason in its research.md and updates this file in the same change.
 
 ## 1. In one paragraph
 
@@ -12,7 +12,7 @@ CDevi is one TypeScript monorepo shipped as one container image with a handful o
 
 | Service | Runs as | Responsibility | Talks to | Never does |
 |---------|---------|----------------|----------|------------|
-| **web** | Next.js app (server-rendered pages + browser client) | **Inbox home page (specs/003 — landed)**; Dashboard, Workflow Center and Detail, Requirements, Approval Center, Agent Activity, Testing, PR Review, Integrations, Policies, Audit Log (specs/001). Subscribes to run streams. Renders only `@cdevi/design-system` components; Server Components import them through a `'use client'` boundary (`apps/web/lib/ds.ts`). `/api/*` is rewritten to the API so the session cookie is first-party. | api only (HTTP + SSE) | Touch the database, call a model, talk to the agent runtime |
+| **web** | Next.js app (server-rendered pages + browser client) | **Inbox home page (specs/003 — landed)**; **Dashboard (specs/001 US3 — landed)**; Workflow Center and Detail, Requirements, Approval Center, Agent Activity, Testing, PR Review, Integrations, Policies, Audit Log (specs/001). Subscribes to run streams. Renders only `@cdevi/design-system` components; Server Components import them through a `'use client'` boundary (`apps/web/lib/ds.ts`). `/api/*` is rewritten to the API so the session cookie is first-party. | api only (HTTP + SSE) | Touch the database, call a model, talk to the agent runtime |
 | **api** | Node HTTP service (Fastify) | Authentication and roles (**landed: email/password, server-side sessions**), every CRUD path, requirement and workflow state machines, approvals and clarifications (**landed: Inbox read model + SSE `inbox.changed`**), **ingestion API** (`PUT/POST /api/ingest/*` — authenticated write path for workflow, approval and clarification records; until the orchestrator exists it is the only way state enters the system), **policy engine** (`checkPermission`), audit log, artifact store, SSE fan-out of stream events, outbox relay, integration OAuth | Postgres (as `app_user`), object storage, workflow engine (publish), identity provider, GitHub/Jira APIs (read + write on behalf of a user or run) | Execute an agent step itself; hold a database role that bypasses RLS |
 | **agent-orchestrator** | Durable functions invoked by the workflow engine | Stage execution: assembles context, starts an agent run in the runtime, translates runtime events into run events / decisions / artifacts, asks the API's `checkPermission` before every tool effect, pauses the run on `approval_required`, resumes on approval | Postgres (as `app_user`, scoped per run), agent runtime (replaceable — see §7), api | Accept a request from the browser directly; apply a policy locally |
 | **integration-worker** | Durable functions invoked by the workflow engine | Inbound webhooks (issue created/updated, PR checks, CI results) → requirements and test runs; outbound sync (PR creation, comments, status); health probes for integrations; cron | Postgres (as `app_user`), GitHub/Jira, api | Call a model; make a policy decision |
@@ -45,6 +45,7 @@ Every specification has exactly one owning service; other services render or cal
 | Sign in (email/password, specs/003) | sync | web server action → api `POST /auth/sign-in` (scrypt verify, session row, `cdevi_session` cookie) → Postgres. SSO can be added later without changing roles or memberships |
 | Ingestion write (orchestrator / external system / tests, specs/003) | sync | principal (Bearer token) → api `/api/ingest/*` → validate state machine + `observedAt` ordering → Postgres → trigger `NOTIFY inbox_changed` + `inbox_change_log` → SSE → web refetches the Inbox snapshot |
 | Read or list anything | sync | web → api → Postgres (organization- and role-scoped) |
+| Dashboard (specs/001 US3 — **landed**) | sync | web `app/(app)/dashboard/` → api `GET /api/dashboard?project=all\|<uuid>&window=24h\|7d\|30d` → Postgres. A pure **read model**: no table of its own; eight bounded aggregate statements (research R22) over `workflows`, `workflow_stages`, `agent_runs`, `artifacts`, `test_runs`, `approvals`, `clarifications`, `workflow_transitions` and `audit_events` inside one `REPEATABLE READ` transaction, composed by the zod-free `@cdevi/contracts/dashboard-model` (`buildDashboardSnapshot`) so every figure comes from the same snapshot. Scope is the caller's visible projects; an unknown or invisible project yields zeros, never 404. Indexes only in `packages/db/migrations/0004_dashboard.sql` (SC-007). Liveness reuses the Inbox stream: `inbox.changed` → one debounced refetch of the snapshot (SC-002/SC-003). Security findings are rendered as an explicit "not connected yet" figure until review findings (US6) land |
 | Create / edit a requirement (human) | sync | web → api → Postgres → outbox event `requirement.updated` |
 | Issue tracker webhook | async | Jira → integration-worker → api upsert requirement → outbox → web stream |
 | Approve requirement → start workflow | sync + async | web → api creates workflow + first stage `QUEUED` + outbox → engine → agent-orchestrator |
@@ -58,6 +59,19 @@ Every specification has exactly one owning service; other services render or cal
 ### Streaming to the browser
 
 Stream events are written to a `run_events` table as they happen (durable, replayable) and announced with Postgres `NOTIFY`. The API's SSE endpoint sends events after the client's `Last-Event-ID`, so a dropped connection resumes without loss or duplication (specs/001 FR-034). No Redis or pub/sub service. **Landed in specs/003** for the Inbox: `inbox_change_log` (24 h retention) + `NOTIFY inbox_changed`, `GET /api/inbox/stream` with replay, and `Cache-Control: no-transform` so the Next rewrite does not gzip-buffer the stream. **specs/001 US1** reuses the same plumbing: `workflow_stages`, `agent_runs`, `artifacts` and `test_runs` write to `inbox_change_log` through their triggers, and Workflow Detail subscribes to `GET /api/inbox/stream` filtering frames by `workflowId` before refetching `GET /api/workflows/{id}` — no second stream protocol.
+
+### Dashboard link contracts
+
+Every Dashboard figure carries an `href` computed by `dashboardHrefs(window)` (research R25). The selected project travels in the shared `cdevi_project` cookie, never as a query param. Several targets are still `[section]` placeholder pages; the query parameters below are the contract those screens must honour when they land, so the links become real without a Dashboard change:
+
+| Target | Query contract |
+|--------|----------------|
+| Workflow Center `/workflows` | `?stage=1…7` or `?stage=none`; `?state=A,B` (comma list of workflow states, e.g. `FAILED`, `BLOCKED`); `?hasPr=true&window=`; `?intervention=human&window=` |
+| Approval Center `/approvals` | `?kind=clarification`; `?risk=HIGH,CRITICAL` (additive filters; ignored until accepted by `ApprovalCenterQuery`, the list still opens) |
+| Testing `/testing` | `?window=24h\|7d\|30d` |
+| Agent Activity `/agents` | `?window=24h\|7d\|30d` |
+| Audit Log `/audit` | `?risk=HIGH,CRITICAL&window=` |
+| PR Review `/reviews` | no params; the security-findings figure links here labelled "not connected yet" until US6 |
 
 ## 5. Event bus
 
@@ -87,14 +101,14 @@ The **agent runtime** (OpenHands per the UI specification §44, or any equivalen
 ```text
 cdevi/
 ├── apps/
-│   ├── web/                # Next.js: Inbox (specs/003, landed), Workflow Detail (specs/001 US1, landed), Approval Center list + decision screens app/(app)/approvals/ (specs/001 US2, landed) + remaining specs/001 screens, built only from @cdevi/design-system
-│   ├── api/                # Fastify: auth, Inbox read model, ingestion API, SSE (specs/003, landed); Workflow Detail read model + retry/escalate/cancel actions + stage/run/artifact/test-run ingestion (specs/001 US1, landed); Approval Center read model + human decision path services/decisions.ts, routes/approvals.ts, routes/clarifications.ts, audit_events (specs/001 US2, landed); policy engine, outbox relay (specs/001)
+│   ├── web/                # Next.js: Inbox (specs/003, landed), Workflow Detail (specs/001 US1, landed), Approval Center list + decision screens app/(app)/approvals/ (specs/001 US2, landed), Dashboard app/(app)/dashboard/ (specs/001 US3, landed) + remaining specs/001 screens, built only from @cdevi/design-system
+│   ├── api/                # Fastify: auth, Inbox read model, ingestion API, SSE (specs/003, landed); Workflow Detail read model + retry/escalate/cancel actions + stage/run/artifact/test-run ingestion (specs/001 US1, landed); Approval Center read model + human decision path services/decisions.ts, routes/approvals.ts, routes/clarifications.ts, audit_events (specs/001 US2, landed); Dashboard read model services/dashboard.ts + routes/dashboard.ts (specs/001 US3, landed); policy engine, outbox relay (specs/001)
 │   ├── agent-orchestrator/ # durable functions: stage execution, runtime adapter calls, run events
 │   └── integration-worker/ # durable functions: webhooks, sync, health probes, cron
 ├── packages/
 │   ├── design-system/      # @cdevi/design-system — tokens, CSS, React components, gallery, DESIGN.md (spec 002)
-│   ├── db/                 # schema (Drizzle), hand-reviewed SQL migrations 0001–0003 (incl. append-only audit_events), RLS policies, seed, admin CLIs (specs/003 + specs/001 US1–US2, landed); outbox (specs/001)
-│   ├── contracts/          # Zod schemas → OpenAPI (specs/003/contracts/openapi.yaml is generated from here) + pure Inbox read-model rules (landed)
+│   ├── db/                 # schema (Drizzle), hand-reviewed SQL migrations 0001–0004 (incl. append-only audit_events; 0004_dashboard.sql is indexes only), RLS policies, seed (+ seed/dashboard.ts: administrator-only dashboard-demo project), admin CLIs (specs/003 + specs/001 US1–US3, landed); outbox (specs/001)
+│   ├── contracts/          # Zod schemas → OpenAPI (specs/003/contracts/openapi.yaml is generated from here) + pure Inbox read-model rules and zod-free dashboard-model (landed)
 │   ├── policy/             # checkPermission, risk classification, policy versioning
 │   ├── agent-runtime/      # runtime adapter interface + OpenHands implementation
 │   └── telemetry/          # OpenTelemetry setup, cost-record emitter

@@ -312,3 +312,114 @@ Errors: not signed in → 401; role not allowed → 403 `forbidden`; unknown or 
 ## 17. Seed additions (research R19)
 
 `buildS500(base)` adds `decisionShowcase: { approvals: 2, clarifications: 1 }` on three `WAITING_FOR_HUMAN` workflows: a LOW requirement approval (`s500-apr-req`), a MEDIUM PR-merge approval with `links.pullRequest` (`s500-apr-pr`), and a clarification (`s500-clr-01`) with `why_it_matters`, three options (one recommended) and all four links. `EXPECTED_BUCKETS` unchanged; `seed()` truncates `audit_events`.
+
+---
+
+# Part C — User Story 3 (Dashboard): §18–§21
+
+No new tables, columns, enums, triggers or grants. §18 adds indexes only; §19–§20 are read models and pure derivation rules over the tables of §1–§12; §21 is seed data.
+
+## 18. Migration `0004_dashboard.sql` — indexes only (research R23)
+
+```sql
+CREATE INDEX test_runs_org_project_finished_idx  ON test_runs  (organization_id, project_id, finished_at) WHERE finished_at IS NOT NULL;
+CREATE INDEX agent_runs_org_project_finished_idx ON agent_runs (organization_id, project_id, finished_at) WHERE finished_at IS NOT NULL;
+CREATE INDEX audit_events_org_risk_time_idx      ON audit_events (organization_id, project_id, occurred_at DESC) WHERE risk_level IN ('HIGH','CRITICAL');
+CREATE INDEX approvals_workflow_idx              ON approvals (workflow_id);
+CREATE INDEX clarifications_workflow_idx         ON clarifications (workflow_id);
+```
+
+Mirrored in `packages/db/src/schema.ts` (`index(...).on(...).where(...)`). `RLS_TABLES` unchanged. Rollback: `DROP INDEX IF EXISTS` for the five names.
+
+## 19. Read model (`packages/contracts/src/dashboard.ts`, Zod) and route
+
+**Route**: `GET /api/dashboard?project=all|<uuid>&window=24h|7d|30d` — session-authenticated (`app.requireUser`), every role; `project` defaults to `all`, `window` defaults to `7d`. Responses: `200 DashboardSnapshot`; `400 Problem` (`validation`, invalid `project` or `window`); `401 Problem`. A `project` uuid that is unknown or not visible to the user yields a snapshot with every count `0`, empty `activeWorkflows` and `project` echoed (same behaviour as `GET /api/approvals`, R16), never a 404 that would confirm the project exists. Header `Server-Timing: db;dur=<ms>`.
+
+```
+DashboardQuery      { project: 'all' | Uuid = 'all', window: WindowKey = '7d' }
+WindowKey           = '24h' | '7d' | '30d'
+Window              { key: WindowKey, from: IsoDateTime, to: IsoDateTime }          // to = generatedAt
+Href                = string starting with '/' (≤ 200)
+Figure              { value: number (int ≥ 0), href: Href }
+Rate                { numerator: number (int ≥ 0), denominator: number (int ≥ 0), href: Href }   // numerator ≤ denominator
+PipelineStage       { stage: 1..7, name: SdlcStageName, count: number, href: Href }   // href = `/workflows?stage=${stage}`
+SdlcStageName       = 'Requirement' | 'Analysis' | 'Architecture' | 'Implementation' | 'Testing' | 'Review' | 'PR'
+
+DashboardCounts     { activeWorkflows: Figure, runningAgents: Figure, prsGenerated: Figure, openFailures: Figure }
+DashboardPipeline   { stages: PipelineStage[7] (exactly one per stage 1..7, ascending), unstaged: Figure }
+DashboardNeedsMe    { approvals: Figure, clarifications: Figure, failed: Figure, blocked: Figure }
+DashboardHealth     { testPassRate: Rate, agentSuccessRate: Rate, humanInterventionRate: Rate }
+SecurityFindings    { connected: false, count: null, href: Href } | { connected: true, count: number, href: Href }   // US3 always the first
+DashboardRisk       { pendingHighCritical: Figure, auditHighCritical: Figure, securityFindings: SecurityFindings }
+ActiveWorkflowCard  {
+  workflowId: Uuid, externalId: string, title: string,
+  stage: { index: number | null, count: number, name: string | null },
+  progress: { done: number, total: number },            // done = max(index − 1, 0), total = count (≥ 1)
+  agent: string | null, elapsedMs: number | null,       // now − started_at; null when not started
+  state: WorkflowState, stateObservedAt: IsoDateTime, href: `/workflows/${workflowId}`
+}
+DashboardSnapshot   {
+  generatedAt: IsoDateTime, project: 'all' | Uuid, window: Window,
+  counts: DashboardCounts, pipeline: DashboardPipeline, needsMe: DashboardNeedsMe,
+  health: DashboardHealth, risk: DashboardRisk,
+  activeWorkflows: ActiveWorkflowCard[] (≤ 12, ordered stateObservedAt desc, workflowId asc),
+  activeWorkflowsTotal: number                          // = counts.activeWorkflows.value, so the UI can say "Show all 18"
+}
+```
+
+Every `Figure`/`Rate` carries its `href` (research R25) so FR-023 is asserted on data. Percentages are **not** in the payload; `ratePercent(rate): number | null` (one decimal) lives in the pure model. Payload bound: 4 counts + 8 pipeline + 4 + 3 + 3 + 12 cards ≈ 6 KB.
+
+Exported from `packages/contracts/src/index.ts`; registered in `buildWorkflowDetailOpenApi()` (retitled "specs/001 US1–US3", tag `dashboard`) and regenerated into `contracts/openapi.yaml` by `pnpm -F @cdevi/contracts openapi` in the implementation round.
+
+## 20. Pure derivation rules (`packages/contracts/src/dashboard-model.ts`, zod-free, subpath `@cdevi/contracts/dashboard-model`)
+
+```
+ACTIVE_STATES        = ['QUEUED','RUNNING','RETRYING','WAITING','WAITING_FOR_HUMAN','BLOCKED','FAILED']   // = WORKFLOW_STATES minus terminal
+RUNNING_AGENT_STATES = ['RUNNING','RETRYING']
+FAILURE_STATES       = ['FAILED','BLOCKED']
+SDLC_STAGES          = ['Requirement','Analysis','Architecture','Implementation','Testing','Review','PR']
+ACTIVE_CARD_LIMIT    = 12
+WINDOW_MS            = { '24h': 24h, '7d': 7d, '30d': 30d }
+
+windowFor(key, now)            → { key, from: now − WINDOW_MS[key], to: now }
+dashboardHrefs(windowKey)      → the R25 table (pure, total; the API and the UI both call it)
+ratePercent({ numerator, denominator }) → null when denominator = 0, else round(100 · n / d, 1)
+stageProgress(index, count)    → { done: index == null ? 0 : max(index − 1, 0), total: max(count ?? 7, 1) }
+elapsedMs(startedAt, now)      → null when startedAt == null, else max(now − startedAt, 0)
+orderActiveCards(a, b)         → stateObservedAt desc, then workflowId asc (mirrors Q8 `ORDER BY`)
+pipelineFrom(rowCounts)        → PipelineStage[7] in ascending order with SDLC_STAGES names + unstaged
+buildDashboardSnapshot(rows: DashboardRows, now, windowKey, project) → DashboardSnapshot
+```
+
+`DashboardRows` is the typed shape of the eight R22 statements (integers and the ≤ 12 card rows). Invariants asserted by tests: `Σ pipeline.stages[i].count + pipeline.unstaged.value = counts.activeWorkflows.value`; `needsMe.failed.value + needsMe.blocked.value = counts.openFailures.value`; `risk.pendingHighCritical.value ≤ needsMe.approvals.value`; every `Rate.numerator ≤ denominator`; `activeWorkflows.length ≤ 12` and `≤ activeWorkflowsTotal`; every href starts with `/` and pipeline href `n` equals `stage`.
+
+Window semantics per figure are the R24 table: windowed = `prsGenerated`, the three health rates, `auditHighCritical`; everything else is point-in-time.
+
+## 21. Seed additions (research R30)
+
+`packages/db/src/seed/dashboard.ts › buildDashboardShowcase(base)` (own `mulberry32(SEED_RNG + 1)` stream so S-500 draws are untouched) returns `{ project: { key: 'dashboard-demo', name: 'Dashboard Demo' }, workflows: SeedWorkflow[24], showcase: SeedShowcase[] }` and `EXPECTED_DASHBOARD = { workflows: 24, active: 18, approvals: 4, clarifications: 2, stages: 43, runs: 44, testRuns: 6 }`. `seed()` inserts the project (no memberships) and writes the workflows with the same helpers as S-500 after the S-500 pass.
+
+| externalId | state | stage | extras |
+|------------|-------|-------|--------|
+| s500-d01, d02 | QUEUED | 1 | `started_at` null |
+| s500-d03 | WAITING_FOR_HUMAN | 1 | clarification (pending) |
+| s500-d04 | WAITING_FOR_HUMAN | 2 | clarification (pending) |
+| s500-d05 | RUNNING | 2 | 1 stage row, 1 RUNNING agent run |
+| s500-d06 | RUNNING | 3 | idem |
+| s500-d07, d08 | RUNNING | 4 | idem |
+| s500-d09 | WAITING_FOR_HUMAN | 4 | approval **CRITICAL** (pending) |
+| s500-d10 | BLOCKED | 4 | `state_reason` set |
+| s500-d11 | RUNNING | 5 | idem |
+| s500-d12 | RETRYING | 5 | 1 stage row, 1 FAILED run (finished, in window) + 1 RETRYING run |
+| s500-d13 | FAILED | 5 | 1 stage row (FAILED), 1 FAILED run, test run `total 100, passed 89, failed 11` finished in window |
+| s500-d14 | RUNNING | 6 | idem |
+| s500-d15 | WAITING | 6 | — |
+| s500-d16 | WAITING_FOR_HUMAN | 6 | approval **HIGH** (pending) |
+| s500-d17 | WAITING_FOR_HUMAN | 7 | approval MEDIUM "Approve PR merge" (pending), `pull_request_ref` set |
+| s500-d18 | WAITING_FOR_HUMAN | 7 | approval LOW (pending) |
+| s500-d19 … d23 | COMPLETED | 7 | `pull_request_ref`, `finished_at` 1–3 days ago; 7 stage rows, 7 COMPLETED runs, test run `total 180, passed 177, failed 3` at stage 5; d19 and d20 also carry a **decided** approval |
+| s500-d24 | CANCELLED | 3 | `finished_at` 5 days ago |
+
+Clock rules: every `finished_at` (agent runs, test runs, COMPLETED workflows) lies between 1 and 3 days before `base`, so `7d` and `30d` agree and `24h` has empty health denominators; every active workflow's `state_observed_at` lies within the last 12 hours (d17 included, so `24h` counts one PR).
+
+Pipeline check: stage 1 → d01, d02, d03 = 3 · stage 2 → d04, d05 = 2 · stage 3 → d06 = 1 · stage 4 → d07, d08, d09, d10 = 4 · stage 5 → d11, d12, d13 = 3 · stage 6 → d14, d15, d16 = 3 · stage 7 → d17, d18 = 2 · **total 18**. Health check (7d): tests 5 × 177 + 89 = 974 of 5 × 180 + 100 = 1000 → **97.4 %**; runs 35 / 37 → 94.6 %; intervention (d03, d04, d09, d16, d17, d18, d19, d20) = 8 / 24 → 33.3 %. `audit_events` stays empty.

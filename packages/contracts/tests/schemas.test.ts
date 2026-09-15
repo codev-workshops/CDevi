@@ -12,6 +12,13 @@ import {
   SignInRequest,
   Transition,
   WorkflowUpsert,
+  DashboardQuery,
+  DashboardSnapshot,
+  SecurityFindings,
+  Rate,
+  Href,
+  buildDashboardSnapshot,
+  type DashboardRows,
 } from '../src/index';
 
 const T = '2026-09-14T09:00:00Z';
@@ -222,5 +229,126 @@ describe('US2 decision schemas (specs/001 data-model.md §13–§14)', () => {
       },
     });
     expect(body.resolution.outcome).toBe('approved');
+  });
+});
+
+describe('US3 dashboard schemas (specs/001 data-model.md §19)', () => {
+  const U = '00000000-0000-7000-8000-000000000001';
+  const NOW = new Date(T);
+  const rows: DashboardRows = {
+    workflows: {
+      active: 18,
+      running: 7,
+      failures: 2,
+      failed: 1,
+      blocked: 1,
+      stages: [3, 2, 1, 4, 3, 3, 2],
+      unstaged: 0,
+      prsGenerated: 6,
+    },
+    approvals: { pending: 4, highCritical: 2 },
+    clarifications: { pending: 2 },
+    testRuns: { passed: 974, total: 1000 },
+    agentRuns: { completed: 35, finished: 37 },
+    intervention: { numerator: 8, denominator: 24 },
+    auditHighCritical: 0,
+    cards: Array.from({ length: 12 }, (_, i) => ({
+      workflowId: `00000000-0000-7000-8000-${String(i + 1).padStart(12, '0')}`,
+      externalId: `s500-d${String(i + 1).padStart(2, '0')}`,
+      title: `Workflow ${i + 1}`,
+      agent: 'devin',
+      state: 'RUNNING' as const,
+      stageIndex: 4,
+      stageCount: 7,
+      stageName: 'Implementation',
+      startedAt: new Date(NOW.getTime() - 3_600_000),
+      stateObservedAt: new Date(NOW.getTime() - (i + 1) * 60_000),
+    })),
+  };
+  const snapshot = () => buildDashboardSnapshot(rows, NOW, '7d', 'all');
+
+  it('FR-025 DashboardQuery accepts all|uuid and defaults project to all and window to 7d', () => {
+    expect(DashboardQuery.parse({})).toEqual({ project: 'all', window: '7d' });
+    expect(DashboardQuery.parse({ project: U })).toEqual({ project: U, window: '7d' });
+    expect(DashboardQuery.parse({ project: 'all', window: '24h' })).toEqual({
+      project: 'all',
+      window: '24h',
+    });
+    expect(DashboardQuery.parse({ window: '30d' })).toEqual({ project: 'all', window: '30d' });
+  });
+
+  it('FR-023 DashboardQuery rejects window=90d and project=foo', () => {
+    expect(DashboardQuery.safeParse({ window: '90d' }).success).toBe(false);
+    expect(DashboardQuery.safeParse({ project: 'foo' }).success).toBe(false);
+    expect(DashboardQuery.safeParse({ window: '' }).success).toBe(false);
+  });
+
+  it('FR-023 DashboardSnapshot requires exactly seven pipeline stages, ≤ 12 activeWorkflows, hrefs starting with / and rates with numerator ≤ denominator', () => {
+    const ok = snapshot();
+    expect(DashboardSnapshot.safeParse(ok).success).toBe(true);
+
+    const sixStages = {
+      ...ok,
+      pipeline: { ...ok.pipeline, stages: ok.pipeline.stages.slice(0, 6) },
+    };
+    expect(DashboardSnapshot.safeParse(sixStages).success).toBe(false);
+    const eightStages = {
+      ...ok,
+      pipeline: { ...ok.pipeline, stages: [...ok.pipeline.stages, ok.pipeline.stages[6]] },
+    };
+    expect(DashboardSnapshot.safeParse(eightStages).success).toBe(false);
+
+    const thirteen = { ...ok, activeWorkflows: [...ok.activeWorkflows, ok.activeWorkflows[0]] };
+    expect(DashboardSnapshot.safeParse(thirteen).success).toBe(false);
+
+    expect(Href.safeParse('/approvals').success).toBe(true);
+    expect(Href.safeParse('approvals').success).toBe(false);
+    expect(Href.safeParse('https://evil.example/').success).toBe(false);
+    const badHref = {
+      ...ok,
+      counts: { ...ok.counts, activeWorkflows: { value: 1, href: 'workflows' } },
+    };
+    expect(DashboardSnapshot.safeParse(badHref).success).toBe(false);
+
+    expect(Rate.safeParse({ numerator: 974, denominator: 1000, href: '/testing' }).success).toBe(
+      true,
+    );
+    expect(Rate.safeParse({ numerator: 0, denominator: 0, href: '/testing' }).success).toBe(true);
+    expect(Rate.safeParse({ numerator: 5, denominator: 4, href: '/testing' }).success).toBe(false);
+    expect(Rate.safeParse({ numerator: -1, denominator: 4, href: '/testing' }).success).toBe(false);
+    const badRate = {
+      ...ok,
+      health: { ...ok.health, testPassRate: { numerator: 2, denominator: 1, href: '/testing' } },
+    };
+    expect(DashboardSnapshot.safeParse(badRate).success).toBe(false);
+
+    const badStageNumber = {
+      ...ok,
+      pipeline: {
+        ...ok.pipeline,
+        stages: ok.pipeline.stages.map((s, i) => (i === 0 ? { ...s, stage: 8 } : s)),
+      },
+    };
+    expect(DashboardSnapshot.safeParse(badStageNumber).success).toBe(false);
+  });
+
+  it('FR-026 SecurityFindings accepts connected:false/count:null and connected:true/count:n and rejects connected:false with a count', () => {
+    expect(
+      SecurityFindings.safeParse({ connected: false, count: null, href: '/reviews' }).success,
+    ).toBe(true);
+    expect(
+      SecurityFindings.safeParse({ connected: true, count: 3, href: '/reviews' }).success,
+    ).toBe(true);
+    expect(
+      SecurityFindings.safeParse({ connected: false, count: 1, href: '/reviews' }).success,
+    ).toBe(false);
+    expect(
+      SecurityFindings.safeParse({ connected: true, count: null, href: '/reviews' }).success,
+    ).toBe(false);
+    expect(snapshot().risk.securityFindings).toEqual({
+      connected: false,
+      count: null,
+      href: '/reviews',
+    });
   });
 });
