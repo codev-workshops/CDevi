@@ -180,7 +180,7 @@ describe.skipIf(skipDb)('POST /api/integrations/jira/webhook (specs/001 US4, FR-
     expect(d.requirement.assignee?.name).toBe('Engineer 1');
     expect(d.requirement.createdBy).toBeNull();
     expect(d.businessObjective).toBe(
-      'Retry declined renewals once a night for three nights.\n\nSecond paragraph.',
+      'Retry declined renewals once a night for three nights.\nSecond paragraph.',
     );
     expect(d.transitions).toEqual([
       expect.objectContaining({ fromState: null, toState: 'DRAFT', actorType: 'system' }),

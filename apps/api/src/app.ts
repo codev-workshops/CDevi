@@ -18,6 +18,7 @@ import approvalRoutes from './routes/approvals';
 import clarificationRoutes from './routes/clarifications';
 import dashboardRoutes from './routes/dashboard';
 import requirementRoutes from './routes/requirements';
+import integrationRoutes from './routes/integrations';
 
 export interface BuildOptions {
   /** Injected clock (Constitution II: time is controlled in tests). */
@@ -86,6 +87,7 @@ export async function buildApp(opts: BuildOptions): Promise<FastifyInstance> {
       await api.register(clarificationRoutes);
       await api.register(dashboardRoutes);
       await api.register(requirementRoutes);
+      await api.register(integrationRoutes, { jiraWebhookSecret: opts.jiraWebhookSecret });
     },
     { prefix: '/api' },
   );
