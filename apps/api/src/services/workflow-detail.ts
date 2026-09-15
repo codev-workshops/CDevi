@@ -344,5 +344,7 @@ export async function workflowDetail(
       ordered,
     ),
     actions: allowedActions(scope.role, w.state),
+    // US6: populated from pull_requests / review_findings by the Review Center service (feature/US6-api).
+    pullRequest: null,
   };
 }

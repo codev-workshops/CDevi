@@ -230,6 +230,7 @@ export function detail(over: Partial<WorkflowDetail> = {}): WorkflowDetail {
     },
     failure: null,
     actions: { retry: false, escalate: true, cancel: true },
+    pullRequest: null,
     ...over,
   };
 }

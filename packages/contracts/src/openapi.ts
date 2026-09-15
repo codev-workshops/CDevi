@@ -18,7 +18,12 @@ import {
   RequirementAnalysisIngest,
   RequirementIngestResult,
 } from './ingest';
-import { StageAgentRunRef, WorkflowActionRequest, WorkflowDetail } from './workflow-detail';
+import {
+  StageAgentRunRef,
+  WorkflowActionRequest,
+  WorkflowDetail,
+  WorkflowPullRequestView,
+} from './workflow-detail';
 import {
   AgentDecision,
   AgentRunDetail,
@@ -63,6 +68,31 @@ import {
 import { WorkflowListItem, WorkflowListPage, WorkflowListQuery } from './workflow-list';
 import { JiraWebhookEvent, JiraWebhookResult } from './integrations';
 import { WORKFLOW_STATES } from './vocabulary';
+import {
+  ApplyFixBody,
+  CreateIssueBody,
+  DismissFindingBody,
+  FindingActionResult,
+  FindingBlocking,
+  FindingSeverity,
+  FindingState,
+  LaneResult,
+  LaneStatus,
+  PullRequestIngest,
+  PullRequestReviewView,
+  PullRequestStatus,
+  ReviewCycleIngest,
+  ReviewCycleState,
+  ReviewCycleView,
+  ReviewFindingIngest,
+  ReviewFindingView,
+  ReviewIngest,
+  ReviewLane,
+  ReviewListItem,
+  ReviewListQuery,
+  ReviewListResponse,
+  ReviewStatus,
+} from './reviews';
 
 type Json = Record<string, unknown>;
 
@@ -150,6 +180,24 @@ const csvQuery = (name: string, values: readonly string[]) => ({
   description: `Comma-separated subset of ${values.join('|')}`,
 });
 const requirementId = { ...workflowId, description: 'Requirement id' };
+const pullRequestId = { ...workflowId, name: 'pullRequestId', description: 'Pull request id' };
+const findingId = { ...workflowId, name: 'findingId', description: 'Finding id' };
+const cycleNumber = {
+  name: 'cycle',
+  in: 'path',
+  required: true,
+  schema: { type: 'integer', minimum: 1 },
+  description: 'Review / fix cycle number (1-based, per pull request)',
+};
+const findingActionErrors = {
+  '400': problem('Invalid body (unknown key, missing or over-long reason)'),
+  '401': problem('Not signed in'),
+  '403': problem('Viewers are read-only (FR-032)'),
+  '404': problem('Pull request or finding not found or not visible'),
+  '409': problem(
+    'Finding is not OPEN (already dismissed, fixed, fix requested or issue requested) — urn:cdevi:problem:invalid-transition',
+  ),
+};
 const requirementSessionErrors = {
   '401': problem('Not signed in'),
   '403': problem('Role may not perform this action (FR-032)'),
@@ -160,19 +208,20 @@ const requirementSessionErrors = {
 };
 
 /**
- * specs/001 US1–US5 fragment: Workflow Detail read + actions, the stage/run/artifact/test-run ingestion routes,
+ * specs/001 US1–US6 fragment: Workflow Detail read + actions, the stage/run/artifact/test-run ingestion routes,
  * the Approval Center, the Dashboard, the Requirements routes, the runtime analysis ingest, the inbound Jira webhook,
- * the bounded workflow list and the Agent Run detail with its decisions ingest. `specs/001-sdlc-control-plane-mvp/contracts/openapi.yaml` is a snapshot of this.
+ * the bounded workflow list, the Agent Run detail with its decisions ingest, and the Review Center (pull requests,
+ * findings, fix cycles) with its three ingestion routes. `specs/001-sdlc-control-plane-mvp/contracts/openapi.yaml` is a snapshot of this.
  */
 export function buildWorkflowDetailOpenApi(): Json {
   return {
     openapi: '3.1.0',
     info: {
       title:
-        'CDevi API — Workflow Detail, Approval Center, Dashboard, Requirements and Agent Runs (specs/001 US1–US5)',
-      version: '0.5.0',
+        'CDevi API — Workflow Detail, Approval Center, Dashboard, Requirements, Agent Runs and Pull Request Reviews (specs/001 US1–US6)',
+      version: '0.6.0',
       description:
-        'Generated from Zod schemas in packages/contracts (`pnpm -F @cdevi/contracts openapi`) and snapshot-tested; edit the schemas, not the yaml. Extends the specs/003 document: same session cookie, Bearer ingestion tokens, Problem errors. Live updates reuse GET /inbox/stream — the client filters inbox.changed frames by workflowId (Dashboard: refetch on any frame, coalesced). Human decisions (approve, reject, answer) are a separate path from agent ingestion: session user, approver/administrator only, exactly once. The Dashboard is a read model over existing tables: every figure carries the href of the filtered list behind it. Requirements (US4): analysis is produced by the agent runtime and delivered through PUT /ingest/requirements/{externalId}/analysis; Jira is inbound-only through the signed webhook. Agent runs (US5): GET /agent-runs/{id} is read-only for every role; decisions are delivered whole by the runtime through PUT /ingest/agent-runs/{externalId}/decisions with a strict schema that carries bounded summaries only (FR-018) — no free-form reasoning field is accepted.',
+        'Generated from Zod schemas in packages/contracts (`pnpm -F @cdevi/contracts openapi`) and snapshot-tested; edit the schemas, not the yaml. Extends the specs/003 document: same session cookie, Bearer ingestion tokens, Problem errors. Live updates reuse GET /inbox/stream — the client filters inbox.changed frames by workflowId (Dashboard: refetch on any frame, coalesced). Human decisions (approve, reject, answer) are a separate path from agent ingestion: session user, approver/administrator only, exactly once. The Dashboard is a read model over existing tables: every figure carries the href of the filtered list behind it. Requirements (US4): analysis is produced by the agent runtime and delivered through PUT /ingest/requirements/{externalId}/analysis; Jira is inbound-only through the signed webhook. Agent runs (US5): GET /agent-runs/{id} is read-only for every role; decisions are delivered whole by the runtime through PUT /ingest/agent-runs/{externalId}/decisions with a strict schema that carries bounded summaries only (FR-018) — no free-form reasoning field is accepted. Pull request reviews (US6): the runtime reports the pull request, each review (seven lanes, ≤ 50 findings) and each fix cycle through PUT /ingest/pull-requests/{externalId}[/reviews/{cycle}|/cycles/{cycle}] — strict, no reasoning field; humans dismiss a finding, apply a fix or request an issue through POST /reviews/{pullRequestId}/findings/{findingId}/{dismiss|fix|issue} (engineer, approver, administrator; every action writes audit_events, ingestion never does). readyForMerge is derived (FR-022): no BLOCKING finding OPEN or FIX_REQUESTED.',
     },
     servers: [{ url: '/api' }],
     tags: [
@@ -183,6 +232,7 @@ export function buildWorkflowDetailOpenApi(): Json {
       { name: 'requirements' },
       { name: 'integrations' },
       { name: 'agent-runs' },
+      { name: 'reviews' },
     ],
     paths: {
       '/workflows/{id}': {
@@ -636,6 +686,135 @@ export function buildWorkflowDetailOpenApi(): Json {
           },
         },
       },
+      '/reviews': {
+        get: {
+          tags: ['reviews'],
+          summary: 'Pull requests with AI reviews, newest activity first (US6, FR-025)',
+          description:
+            'Session user; every role including viewer. Bounded to 50 rows per page over the visible projects, ordered by updatedAt desc, id desc with an opaque keyset cursor. `state` filters by pull request status. Each row carries the derived readyForMerge / blockingOpenCount (FR-022) and the Review Center href.',
+          security: [{ sessionCookie: [] }],
+          parameters: [
+            projectQuery,
+            {
+              name: 'state',
+              in: 'query',
+              required: false,
+              schema: { type: 'string', enum: [...PullRequestStatus.options] },
+            },
+            cursorQuery,
+          ],
+          responses: {
+            '200': json('ReviewListResponse'),
+            '400': problem('Invalid project, state or cursor'),
+            '401': problem('Not signed in'),
+          },
+        },
+      },
+      '/reviews/{pullRequestId}': {
+        get: {
+          tags: ['reviews'],
+          summary: 'Review Center: latest review lanes, findings and fix-cycle history (FR-020, FR-022)',
+          description:
+            'Session user; read-only for every role including viewer (viewers see the actions disabled). Findings (≤ 50) carry severity, blocking class, bounded impact / recommended fix text and typed evidence (≤ 10; accessible:false or no href renders as access-restricted). readyForMerge is derived: false while any BLOCKING finding is OPEN or FIX_REQUESTED, and the client shows “Not ready for merge approval — N blocking findings open”. Live updates ride GET /inbox/stream filtered by the workflowId. Not visible and unknown both return 404.',
+          security: [{ sessionCookie: [] }],
+          parameters: [pullRequestId],
+          responses: {
+            '200': json('PullRequestReviewView'),
+            '401': problem('Not signed in'),
+            '404': problem('Not found or not visible (403 and 404 are indistinguishable)'),
+          },
+        },
+      },
+      '/reviews/{pullRequestId}/findings/{findingId}/dismiss': {
+        post: {
+          tags: ['reviews'],
+          summary: 'Dismiss an OPEN finding with a reason (FR-021, FR-032)',
+          description:
+            'Engineer, approver or administrator. Sets the finding DISMISSED with the reason (≤ 240 chars), the actor and the time; writes an audit_events row (finding.dismissed) and an inbox_changed notification. Returns the finding and the recomputed readiness.',
+          security: [{ sessionCookie: [] }],
+          parameters: [pullRequestId, findingId],
+          requestBody: { required: true, ...json('DismissFindingBody') },
+          responses: { '200': json('FindingActionResult'), ...findingActionErrors },
+        },
+      },
+      '/reviews/{pullRequestId}/findings/{findingId}/fix': {
+        post: {
+          tags: ['reviews'],
+          summary: 'Ask the agent to fix an OPEN finding (FR-021, AS-4)',
+          description:
+            'Engineer, approver or administrator; the body is an empty strict object. In one transaction: joins the RUNNING review cycle of the pull request or creates the next one (iteration n+1, findingsCount = open findings now, fixedCount 0), marks the finding FIX_REQUESTED with fixCycleId, sets the workflow’s Review stage RUNNING with a reason, writes audit_events (finding.fix_requested) and notifies inbox_changed. The runtime reports real progress through PUT /ingest/pull-requests/{externalId}/cycles/{cycle}. 409 when the cycle budget (maxIterations) is exhausted or the finding is not OPEN.',
+          security: [{ sessionCookie: [] }],
+          parameters: [pullRequestId, findingId],
+          requestBody: { required: true, ...json('ApplyFixBody') },
+          responses: { '200': json('FindingActionResult'), ...findingActionErrors },
+        },
+      },
+      '/reviews/{pullRequestId}/findings/{findingId}/issue': {
+        post: {
+          tags: ['reviews'],
+          summary: 'Record the intent to track an OPEN finding as an issue (FR-021)',
+          description:
+            'Engineer, approver or administrator; the body is an empty strict object. Records intent only: the finding becomes ISSUE_REQUESTED with the actor and time, audit_events (finding.issue_requested) and inbox_changed. No outbound Jira call — Jira stays inbound-only.',
+          security: [{ sessionCookie: [] }],
+          parameters: [pullRequestId, findingId],
+          requestBody: { required: true, ...json('CreateIssueBody') },
+          responses: { '200': json('FindingActionResult'), ...findingActionErrors },
+        },
+      },
+      '/ingest/pull-requests/{externalId}': {
+        put: {
+          tags: ['ingest'],
+          summary: 'Runtime creates or updates the pull request of a workflow (FR-036)',
+          description:
+            'Bearer ingestion principal scoped to the workflow project. One pull request per workflow; the workflow and the optional requirement are resolved by externalId. Strict body. `stale` when observedAt is not newer than the stored watermark (nothing written). Never writes audit_events.',
+          security: [{ ingestionToken: [] }],
+          parameters: [externalId],
+          requestBody: { required: true, ...json('PullRequestIngest') },
+          responses: {
+            '200': json('IngestResult'),
+            ...ingestErrors,
+            '404': problem('Unknown workflow or requirement externalId'),
+          },
+        },
+      },
+      '/ingest/pull-requests/{externalId}/reviews/{cycle}': {
+        put: {
+          tags: ['ingest'],
+          summary: 'Runtime replaces the AI review of a cycle as a whole (FR-020, FR-018, FR-036)',
+          description:
+            'Bearer ingestion principal scoped to the pull request project. Exactly seven distinct lane results and ≤ 50 findings (positions and externalIds unique, ≤ 10 typed evidence refs each). The body is strict: description / impact / recommendedFix are bounded summaries and any reasoning field (chainOfThought, reasoning, rationale, …) is a 400. Findings already DISMISSED, FIX_REQUESTED or ISSUE_REQUESTED by a human keep their state; the runtime flips findings to FIXED here. `stale` when observedAt is not newer than the stored watermark.',
+          security: [{ ingestionToken: [] }],
+          parameters: [externalId, cycleNumber],
+          requestBody: { required: true, ...json('ReviewIngest') },
+          responses: {
+            '200': json('IngestResult'),
+            '400': problem('Invalid body (unknown key, bound exceeded, lane missing or duplicated)'),
+            '401': problem('Unknown or disabled principal'),
+            '403': problem('Project outside the principal scope'),
+            '404': problem('Unknown pull request externalId'),
+            '409': problem('Review is not accepting a replacement (concurrent replacement in progress)'),
+          },
+        },
+      },
+      '/ingest/pull-requests/{externalId}/cycles/{cycle}': {
+        put: {
+          tags: ['ingest'],
+          summary: 'Runtime reports the progress of a fix cycle (AS-4, FR-036)',
+          description:
+            'Bearer ingestion principal scoped to the pull request project. Upserts the cycle counts, iteration and state (RUNNING → COMPLETED | FAILED | CANCELLED); fixedCount + remainingCount ≤ findingsCount. Strict body. `stale` when observedAt is not newer than the stored watermark. 409 when the cycle is already terminal.',
+          security: [{ ingestionToken: [] }],
+          parameters: [externalId, cycleNumber],
+          requestBody: { required: true, ...json('ReviewCycleIngest') },
+          responses: {
+            '200': json('IngestResult'),
+            '400': problem('Invalid body (unknown key, inconsistent counts)'),
+            '401': problem('Unknown or disabled principal'),
+            '403': problem('Project outside the principal scope'),
+            '404': problem('Unknown pull request externalId'),
+            '409': problem('Cycle already COMPLETED, FAILED or CANCELLED'),
+          },
+        },
+      },
     },
     components: {
       securitySchemes: {
@@ -695,6 +874,30 @@ export function buildWorkflowDetailOpenApi(): Json {
         AgentDecisionIngest: schema(AgentDecisionIngest),
         AgentDecisionsIngest: schema(AgentDecisionsIngest),
         AgentDecisionsIngestResult: schema(AgentDecisionsIngestResult),
+        ReviewLane: schema(ReviewLane),
+        LaneStatus: schema(LaneStatus),
+        ReviewStatus: schema(ReviewStatus),
+        FindingSeverity: schema(FindingSeverity),
+        FindingBlocking: schema(FindingBlocking),
+        FindingState: schema(FindingState),
+        ReviewCycleState: schema(ReviewCycleState),
+        PullRequestStatus: schema(PullRequestStatus),
+        LaneResult: schema(LaneResult),
+        ReviewFindingView: schema(ReviewFindingView),
+        ReviewCycleView: schema(ReviewCycleView),
+        PullRequestReviewView: schema(PullRequestReviewView),
+        ReviewListItem: schema(ReviewListItem),
+        ReviewListResponse: schema(ReviewListResponse),
+        ReviewListQuery: schema(ReviewListQuery),
+        DismissFindingBody: schema(DismissFindingBody),
+        ApplyFixBody: schema(ApplyFixBody),
+        CreateIssueBody: schema(CreateIssueBody),
+        FindingActionResult: schema(FindingActionResult),
+        WorkflowPullRequestView: schema(WorkflowPullRequestView),
+        PullRequestIngest: schema(PullRequestIngest),
+        ReviewFindingIngest: schema(ReviewFindingIngest),
+        ReviewIngest: schema(ReviewIngest),
+        ReviewCycleIngest: schema(ReviewCycleIngest),
       },
     },
   };
@@ -717,6 +920,7 @@ export function buildFullOpenApi(): Json {
       { name: 'requirements' },
       { name: 'integrations' },
       { name: 'agent-runs' },
+      { name: 'reviews' },
     ],
     paths: { ...(base['paths'] as Json), ...(frag['paths'] as Json) },
     components: {

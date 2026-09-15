@@ -50,6 +50,36 @@ import {
   PolicyOutcome,
   RunStep,
   WorkflowStageView,
+  WorkflowDetail,
+  ApplyFixBody,
+  CreateIssueBody,
+  DismissFindingBody,
+  FindingActionParams,
+  FindingActionResult,
+  FindingBlocking,
+  FindingSeverity,
+  FindingState,
+  LaneResult,
+  LaneResults,
+  LaneStatus,
+  PullRequestExternalIdParams,
+  PullRequestIdParams,
+  PullRequestIngest,
+  PullRequestReviewView,
+  PullRequestStatus,
+  ReviewCycleIngest,
+  ReviewCycleParams,
+  ReviewCycleState,
+  ReviewCycleView,
+  ReviewFindingIngest,
+  ReviewFindingView,
+  ReviewIngest,
+  ReviewLane,
+  ReviewListItem,
+  ReviewListQuery,
+  ReviewListResponse,
+  ReviewStatus,
+  WorkflowPullRequestView,
 } from '../src/index';
 
 const T = '2026-09-14T09:00:00Z';
@@ -1081,5 +1111,433 @@ describe('US5 agent-run schemas (specs/001 US5, FR-016–FR-018)', () => {
     expect(
       WorkflowStageView.safeParse({ ...stage, agentRuns: [{ ...run, stagePosition: 0 }] }).success,
     ).toBe(false);
+  });
+});
+
+describe('US6 review schemas (specs/001 US6, FR-020–FR-022, FR-036)', () => {
+  const U = '00000000-0000-7000-8000-00000000000';
+  const LANES = [
+    'correctness',
+    'security',
+    'dependencies',
+    'edge_cases',
+    'testing',
+    'architecture',
+    'general',
+  ] as const;
+  const lanes = (over: Partial<Record<(typeof LANES)[number], 'PASS' | 'WARN' | 'FAIL'>> = {}) =>
+    LANES.map((lane) => ({ lane, status: over[lane] ?? 'PASS' }));
+  const evidence = (over: Partial<EvidenceRef> = {}): EvidenceRef => ({
+    kind: 'file',
+    label: 'RefundController.java:84',
+    href: 'https://git.cdevi.demo/payments-api/blob/main/RefundController.java#L84',
+    locator: 'RefundController.java:84',
+    accessible: true,
+    ...over,
+  });
+  const findingIngest = (over: Record<string, unknown> = {}) => ({
+    externalId: 'find-1821-2',
+    position: 2,
+    lane: 'security',
+    severity: 'CRITICAL',
+    blocking: 'BLOCKING',
+    title: 'Refund endpoint does not verify authorization against the original payment owner',
+    description: 'The refund handler loads the payment by id and never compares its owner to the caller.',
+    impact: "A user may potentially refund another user's payment.",
+    evidence: [evidence()],
+    recommendedFix: 'Validate payment ownership before processing.',
+    ...over,
+  });
+  const findingView = (over: Record<string, unknown> = {}) => ({
+    id: `${U}1`,
+    ...findingIngest(),
+    state: 'OPEN',
+    dismissedReason: null,
+    dismissedBy: null,
+    dismissedAt: null,
+    fixCycleId: null,
+    issueRequestedAt: null,
+    ...over,
+  });
+  const cycleView = (over: Record<string, unknown> = {}) => ({
+    id: `${U}2`,
+    cycleNumber: 3,
+    findingsCount: 7,
+    fixedCount: 6,
+    remainingCount: 1,
+    iteration: 3,
+    maxIterations: 5,
+    state: 'COMPLETED',
+    requestedBy: null,
+    requestedByAgent: 'Review Agent',
+    startedAt: T,
+    finishedAt: T,
+    ...over,
+  });
+  const prView = (over: Record<string, unknown> = {}) => ({
+    pullRequest: {
+      id: `${U}3`,
+      externalId: 'pr-1821',
+      number: 1821,
+      title: 'PAY-1391 Refund processing',
+      href: 'https://git.cdevi.demo/payments-api/pull/1821',
+      status: 'OPEN',
+    },
+    workflow: { id: `${U}4`, name: 'Add rate limiting to /api/auth', href: `/workflows/${U}4` },
+    requirement: { id: `${U}5`, title: 'Refund processing', href: `/requirements/${U}5` },
+    latestReview: {
+      id: `${U}6`,
+      cycleNumber: 3,
+      status: 'COMPLETE',
+      lanes: lanes({ security: 'FAIL', correctness: 'WARN' }),
+      startedAt: T,
+      finishedAt: T,
+    },
+    findings: [findingView()],
+    cycles: [cycleView()],
+    readyForMerge: false,
+    blockingOpenCount: 1,
+    ...over,
+  });
+  const many = <T>(n: number, f: (i: number) => T) => Array.from({ length: n }, (_, i) => f(i));
+
+  it('FR-020 the enums carry the exact 0007 vocabulary', () => {
+    expect(ReviewLane.options).toEqual([...LANES]);
+    expect(LaneStatus.options).toEqual(['PASS', 'WARN', 'FAIL']);
+    expect(ReviewStatus.options).toEqual(['RUNNING', 'COMPLETE', 'FAILED']);
+    expect(FindingSeverity.options).toEqual(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']);
+    expect(FindingBlocking.options).toEqual(['BLOCKING', 'NON_BLOCKING', 'SUGGESTION']);
+    expect(FindingState.options).toEqual([
+      'OPEN',
+      'FIX_REQUESTED',
+      'FIXED',
+      'DISMISSED',
+      'ISSUE_REQUESTED',
+    ]);
+    expect(ReviewCycleState.options).toEqual(['RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED']);
+    expect(PullRequestStatus.options).toEqual(['OPEN', 'MERGED', 'CLOSED']);
+    expect(FindingBlocking.safeParse('NON-BLOCKING').success).toBe(false);
+    expect(ReviewLane.safeParse('Edge Cases').success).toBe(false);
+  });
+
+  it('FR-020 LaneResult is strict {lane, status, summary? ≤ 240}; LaneResults is exactly seven distinct lanes (6 → fail, 8 → fail, duplicate → fail)', () => {
+    expect(LaneResult.safeParse({ lane: 'security', status: 'FAIL' }).success).toBe(true);
+    expect(
+      LaneResult.safeParse({ lane: 'security', status: 'FAIL', summary: '1 blocking finding' })
+        .success,
+    ).toBe(true);
+    expect(
+      LaneResult.safeParse({ lane: 'security', status: 'FAIL', summary: 'x'.repeat(241) }).success,
+    ).toBe(false);
+    expect(
+      LaneResult.safeParse({ lane: 'security', status: 'FAIL', reasoning: 'because' }).success,
+    ).toBe(false);
+    expect(LaneResults.safeParse(lanes()).success).toBe(true);
+    expect(LaneResults.safeParse(lanes().slice(0, 6)).success).toBe(false);
+    expect(LaneResults.safeParse([...lanes(), { lane: 'general', status: 'PASS' }]).success).toBe(
+      false,
+    );
+    const dup = lanes();
+    dup[6] = { lane: 'security', status: 'PASS' };
+    expect(LaneResults.safeParse(dup).success).toBe(false);
+  });
+
+  it('FR-020 ReviewFindingView: position 1..50, title ≤ 200, description ≤ 2000, impact ≤ 1000, recommendedFix ≤ 1000, evidence EvidenceRef[] ≤ 10, state + dismissal/fix/issue fields nullable', () => {
+    expect(ReviewFindingView.safeParse(findingView()).success).toBe(true);
+    expect(ReviewFindingView.safeParse(findingView({ position: 0 })).success).toBe(false);
+    expect(ReviewFindingView.safeParse(findingView({ position: 51 })).success).toBe(false);
+    expect(ReviewFindingView.safeParse(findingView({ title: 'x'.repeat(201) })).success).toBe(
+      false,
+    );
+    expect(
+      ReviewFindingView.safeParse(findingView({ description: 'x'.repeat(2000) })).success,
+    ).toBe(true);
+    expect(
+      ReviewFindingView.safeParse(findingView({ description: 'x'.repeat(2001) })).success,
+    ).toBe(false);
+    expect(ReviewFindingView.safeParse(findingView({ impact: 'x'.repeat(1001) })).success).toBe(
+      false,
+    );
+    expect(
+      ReviewFindingView.safeParse(findingView({ recommendedFix: 'x'.repeat(1001) })).success,
+    ).toBe(false);
+    expect(
+      ReviewFindingView.safeParse(findingView({ evidence: many(10, () => evidence()) })).success,
+    ).toBe(true);
+    expect(
+      ReviewFindingView.safeParse(findingView({ evidence: many(11, () => evidence()) })).success,
+    ).toBe(false);
+    expect(
+      ReviewFindingView.safeParse(
+        findingView({ evidence: [evidence({ href: null, accessible: false })] }),
+      ).success,
+    ).toBe(true);
+    expect(
+      ReviewFindingView.safeParse(
+        findingView({
+          state: 'DISMISSED',
+          dismissedReason: 'False positive: ownership is checked by the gateway.',
+          dismissedBy: { id: `${U}9`, displayName: 'Engineer 1' },
+          dismissedAt: T,
+        }),
+      ).success,
+    ).toBe(true);
+    expect(
+      ReviewFindingView.safeParse(findingView({ state: 'FIX_REQUESTED', fixCycleId: `${U}2` }))
+        .success,
+    ).toBe(true);
+    expect(
+      ReviewFindingView.safeParse(findingView({ state: 'ISSUE_REQUESTED', issueRequestedAt: T }))
+        .success,
+    ).toBe(true);
+    expect(ReviewFindingView.safeParse(findingView({ state: 'RESOLVED' })).success).toBe(false);
+    const { dismissedBy: _d, ...missing } = findingView();
+    expect(ReviewFindingView.safeParse(missing).success).toBe(false);
+  });
+
+  it('AS-4 ReviewCycleView: counts ≥ 0 with fixed + remaining ≤ findings, iteration ≥ 1, maxIterations ≥ iteration, requestedBy user | null, requestedByAgent | null', () => {
+    expect(ReviewCycleView.safeParse(cycleView()).success).toBe(true);
+    expect(ReviewCycleView.safeParse(cycleView({ fixedCount: 7, remainingCount: 1 })).success).toBe(
+      false,
+    );
+    expect(ReviewCycleView.safeParse(cycleView({ fixedCount: -1 })).success).toBe(false);
+    expect(ReviewCycleView.safeParse(cycleView({ iteration: 0 })).success).toBe(false);
+    expect(ReviewCycleView.safeParse(cycleView({ iteration: 6, maxIterations: 5 })).success).toBe(
+      false,
+    );
+    expect(
+      ReviewCycleView.safeParse(
+        cycleView({
+          state: 'RUNNING',
+          finishedAt: null,
+          requestedBy: { id: `${U}9`, displayName: 'Engineer 1' },
+          requestedByAgent: null,
+        }),
+      ).success,
+    ).toBe(true);
+    expect(ReviewCycleView.safeParse(cycleView({ state: 'DONE' })).success).toBe(false);
+  });
+
+  it('FR-020 FR-022 PullRequestReviewView carries pullRequest, workflow, requirement | null, latestReview | null, findings ≤ 50, cycles ≤ 20, readyForMerge and blockingOpenCount', () => {
+    expect(PullRequestReviewView.safeParse(prView()).success).toBe(true);
+    expect(
+      PullRequestReviewView.safeParse(prView({ requirement: null, latestReview: null })).success,
+    ).toBe(true);
+    expect(
+      PullRequestReviewView.safeParse(
+        prView({ findings: many(50, (i) => findingView({ position: i + 1 })) }),
+      ).success,
+    ).toBe(true);
+    expect(
+      PullRequestReviewView.safeParse(
+        prView({ findings: many(51, (i) => findingView({ position: (i % 50) + 1 })) }),
+      ).success,
+    ).toBe(false);
+    expect(
+      PullRequestReviewView.safeParse(
+        prView({ cycles: many(21, (i) => cycleView({ cycleNumber: i + 1 })) }),
+      ).success,
+    ).toBe(false);
+    const { readyForMerge: _r, ...noReady } = prView();
+    expect(PullRequestReviewView.safeParse(noReady).success).toBe(false);
+    expect(
+      PullRequestReviewView.safeParse(
+        prView({ latestReview: { ...prView().latestReview, lanes: lanes().slice(0, 6) } }),
+      ).success,
+    ).toBe(false);
+    expect(
+      PullRequestReviewView.safeParse(
+        prView({ pullRequest: { ...prView().pullRequest, href: 'javascript:alert(1)' } }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it('FR-025 ReviewListItem / ReviewListResponse (items ≤ 50, nextCursor | null) and ReviewListQuery {project all|uuid default all, state?, cursor? ≤ 200}', () => {
+    const item = {
+      id: `${U}3`,
+      externalId: 'pr-1821',
+      number: 1821,
+      title: 'PAY-1391 Refund processing',
+      href: 'https://git.cdevi.demo/payments-api/pull/1821',
+      status: 'OPEN',
+      project: { id: `${U}7`, key: 'payments-api', name: 'Payments API' },
+      workflow: { id: `${U}4`, name: 'Add rate limiting to /api/auth', href: `/workflows/${U}4` },
+      reviewStatus: 'COMPLETE',
+      openFindingsCount: 5,
+      blockingOpenCount: 1,
+      readyForMerge: false,
+      reviewHref: `/reviews/${U}3`,
+      updatedAt: T,
+    };
+    expect(ReviewListItem.safeParse(item).success).toBe(true);
+    expect(ReviewListItem.safeParse({ ...item, reviewStatus: null }).success).toBe(true);
+    expect(ReviewListResponse.safeParse({ items: [item], nextCursor: null }).success).toBe(true);
+    expect(ReviewListResponse.safeParse({ items: many(50, () => item), nextCursor: 'abc' }).success).toBe(true);
+    expect(ReviewListResponse.safeParse({ items: many(51, () => item), nextCursor: null }).success).toBe(false);
+    expect(ReviewListQuery.parse({})).toEqual({ project: 'all' });
+    expect(ReviewListQuery.safeParse({ project: `${U}7`, state: 'OPEN', cursor: 'abc' }).success).toBe(true);
+    expect(ReviewListQuery.safeParse({ project: 'payments-api' }).success).toBe(false);
+    expect(ReviewListQuery.safeParse({ state: 'DRAFT' }).success).toBe(false);
+    expect(ReviewListQuery.safeParse({ cursor: 'x'.repeat(201) }).success).toBe(false);
+  });
+
+  it('FR-021 FR-032 params and action bodies: PullRequestIdParams / FindingActionParams are uuids, DismissFindingBody requires reason ≤ 240 (241 → fail) and every body is strict (unknown key → fail)', () => {
+    expect(PullRequestIdParams.safeParse({ pullRequestId: `${U}3` }).success).toBe(true);
+    expect(PullRequestIdParams.safeParse({ pullRequestId: 'pr-1821' }).success).toBe(false);
+    expect(FindingActionParams.safeParse({ pullRequestId: `${U}3`, findingId: `${U}1` }).success).toBe(true);
+    expect(FindingActionParams.safeParse({ pullRequestId: `${U}3`, findingId: 'find-1821-2' }).success).toBe(false);
+    expect(DismissFindingBody.safeParse({ reason: 'False positive: ownership is checked by the gateway.' }).success).toBe(true);
+    expect(DismissFindingBody.safeParse({ reason: 'x'.repeat(240) }).success).toBe(true);
+    expect(DismissFindingBody.safeParse({ reason: 'x'.repeat(241) }).success).toBe(false);
+    expect(DismissFindingBody.safeParse({ reason: '   ' }).success).toBe(false);
+    expect(DismissFindingBody.safeParse({}).success).toBe(false);
+    expect(DismissFindingBody.safeParse({ reason: 'ok', note: 'x' }).success).toBe(false);
+    expect(ApplyFixBody.safeParse({}).success).toBe(true);
+    expect(ApplyFixBody.safeParse({ reason: 'x' }).success).toBe(false);
+    expect(CreateIssueBody.safeParse({}).success).toBe(true);
+    expect(CreateIssueBody.safeParse({ project: 'PAY' }).success).toBe(false);
+    expect(
+      FindingActionResult.safeParse({ finding: findingView({ state: 'DISMISSED', dismissedReason: 'dup', dismissedBy: { id: `${U}9`, displayName: 'E' }, dismissedAt: T }), readyForMerge: true, blockingOpenCount: 0 }).success,
+    ).toBe(true);
+    expect(
+      FindingActionResult.safeParse({ finding: findingView({ state: 'FIX_REQUESTED', fixCycleId: `${U}2` }), cycle: cycleView({ state: 'RUNNING', finishedAt: null, fixedCount: 0, remainingCount: 1, findingsCount: 1 }), readyForMerge: false, blockingOpenCount: 1 }).success,
+    ).toBe(true);
+    expect(FindingActionResult.safeParse({ finding: findingView() }).success).toBe(false);
+  });
+
+  it('FR-036 PullRequestIngest: number, title ≤ 200, href http(s), status, requirementExternalId?, workflowExternalId, observedAt; strict', () => {
+    const body = {
+      number: 1821,
+      title: 'PAY-1391 Refund processing',
+      href: 'https://git.cdevi.demo/payments-api/pull/1821',
+      status: 'OPEN',
+      workflowExternalId: 's500-001',
+      observedAt: T,
+    };
+    expect(PullRequestIngest.safeParse(body).success).toBe(true);
+    expect(PullRequestIngest.safeParse({ ...body, requirementExternalId: 'req-seed-006' }).success).toBe(true);
+    expect(PullRequestIngest.safeParse({ ...body, number: 0 }).success).toBe(false);
+    expect(PullRequestIngest.safeParse({ ...body, number: 1.5 }).success).toBe(false);
+    expect(PullRequestIngest.safeParse({ ...body, title: 'x'.repeat(201) }).success).toBe(false);
+    expect(PullRequestIngest.safeParse({ ...body, href: 'javascript:alert(1)' }).success).toBe(false);
+    expect(PullRequestIngest.safeParse({ ...body, status: 'DRAFT' }).success).toBe(false);
+    const { workflowExternalId: _w, ...noWorkflow } = body;
+    expect(PullRequestIngest.safeParse(noWorkflow).success).toBe(false);
+    const { observedAt: _o, ...noObserved } = body;
+    expect(PullRequestIngest.safeParse(noObserved).success).toBe(false);
+    expect(PullRequestIngest.safeParse({ ...body, reasoning: 'x' }).success).toBe(false);
+    expect(PullRequestExternalIdParams.safeParse({ externalId: 'pr-1821' }).success).toBe(true);
+    expect(PullRequestExternalIdParams.safeParse({ externalId: 'has space' }).success).toBe(false);
+    expect(ReviewCycleParams.parse({ externalId: 'pr-1821', cycle: '3' })).toEqual({ externalId: 'pr-1821', cycle: 3 });
+    expect(ReviewCycleParams.safeParse({ externalId: 'pr-1821', cycle: '0' }).success).toBe(false);
+    expect(ReviewCycleParams.safeParse({ externalId: 'pr-1821', cycle: 'three' }).success).toBe(false);
+  });
+
+  it('FR-020 FR-036 ReviewIngest: status, exactly seven distinct lanes (6 → fail), findings ≤ 50 (51 → fail) with unique positions and externalIds, evidence ≤ 10, optional state, startedAt, finishedAt?, agentRunExternalId?, observedAt', () => {
+    const body = (over: Record<string, unknown> = {}) => ({
+      status: 'COMPLETE',
+      lanes: lanes({ security: 'FAIL', correctness: 'WARN' }),
+      findings: [findingIngest()],
+      startedAt: T,
+      finishedAt: T,
+      observedAt: T,
+      ...over,
+    });
+    expect(ReviewIngest.safeParse(body()).success).toBe(true);
+    expect(ReviewIngest.safeParse(body({ findings: [], finishedAt: undefined, status: 'RUNNING' })).success).toBe(true);
+    expect(ReviewIngest.safeParse(body({ agentRunExternalId: 's500-001-r6' })).success).toBe(true);
+    expect(ReviewIngest.safeParse(body({ lanes: lanes().slice(0, 6) })).success).toBe(false);
+    expect(
+      ReviewIngest.safeParse(body({ findings: many(50, (i) => findingIngest({ position: i + 1, externalId: `f-${i}` })) })).success,
+    ).toBe(true);
+    expect(
+      ReviewIngest.safeParse(body({ findings: many(51, (i) => findingIngest({ position: i + 1, externalId: `f-${i}` })) })).success,
+    ).toBe(false);
+    expect(
+      ReviewIngest.safeParse(body({ findings: [findingIngest({ position: 1, externalId: 'a' }), findingIngest({ position: 1, externalId: 'b' })] })).success,
+    ).toBe(false);
+    expect(
+      ReviewIngest.safeParse(body({ findings: [findingIngest({ position: 1 }), findingIngest({ position: 2 })] })).success,
+    ).toBe(false);
+    expect(ReviewFindingIngest.safeParse(findingIngest({ evidence: many(11, () => evidence()) })).success).toBe(false);
+    expect(ReviewFindingIngest.safeParse(findingIngest({ evidence: [] })).success).toBe(true);
+    expect(ReviewFindingIngest.safeParse(findingIngest({ state: 'FIXED' })).success).toBe(true);
+    expect(ReviewFindingIngest.safeParse(findingIngest({ state: 'DISMISSED' })).success).toBe(true);
+    expect(ReviewFindingIngest.safeParse(findingIngest({ id: `${U}1` })).success).toBe(false);
+    const { startedAt: _s, ...noStarted } = body();
+    expect(ReviewIngest.safeParse(noStarted).success).toBe(false);
+    const { observedAt: _o, ...noObserved } = body();
+    expect(ReviewIngest.safeParse(noObserved).success).toBe(false);
+  });
+
+  it('FR-018 SC-009 ReviewIngest is strict at every level: reasoning, chainOfThought, rationale, thoughts or any unknown key on the review, a lane, a finding or an evidence item → parse failure', () => {
+    const ok = {
+      status: 'COMPLETE',
+      lanes: lanes(),
+      findings: [findingIngest()],
+      startedAt: T,
+      observedAt: T,
+    };
+    expect(ReviewIngest.safeParse(ok).success).toBe(true);
+    for (const key of ['reasoning', 'chainOfThought', 'rationale', 'thoughts', 'scratchpad']) {
+      expect(ReviewIngest.safeParse({ ...ok, [key]: 'Let me think step by step…' }).success, `review.${key}`).toBe(false);
+      expect(
+        ReviewIngest.safeParse({ ...ok, lanes: [{ ...ok.lanes[0], [key]: 'x' }, ...ok.lanes.slice(1)] }).success,
+        `lane.${key}`,
+      ).toBe(false);
+      expect(ReviewIngest.safeParse({ ...ok, findings: [findingIngest({ [key]: 'x' })] }).success, `finding.${key}`).toBe(false);
+      expect(
+        ReviewIngest.safeParse({ ...ok, findings: [findingIngest({ evidence: [{ ...evidence(), [key]: 'x' }] })] }).success,
+        `evidence.${key}`,
+      ).toBe(false);
+    }
+  });
+
+  it('AS-4 FR-036 ReviewCycleIngest: findingsCount/fixedCount/remainingCount ≥ 0 with fixed + remaining ≤ findings, iteration ≥ 1, maxIterations?, state, agentRunExternalId?, startedAt, finishedAt?, observedAt; strict', () => {
+    const body = {
+      findingsCount: 7,
+      fixedCount: 6,
+      remainingCount: 1,
+      iteration: 3,
+      state: 'COMPLETED',
+      startedAt: T,
+      finishedAt: T,
+      observedAt: T,
+    };
+    expect(ReviewCycleIngest.safeParse(body).success).toBe(true);
+    expect(ReviewCycleIngest.safeParse({ ...body, maxIterations: 5, agentRunExternalId: 'r-9' }).success).toBe(true);
+    expect(ReviewCycleIngest.safeParse({ ...body, fixedCount: 7 }).success).toBe(false);
+    expect(ReviewCycleIngest.safeParse({ ...body, remainingCount: -1 }).success).toBe(false);
+    expect(ReviewCycleIngest.safeParse({ ...body, iteration: 0 }).success).toBe(false);
+    expect(ReviewCycleIngest.safeParse({ ...body, maxIterations: 2 }).success).toBe(false);
+    expect(ReviewCycleIngest.safeParse({ ...body, state: 'DONE' }).success).toBe(false);
+    const { finishedAt: _f, ...running } = { ...body, state: 'RUNNING' };
+    expect(ReviewCycleIngest.safeParse(running).success).toBe(true);
+    const { observedAt: _o, ...noObserved } = body;
+    expect(ReviewCycleIngest.safeParse(noObserved).success).toBe(false);
+    for (const key of ['reasoning', 'chainOfThought', 'rationale'])
+      expect(ReviewCycleIngest.safeParse({ ...body, [key]: 'x' }).success, key).toBe(false);
+  });
+
+  it('FR-022 WorkflowDetail.pullRequest is additive: defaults to null, carries {id, number, title, href, reviewStatus | null, readyForMerge, blockingOpenCount, reviewHref}; pullRequestRef stays', () => {
+    const pr = {
+      id: `${U}3`,
+      number: 1821,
+      title: 'PAY-1391 Refund processing',
+      href: 'https://git.cdevi.demo/payments-api/pull/1821',
+      reviewStatus: 'COMPLETE',
+      readyForMerge: false,
+      blockingOpenCount: 1,
+      reviewHref: `/reviews/${U}3`,
+    };
+    expect(WorkflowPullRequestView.safeParse(pr).success).toBe(true);
+    expect(WorkflowPullRequestView.safeParse({ ...pr, reviewStatus: null }).success).toBe(true);
+    expect(WorkflowPullRequestView.safeParse({ ...pr, blockingOpenCount: -1 }).success).toBe(false);
+    expect(WorkflowPullRequestView.safeParse({ ...pr, reviewHref: '//evil.example' }).success).toBe(false);
+    const shape = WorkflowDetail.shape;
+    expect(shape.pullRequest.safeParse(undefined).success).toBe(true);
+    expect(shape.pullRequest.parse(undefined)).toBeNull();
+    expect(shape.pullRequest.parse(pr)).toEqual(pr);
+    expect(shape.workflow.shape).toHaveProperty('pullRequestRef');
   });
 });
