@@ -2322,6 +2322,67 @@ describe.skipIf(skip)(
       (await admin7.query(`select indexname from pg_indexes where tablename=$1`, [table])).rows.map(
         (r) => r.indexname as string,
       );
+    /** Column rows keyed by name; asserts the table has exactly `expected` columns. */
+    async function columnsByName(table: string, expected: readonly string[]) {
+      const byName = Object.fromEntries((await columns(table)).map((c) => [c.column_name, c]));
+      expect(Object.keys(byName).sort(), table).toEqual([...expected].sort());
+      return byName;
+    }
+    const maxSeq = async (client: pg.PoolClient) =>
+      (await client.query(`select coalesce(max(seq),0) as m from inbox_change_log`)).rows[0]
+        .m as number;
+    /**
+     * LISTEN inbox_changed on one connection and hand the test a writer plus `framesSince(workflow, seq, atLeast)`,
+     * which waits (≤ 5 s, then settles 200 ms) for that many frames of the workflow newer than `seq`.
+     */
+    async function withInboxListener(
+      pool: pg.Pool,
+      run: (
+        writer: pg.PoolClient,
+        framesSince: (
+          workflow: string,
+          seq: number,
+          atLeast: number,
+        ) => Promise<Record<string, unknown>[]>,
+      ) => Promise<void>,
+    ) {
+      const listener = await pool.connect();
+      const writer = await pool.connect();
+      try {
+        const payloads: string[] = [];
+        listener.on('notification', (n) => {
+          if (n.payload) payloads.push(n.payload);
+        });
+        await listener.query('listen inbox_changed');
+        const framesSince = async (workflow: string, seq: number, atLeast: number) => {
+          const mine = () =>
+            payloads
+              .map((p) => JSON.parse(p) as Record<string, unknown>)
+              .filter((p) => p['workflowId'] === workflow && Number(p['seq']) > Number(seq));
+          const deadline = Date.now() + 5_000;
+          while (Date.now() < deadline && mine().length < atLeast)
+            await new Promise((r) => setTimeout(r, 50));
+          await new Promise((r) => setTimeout(r, 200));
+          return mine();
+        };
+        await run(writer, framesSince);
+        await listener.query('unlisten inbox_changed');
+      } finally {
+        listener.release();
+        writer.release();
+      }
+    }
+    /** Remove a committed fixture (org → project → workflow cascade) and its inbox rows. */
+    async function dropFixture(
+      writer: pg.PoolClient,
+      f: { org: string; project: string; workflow: string },
+    ) {
+      await writer.query(`delete from inbox_change_log where organization_id=$1`, [f.org]);
+      await writer.query(`delete from workflows where id=$1`, [f.workflow]);
+      await writer.query(`delete from inbox_change_log where organization_id=$1`, [f.org]);
+      await writer.query(`delete from projects where id=$1`, [f.project]);
+      await writer.query(`delete from organizations where id=$1`, [f.org]);
+    }
     const SEVEN_LANES = JSON.stringify(
       [
         'correctness',
@@ -2480,7 +2541,7 @@ describe.skipIf(skip)(
       ).toBe(1);
     });
 
-    it('FR-036 pull_requests: one per workflow (UNIQUE workflow_id), UNIQUE (organization_id, external_id), title ≤ 200, http(s) href, nullable requirement_id, observed_at watermark, created/updated_at', async () => {
+    it('FR-036 pull_requests: one per workflow (UNIQUE workflow_id), UNIQUE (organization_id, external_id), title ≤ 200, http(s) href, nullable requirement_id and review_stage_id (ON DELETE SET NULL), observed_at watermark, created/updated_at', async () => {
       const byName = Object.fromEntries(
         (await columns('pull_requests')).map((c) => [c.column_name, c]),
       );
@@ -2491,6 +2552,7 @@ describe.skipIf(skip)(
           'project_id',
           'workflow_id',
           'requirement_id',
+          'review_stage_id',
           'external_id',
           'number',
           'title',
@@ -2502,6 +2564,8 @@ describe.skipIf(skip)(
         ].sort(),
       );
       expect(byName['requirement_id']?.is_nullable).toBe('YES');
+      expect(byName['review_stage_id']?.is_nullable).toBe('YES');
+      expect(byName['review_stage_id']?.udt_name).toBe('uuid');
       expect(byName['status']?.udt_name).toBe('pull_request_status');
       expect(byName['number']?.udt_name).toBe('int4');
       const cons = await constraintNames('pull_requests');
@@ -2545,12 +2609,37 @@ describe.skipIf(skip)(
           () => client.query(`update pull_requests set number=0 where id=$1`, [f.pr]),
           /pull_requests_number_check/,
         );
+        const stage = (
+          await client.query(
+            `insert into workflow_stages(organization_id, project_id, workflow_id, position, name, state, state_observed_at)
+             values ($1,$2,$3,6,'Review','WAITING_FOR_HUMAN',now()) returning id`,
+            [f.org, f.project, f.workflow],
+          )
+        ).rows[0].id as string;
+        await client.query(`update pull_requests set review_stage_id=$2 where id=$1`, [
+          f.pr,
+          stage,
+        ]);
+        await expectFail(
+          client,
+          () =>
+            client.query(`update pull_requests set review_stage_id=$2 where id=$1`, [
+              f.pr,
+              '00000000-0000-0000-0000-000000000000',
+            ]),
+          /pull_requests_review_stage_id_fkey/,
+        );
       });
+      const fk = (
+        await admin7.query(
+          `select confrelid::regclass::text rel, confdeltype from pg_constraint where conname='pull_requests_review_stage_id_fkey'`,
+        )
+      ).rows[0];
+      expect(fk).toEqual({ rel: 'workflow_stages', confdeltype: 'n' });
     });
 
     it('FR-020 reviews: UNIQUE (pull_request_id, cycle_number), lanes jsonb CHECKed to exactly 7 entries, nullable finished_at / agent_run_id, observed_at watermark', async () => {
-      const byName = Object.fromEntries((await columns('reviews')).map((c) => [c.column_name, c]));
-      for (const c of [
+      const byName = await columnsByName('reviews', [
         'id',
         'organization_id',
         'project_id',
@@ -2566,9 +2655,7 @@ describe.skipIf(skip)(
         'agent_run_id',
         'created_at',
         'updated_at',
-      ])
-        expect(byName, c).toHaveProperty(c);
-      expect(Object.keys(byName)).toHaveLength(15);
+      ]);
       expect(byName['status']?.udt_name).toBe('review_status');
       expect(byName['finished_at']?.is_nullable).toBe('YES');
       expect(byName['agent_run_id']?.is_nullable).toBe('YES');
@@ -2591,11 +2678,8 @@ describe.skipIf(skip)(
       });
     });
 
-    it('FR-020 FR-021 review_findings: denormalised pull_request_id, UNIQUE (review_id, position) and (organization_id, external_id), bounded text, evidence ≤ 10, state DEFAULT OPEN, dismissal / fix-cycle / issue columns, and the partial blocking index', async () => {
-      const byName = Object.fromEntries(
-        (await columns('review_findings')).map((c) => [c.column_name, c]),
-      );
-      for (const c of [
+    it('FR-020 FR-021 review_findings: denormalised pull_request_id, UNIQUE (review_id, position) and (review_id, external_id) so a finding keeps its runtime id across cycles, bounded text, evidence ≤ 10, state DEFAULT OPEN, dismissal / fix-cycle / issue columns, and the partial blocking index', async () => {
+      const byName = await columnsByName('review_findings', [
         'id',
         'organization_id',
         'project_id',
@@ -2621,9 +2705,7 @@ describe.skipIf(skip)(
         'issue_requested_at',
         'created_at',
         'updated_at',
-      ])
-        expect(byName, c).toHaveProperty(c);
-      expect(Object.keys(byName)).toHaveLength(25);
+      ]);
       expect(byName['state']?.column_default).toContain("'OPEN'");
       expect(byName['evidence']?.column_default).toContain("'[]'");
       for (const c of [
@@ -2641,7 +2723,8 @@ describe.skipIf(skip)(
       expect(byName['state']?.udt_name).toBe('finding_state');
       const cons = await constraintNames('review_findings');
       expect(cons).toContain('review_findings_review_id_position_key');
-      expect(cons).toContain('review_findings_organization_id_external_id_key');
+      expect(cons).toContain('review_findings_review_id_external_id_key');
+      expect(cons).not.toContain('review_findings_organization_id_external_id_key');
       const idx = (
         await admin7.query(
           `select indexname, indexdef from pg_indexes where tablename='review_findings' and indexname='review_findings_blocking_open_idx'`,
@@ -2662,7 +2745,9 @@ describe.skipIf(skip)(
         const bad = (over: Record<string, unknown>, re: RegExp) =>
           expectFail(client, () => insertFinding(client, f, review, 2, over), re);
         await bad({ position: 1, external_id: 'other' }, /review_findings_review_id_position_key/);
-        await bad({ external_id: 'find-7-1' }, /review_findings_organization_id_external_id_key/);
+        await bad({ external_id: 'find-7-1' }, /review_findings_review_id_external_id_key/);
+        const review2 = (await insertReview(client, f, 2)).rows[0].id as string;
+        await insertFinding(client, f, review2, 1, { external_id: 'find-7-1' });
         await bad({ title: 'x'.repeat(201) }, /review_findings_title_check/);
         await bad({ description: 'x'.repeat(2001) }, /review_findings_description_check/);
         await bad({ impact: 'x'.repeat(1001) }, /review_findings_impact_check/);
@@ -2690,11 +2775,8 @@ describe.skipIf(skip)(
       });
     });
 
-    it('AS-4 review_cycles: UNIQUE (pull_request_id, cycle_number), CHECK fixed + remaining ≤ findings_count, iteration ≤ max_iterations (default 5), requested_by user / agent nullable, observed_at watermark', async () => {
-      const byName = Object.fromEntries(
-        (await columns('review_cycles')).map((c) => [c.column_name, c]),
-      );
-      for (const c of [
+    it('AS-4 review_cycles: UNIQUE (pull_request_id, cycle_number), at most one RUNNING cycle per pull request (partial unique index), CHECK fixed + remaining ≤ findings_count, iteration ≤ max_iterations (default 5), requested_by user / agent nullable, observed_at watermark', async () => {
+      const byName = await columnsByName('review_cycles', [
         'id',
         'organization_id',
         'project_id',
@@ -2715,9 +2797,7 @@ describe.skipIf(skip)(
         'observed_at',
         'created_at',
         'updated_at',
-      ])
-        expect(byName, c).toHaveProperty(c);
-      expect(Object.keys(byName)).toHaveLength(20);
+      ]);
       expect(byName['max_iterations']?.column_default).toBe('5');
       expect(byName['state']?.udt_name).toBe('review_cycle_state');
       for (const c of ['requested_by_user_id', 'requested_by_agent', 'finished_at', 'agent_run_id'])
@@ -2726,6 +2806,25 @@ describe.skipIf(skip)(
       expect(cons).toContain('review_cycles_pull_request_id_cycle_number_key');
       expect(cons).toContain('review_cycles_counts_check');
       expect(cons).toContain('review_cycles_iteration_budget_check');
+      const running = (
+        await admin7.query(
+          `select indexdef from pg_indexes where tablename='review_cycles' and indexname='review_cycles_one_running_idx'`,
+        )
+      ).rows[0]?.indexdef as string | undefined;
+      expect(running).toMatch(/^CREATE UNIQUE INDEX/);
+      expect(running).toMatch(
+        /\(pull_request_id\) WHERE \(state = 'RUNNING'::review_cycle_state\)/,
+      );
+      await tx(app7, async (client, f) => {
+        const running = { state: 'RUNNING', fixed_count: 0, remaining_count: 7, iteration: 4 };
+        await insertCycle(client, f, 8, running);
+        await expectFail(
+          client,
+          () => insertCycle(client, f, 9, running),
+          /review_cycles_one_running_idx/,
+        );
+        await insertCycle(client, f, 9, { state: 'COMPLETED', iteration: 4 });
+      });
       await tx(app7, async (client, f) => {
         const cycle = (
           await insertCycle(client, f, 1, { state: 'RUNNING', fixed_count: 0, remaining_count: 7 })
@@ -2874,35 +2973,19 @@ describe.skipIf(skip)(
         client.release();
       }
 
-      const listener = await admin7.connect();
-      const writer = await admin7.connect();
-      try {
-        const payloads: string[] = [];
-        listener.on('notification', (n) => {
-          if (n.payload) payloads.push(n.payload);
-        });
-        await listener.query('listen inbox_changed');
+      await withInboxListener(admin7, async (writer, framesSince) => {
         await writer.query('begin');
         const f = await fixture(writer);
         await writer.query('commit');
-        const seqBefore = (
-          await writer.query(`select coalesce(max(seq),0) as m from inbox_change_log`)
-        ).rows[0].m as number;
+        const seqBefore = await maxSeq(writer);
         await writer.query('begin');
         const review = (await insertReview(writer, f, 1)).rows[0].id as string;
         await insertFinding(writer, f, review, 1);
         await insertFinding(writer, f, review, 2, { external_id: 'find-7-2' });
         await writer.query('commit');
-        const deadline = Date.now() + 5_000;
-        const mine = () =>
-          payloads
-            .map((p) => JSON.parse(p))
-            .filter((p) => p.workflowId === f.workflow && Number(p.seq) > Number(seqBefore));
-        while (Date.now() < deadline && mine().length < 1)
-          await new Promise((r) => setTimeout(r, 50));
-        await new Promise((r) => setTimeout(r, 200));
-        expect(mine()).toHaveLength(1);
-        expect(mine()[0]).toMatchObject({
+        const frames = await framesSince(f.workflow, seqBefore, 1);
+        expect(frames).toHaveLength(1);
+        expect(frames[0]).toMatchObject({
           organizationId: f.org,
           projectId: f.project,
           workflowId: f.workflow,
@@ -2912,20 +2995,9 @@ describe.skipIf(skip)(
           `update review_findings set state='DISMISSED', dismissed_reason='dup', dismissed_at=now() where review_id=$1 and position=1`,
           [review],
         );
-        const deadline2 = Date.now() + 5_000;
-        while (Date.now() < deadline2 && mine().length < 2)
-          await new Promise((r) => setTimeout(r, 50));
-        expect(mine()).toHaveLength(2);
-        await writer.query(`delete from inbox_change_log where organization_id=$1`, [f.org]);
-        await writer.query(`delete from workflows where id=$1`, [f.workflow]);
-        await writer.query(`delete from inbox_change_log where organization_id=$1`, [f.org]);
-        await writer.query(`delete from projects where id=$1`, [f.project]);
-        await writer.query(`delete from organizations where id=$1`, [f.org]);
-        await listener.query('unlisten inbox_changed');
-      } finally {
-        listener.release();
-        writer.release();
-      }
+        expect(await framesSince(f.workflow, seqBefore, 2)).toHaveLength(2);
+        await dropFixture(writer, f);
+      });
     });
   },
 );

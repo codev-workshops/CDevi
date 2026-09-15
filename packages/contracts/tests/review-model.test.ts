@@ -68,7 +68,13 @@ describe('US6 review model (specs/001 US6, FR-020/FR-021/FR-022)', () => {
     expect(REVIEW_STATUSES).toEqual(['RUNNING', 'COMPLETE', 'FAILED']);
     expect(FINDING_SEVERITIES).toEqual(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']);
     expect(FINDING_BLOCKING_CLASSES).toEqual(['BLOCKING', 'NON_BLOCKING', 'SUGGESTION']);
-    expect(FINDING_STATES).toEqual(['OPEN', 'FIX_REQUESTED', 'FIXED', 'DISMISSED', 'ISSUE_REQUESTED']);
+    expect(FINDING_STATES).toEqual([
+      'OPEN',
+      'FIX_REQUESTED',
+      'FIXED',
+      'DISMISSED',
+      'ISSUE_REQUESTED',
+    ]);
     expect(REVIEW_CYCLE_STATES).toEqual(['RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED']);
     expect(laneStatusWord('PASS')).toBe('Pass');
     expect(laneStatusWord('WARN')).toBe('Warn');
@@ -147,7 +153,9 @@ describe('US6 review model (specs/001 US6, FR-020/FR-021/FR-022)', () => {
     expect(laneStatusFromFindings('security', [])).toBe('PASS');
     expect(laneStatusFromFindings('security', [finding()])).toBe('FAIL');
     expect(laneStatusFromFindings('security', [finding({ state: 'FIX_REQUESTED' })])).toBe('FAIL');
-    expect(laneStatusFromFindings('security', [finding({ blocking: 'NON_BLOCKING' })])).toBe('WARN');
+    expect(laneStatusFromFindings('security', [finding({ blocking: 'NON_BLOCKING' })])).toBe(
+      'WARN',
+    );
     expect(laneStatusFromFindings('security', [finding({ blocking: 'SUGGESTION' })])).toBe('PASS');
     expect(
       laneStatusFromFindings('security', [
@@ -204,13 +212,18 @@ describe('US6 review model (specs/001 US6, FR-020/FR-021/FR-022)', () => {
       '/reviews/00000000-0000-7000-8000-000000000001',
     );
     expect(REVIEWS_PAGE_SIZE).toBe(50);
-    const key = { updatedAt: '2026-09-14T09:00:00.000Z', id: '00000000-0000-7000-8000-000000000001' };
+    const key = {
+      updatedAt: '2026-09-14T09:00:00.000Z',
+      id: '00000000-0000-7000-8000-000000000001',
+    };
     const cursor = encodeReviewCursor(key);
     expect(cursor).toMatch(/^[A-Za-z0-9_-]+$/);
     expect(decodeReviewCursor(cursor)).toEqual(key);
     expect(() => decodeReviewCursor('not-a-cursor')).toThrow(InvalidCursorError);
     expect(() =>
-      decodeReviewCursor(Buffer.from(JSON.stringify(['requirements', key.updatedAt, key.id])).toString('base64url')),
+      decodeReviewCursor(
+        Buffer.from(JSON.stringify(['requirements', key.updatedAt, key.id])).toString('base64url'),
+      ),
     ).toThrow(InvalidCursorError);
   });
 });

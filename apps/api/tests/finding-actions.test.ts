@@ -2,8 +2,14 @@ import type { FindingActionResult, Problem, PullRequestReviewView } from '@cdevi
 import type { FastifyInstance } from 'fastify';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { asUser, signIn, skipDb, testApp } from './helpers';
-import { REVIEW_STAGE_POSITION, reviewFixture, type ReviewFixture } from './review-fixture';
+import { asIngest, asUser, iso, MIN, plus, signIn, skipDb, testApp } from './helpers';
+import {
+  REVIEW_STAGE_POSITION,
+  finding,
+  lanes,
+  reviewFixture,
+  type ReviewFixture,
+} from './review-fixture';
 
 type Action = 'dismiss' | 'fix' | 'issue';
 
@@ -67,7 +73,7 @@ describe.skipIf(skipDb)(
           actor_type: string;
           details: Record<string, unknown>;
         }>(
-          `SELECT action, actor_id, actor_type, details FROM audit_events WHERE target_type = 'finding' AND target_id = $1 ORDER BY occurred_at`,
+          `SELECT action, actor_id, actor_type, details FROM audit_events WHERE target_type = 'review_finding' AND target_id = $1 ORDER BY occurred_at`,
           [findingId],
         )
       ).rows;
@@ -87,6 +93,15 @@ describe.skipIf(skipDb)(
       expect(r.headers['content-type']).toContain('application/problem+json');
       const extra = await act(engineer, fx, id, 'dismiss', { reason: 'x', reasoning: 'why' });
       expect(extra.statusCode).toBe(400);
+      for (const [action, payload] of [
+        ['dismiss', { reason: 'x'.repeat(241) }],
+        ['fix', { reason: 'not allowed here' }],
+        ['issue', { reasoning: 'nope' }],
+      ] as const) {
+        const bad = await act(engineer, fx, id, action, payload);
+        expect(bad.statusCode, action).toBe(400);
+        expect(bad.headers['content-type']).toContain('application/problem+json');
+      }
       expect((await detail(engineer, fx.pullRequestId)).findings[0]?.state).toBe('OPEN');
     });
 
@@ -261,6 +276,43 @@ describe.skipIf(skipDb)(
       const visible = await reviewFixture(app);
       const wrongPr = await act(engineer, visible, id, 'issue');
       expect(wrongPr.statusCode).toBe(404);
+    });
+
+    it('FR-021 a finding dropped by a newer review is no longer actionable (404)', async () => {
+      const fx = await reviewFixture(app);
+      const stale = await findingId(engineer, fx, 0);
+      const p = fx.pullRequestExternalId;
+      const r = await app.inject(
+        asIngest({
+          method: 'PUT',
+          url: `/api/ingest/pull-requests/${p}/reviews/2`,
+          payload: {
+            externalId: `${p}-rev-2`,
+            status: 'COMPLETE',
+            lanes: lanes({ security: 'FAIL' }),
+            findings: [finding(1, { externalId: `${p}-f2` })],
+            startedAt: iso(plus(-25 * MIN)),
+            finishedAt: iso(plus(-21 * MIN)),
+            observedAt: iso(plus(-20 * MIN)),
+          },
+        }),
+      );
+      expect(r.statusCode, r.body).toBe(200);
+      for (const action of ['dismiss', 'fix', 'issue'] as const) {
+        const gone = await act(
+          engineer,
+          fx,
+          stale,
+          action,
+          action === 'dismiss' ? { reason: 'no' } : {},
+        );
+        expect(gone.statusCode, action).toBe(404);
+      }
+      expect(await auditRows(stale)).toEqual([]);
+      const current = await findingId(engineer, fx, 1);
+      expect(current).not.toBe(stale);
+      const ok = await act(engineer, fx, current, 'issue');
+      expect(ok.statusCode, ok.body).toBe(200);
     });
 
     it('401 without session', async () => {

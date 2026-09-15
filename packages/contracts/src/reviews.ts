@@ -94,8 +94,11 @@ const CycleCounts = {
   remainingCount: count,
   iteration: z.number().int().min(1),
 };
-const countsConsistent = (c: { findingsCount: number; fixedCount: number; remainingCount: number }) =>
-  c.fixedCount + c.remainingCount <= c.findingsCount;
+const countsConsistent = (c: {
+  findingsCount: number;
+  fixedCount: number;
+  remainingCount: number;
+}) => c.fixedCount + c.remainingCount <= c.findingsCount;
 const iterationWithinMax = (c: { iteration: number; maxIterations?: number | undefined }) =>
   c.maxIterations === undefined || c.iteration <= c.maxIterations;
 
@@ -111,7 +114,9 @@ export const ReviewCycleView = z
     startedAt: IsoDateTime,
     finishedAt: IsoDateTime.nullable(),
   })
-  .refine(countsConsistent, { message: 'fixedCount + remainingCount must not exceed findingsCount' })
+  .refine(countsConsistent, {
+    message: 'fixedCount + remainingCount must not exceed findingsCount',
+  })
   .refine(iterationWithinMax, { message: 'iteration must not exceed maxIterations' });
 export type ReviewCycleView = z.infer<typeof ReviewCycleView>;
 
@@ -213,19 +218,27 @@ export const PullRequestIngest = z
     title: line(200),
     href: HttpUrl,
     status: PullRequestStatus,
-    requirementExternalId: ExternalId.optional(),
+    requirementExternalId: ExternalId.nullable().optional(),
     workflowExternalId: ExternalId,
+    /** Position of the workflow stage that represents Review; Apply Fix flips that stage to RUNNING. */
+    reviewStagePosition: z.number().int().min(1).max(20).nullable().optional(),
     observedAt: IsoDateTime,
   })
   .strict();
 export type PullRequestIngest = z.infer<typeof PullRequestIngest>;
 
-export const ReviewFindingIngest = FindingContent.extend({ state: FindingState.optional() }).strict();
+/** What the runtime may say about a finding's state: human states (DISMISSED, FIX_REQUESTED, ISSUE_REQUESTED) are preserved by the ingest. */
+export const FindingIngestStatus = z.enum(['open', 'fixed']);
+export type FindingIngestStatus = z.infer<typeof FindingIngestStatus>;
+export const ReviewFindingIngest = FindingContent.extend({
+  status: FindingIngestStatus.default('open'),
+}).strict();
 export type ReviewFindingIngest = z.infer<typeof ReviewFindingIngest>;
 
 /** PUT /api/ingest/pull-requests/{externalId}/reviews/{cycle} — replaces the review and its findings whole. */
 export const ReviewIngest = z
   .object({
+    externalId: ExternalId,
     status: ReviewStatus,
     lanes: LaneResults,
     findings: z
@@ -257,6 +270,8 @@ export const ReviewCycleIngest = z
     observedAt: IsoDateTime,
   })
   .strict()
-  .refine(countsConsistent, { message: 'fixedCount + remainingCount must not exceed findingsCount' })
+  .refine(countsConsistent, {
+    message: 'fixedCount + remainingCount must not exceed findingsCount',
+  })
   .refine(iterationWithinMax, { message: 'iteration must not exceed maxIterations' });
 export type ReviewCycleIngest = z.infer<typeof ReviewCycleIngest>;

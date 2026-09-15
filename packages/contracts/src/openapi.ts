@@ -198,6 +198,42 @@ const findingActionErrors = {
     'Finding is not OPEN (already dismissed, fixed, fix requested or issue requested) — urn:cdevi:problem:invalid-transition',
   ),
 };
+/** POST /reviews/{pullRequestId}/findings/{findingId}/{action} — human finding action (FR-021). */
+const findingAction = (summary: string, description: string, body: string) => ({
+  post: {
+    tags: ['reviews'],
+    summary,
+    description,
+    security: [{ sessionCookie: [] }],
+    parameters: [pullRequestId, findingId],
+    requestBody: { required: true, ...json(body) },
+    responses: { '200': json('FindingActionResult'), ...findingActionErrors },
+  },
+});
+/** PUT /ingest/pull-requests/{externalId}/…/{cycle} — per-cycle runtime ingestion (FR-036). */
+const cycleIngest = (
+  summary: string,
+  description: string,
+  body: string,
+  badRequest: string,
+  conflict: string,
+) => ({
+  put: {
+    tags: ['ingest'],
+    summary,
+    description,
+    security: [{ ingestionToken: [] }],
+    parameters: [externalId, cycleNumber],
+    requestBody: { required: true, ...json(body) },
+    responses: {
+      '200': json('IngestResult'),
+      ...ingestErrors,
+      '400': problem(badRequest),
+      '404': problem('Unknown pull request externalId'),
+      '409': problem(conflict),
+    },
+  },
+});
 const requirementSessionErrors = {
   '401': problem('Not signed in'),
   '403': problem('Role may not perform this action (FR-032)'),
@@ -713,7 +749,8 @@ export function buildWorkflowDetailOpenApi(): Json {
       '/reviews/{pullRequestId}': {
         get: {
           tags: ['reviews'],
-          summary: 'Review Center: latest review lanes, findings and fix-cycle history (FR-020, FR-022)',
+          summary:
+            'Review Center: latest review lanes, findings and fix-cycle history (FR-020, FR-022)',
           description:
             'Session user; read-only for every role including viewer (viewers see the actions disabled). Findings (≤ 50) carry severity, blocking class, bounded impact / recommended fix text and typed evidence (≤ 10; accessible:false or no href renders as access-restricted). readyForMerge is derived: false while any BLOCKING finding is OPEN or FIX_REQUESTED, and the client shows “Not ready for merge approval — N blocking findings open”. Live updates ride GET /inbox/stream filtered by the workflowId. Not visible and unknown both return 404.',
           security: [{ sessionCookie: [] }],
@@ -725,42 +762,21 @@ export function buildWorkflowDetailOpenApi(): Json {
           },
         },
       },
-      '/reviews/{pullRequestId}/findings/{findingId}/dismiss': {
-        post: {
-          tags: ['reviews'],
-          summary: 'Dismiss an OPEN finding with a reason (FR-021, FR-032)',
-          description:
-            'Engineer, approver or administrator. Sets the finding DISMISSED with the reason (≤ 240 chars), the actor and the time; writes an audit_events row (finding.dismissed) and an inbox_changed notification. Returns the finding and the recomputed readiness.',
-          security: [{ sessionCookie: [] }],
-          parameters: [pullRequestId, findingId],
-          requestBody: { required: true, ...json('DismissFindingBody') },
-          responses: { '200': json('FindingActionResult'), ...findingActionErrors },
-        },
-      },
-      '/reviews/{pullRequestId}/findings/{findingId}/fix': {
-        post: {
-          tags: ['reviews'],
-          summary: 'Ask the agent to fix an OPEN finding (FR-021, AS-4)',
-          description:
-            'Engineer, approver or administrator; the body is an empty strict object. In one transaction: joins the RUNNING review cycle of the pull request or creates the next one (iteration n+1, findingsCount = open findings now, fixedCount 0), marks the finding FIX_REQUESTED with fixCycleId, sets the workflow’s Review stage RUNNING with a reason, writes audit_events (finding.fix_requested) and notifies inbox_changed. The runtime reports real progress through PUT /ingest/pull-requests/{externalId}/cycles/{cycle}. 409 when the cycle budget (maxIterations) is exhausted or the finding is not OPEN.',
-          security: [{ sessionCookie: [] }],
-          parameters: [pullRequestId, findingId],
-          requestBody: { required: true, ...json('ApplyFixBody') },
-          responses: { '200': json('FindingActionResult'), ...findingActionErrors },
-        },
-      },
-      '/reviews/{pullRequestId}/findings/{findingId}/issue': {
-        post: {
-          tags: ['reviews'],
-          summary: 'Record the intent to track an OPEN finding as an issue (FR-021)',
-          description:
-            'Engineer, approver or administrator; the body is an empty strict object. Records intent only: the finding becomes ISSUE_REQUESTED with the actor and time, audit_events (finding.issue_requested) and inbox_changed. No outbound Jira call — Jira stays inbound-only.',
-          security: [{ sessionCookie: [] }],
-          parameters: [pullRequestId, findingId],
-          requestBody: { required: true, ...json('CreateIssueBody') },
-          responses: { '200': json('FindingActionResult'), ...findingActionErrors },
-        },
-      },
+      '/reviews/{pullRequestId}/findings/{findingId}/dismiss': findingAction(
+        'Dismiss an OPEN finding with a reason (FR-021, FR-032)',
+        'Engineer, approver or administrator. Sets the finding DISMISSED with the reason (≤ 240 chars), the actor and the time; writes an audit_events row (finding.dismissed) and an inbox_changed notification. Returns the finding and the recomputed readiness.',
+        'DismissFindingBody',
+      ),
+      '/reviews/{pullRequestId}/findings/{findingId}/fix': findingAction(
+        'Ask the agent to fix an OPEN finding (FR-021, AS-4)',
+        'Engineer, approver or administrator; the body is an empty strict object. In one transaction: joins the RUNNING review cycle of the pull request or creates the next one (iteration n+1, findingsCount = open findings now, fixedCount 0), marks the finding FIX_REQUESTED with fixCycleId, sets the workflow’s Review stage RUNNING with a reason, writes audit_events (finding.fix_requested) and notifies inbox_changed. The runtime reports real progress through PUT /ingest/pull-requests/{externalId}/cycles/{cycle}. 409 when the cycle budget (maxIterations) is exhausted or the finding is not OPEN.',
+        'ApplyFixBody',
+      ),
+      '/reviews/{pullRequestId}/findings/{findingId}/issue': findingAction(
+        'Record the intent to track an OPEN finding as an issue (FR-021)',
+        'Engineer, approver or administrator; the body is an empty strict object. Records intent only: the finding becomes ISSUE_REQUESTED with the actor and time, audit_events (finding.issue_requested) and inbox_changed. No outbound Jira call — Jira stays inbound-only.',
+        'CreateIssueBody',
+      ),
       '/ingest/pull-requests/{externalId}': {
         put: {
           tags: ['ingest'],
@@ -777,44 +793,20 @@ export function buildWorkflowDetailOpenApi(): Json {
           },
         },
       },
-      '/ingest/pull-requests/{externalId}/reviews/{cycle}': {
-        put: {
-          tags: ['ingest'],
-          summary: 'Runtime replaces the AI review of a cycle as a whole (FR-020, FR-018, FR-036)',
-          description:
-            'Bearer ingestion principal scoped to the pull request project. Exactly seven distinct lane results and ≤ 50 findings (positions and externalIds unique, ≤ 10 typed evidence refs each). The body is strict: description / impact / recommendedFix are bounded summaries and any reasoning field (chainOfThought, reasoning, rationale, …) is a 400. Findings already DISMISSED, FIX_REQUESTED or ISSUE_REQUESTED by a human keep their state; the runtime flips findings to FIXED here. `stale` when observedAt is not newer than the stored watermark.',
-          security: [{ ingestionToken: [] }],
-          parameters: [externalId, cycleNumber],
-          requestBody: { required: true, ...json('ReviewIngest') },
-          responses: {
-            '200': json('IngestResult'),
-            '400': problem('Invalid body (unknown key, bound exceeded, lane missing or duplicated)'),
-            '401': problem('Unknown or disabled principal'),
-            '403': problem('Project outside the principal scope'),
-            '404': problem('Unknown pull request externalId'),
-            '409': problem('Review is not accepting a replacement (concurrent replacement in progress)'),
-          },
-        },
-      },
-      '/ingest/pull-requests/{externalId}/cycles/{cycle}': {
-        put: {
-          tags: ['ingest'],
-          summary: 'Runtime reports the progress of a fix cycle (AS-4, FR-036)',
-          description:
-            'Bearer ingestion principal scoped to the pull request project. Upserts the cycle counts, iteration and state (RUNNING → COMPLETED | FAILED | CANCELLED); fixedCount + remainingCount ≤ findingsCount. Strict body. `stale` when observedAt is not newer than the stored watermark. 409 when the cycle is already terminal.',
-          security: [{ ingestionToken: [] }],
-          parameters: [externalId, cycleNumber],
-          requestBody: { required: true, ...json('ReviewCycleIngest') },
-          responses: {
-            '200': json('IngestResult'),
-            '400': problem('Invalid body (unknown key, inconsistent counts)'),
-            '401': problem('Unknown or disabled principal'),
-            '403': problem('Project outside the principal scope'),
-            '404': problem('Unknown pull request externalId'),
-            '409': problem('Cycle already COMPLETED, FAILED or CANCELLED'),
-          },
-        },
-      },
+      '/ingest/pull-requests/{externalId}/reviews/{cycle}': cycleIngest(
+        'Runtime replaces the AI review of a cycle as a whole (FR-020, FR-018, FR-036)',
+        'Bearer ingestion principal scoped to the pull request project. Exactly seven distinct lane results and ≤ 50 findings (positions and externalIds unique, ≤ 10 typed evidence refs each). The body is strict: description / impact / recommendedFix are bounded summaries and any reasoning field (chainOfThought, reasoning, rationale, …) is a 400. Findings already DISMISSED, FIX_REQUESTED or ISSUE_REQUESTED by a human keep their state; the runtime flips findings to FIXED here. `stale` when observedAt is not newer than the stored watermark.',
+        'ReviewIngest',
+        'Invalid body (unknown key, bound exceeded, lane missing or duplicated)',
+        'Review is not accepting a replacement (concurrent replacement in progress)',
+      ),
+      '/ingest/pull-requests/{externalId}/cycles/{cycle}': cycleIngest(
+        'Runtime reports the progress of a fix cycle (AS-4, FR-036)',
+        'Bearer ingestion principal scoped to the pull request project. Upserts the cycle counts, iteration and state (RUNNING → COMPLETED | FAILED | CANCELLED); fixedCount + remainingCount ≤ findingsCount. Strict body. `stale` when observedAt is not newer than the stored watermark. 409 when the cycle is already terminal.',
+        'ReviewCycleIngest',
+        'Invalid body (unknown key, inconsistent counts)',
+        'Cycle already COMPLETED, FAILED or CANCELLED',
+      ),
     },
     components: {
       securitySchemes: {

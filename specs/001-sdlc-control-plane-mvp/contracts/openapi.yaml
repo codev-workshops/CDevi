@@ -1207,18 +1207,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
-        "401":
-          description: Unknown or disabled principal
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/Problem"
-        "403":
-          description: Project outside the principal scope
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/Problem"
+        "401": *a4
+        "403": *a5
         "404":
           description: Unknown pull request externalId
           content:
@@ -1260,18 +1250,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
-        "401":
-          description: Unknown or disabled principal
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/Problem"
-        "403":
-          description: Project outside the principal scope
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/Problem"
+        "401": *a4
+        "403": *a5
         "404":
           description: Unknown pull request externalId
           content:
@@ -7533,11 +7513,17 @@ components:
             - MERGED
             - CLOSED
         requirementExternalId:
+          nullable: true
           type: string
           pattern: ^[A-Za-z0-9._:-]{1,128}$
         workflowExternalId:
           type: string
           pattern: ^[A-Za-z0-9._:-]{1,128}$
+        reviewStagePosition:
+          nullable: true
+          type: integer
+          minimum: 1
+          maximum: 20
         observedAt:
           type: string
           format: date-time
@@ -7634,14 +7620,12 @@ components:
           type: string
           minLength: 1
           maxLength: 1000
-        state:
+        status:
+          default: open
           type: string
           enum:
-            - OPEN
-            - FIX_REQUESTED
-            - FIXED
-            - DISMISSED
-            - ISSUE_REQUESTED
+            - open
+            - fixed
       required:
         - externalId
         - position
@@ -7657,6 +7641,9 @@ components:
     ReviewIngest:
       type: object
       properties:
+        externalId:
+          type: string
+          pattern: ^[A-Za-z0-9._:-]{1,128}$
         status:
           type: string
           enum:
@@ -7782,14 +7769,12 @@ components:
                 type: string
                 minLength: 1
                 maxLength: 1000
-              state:
+              status:
+                default: open
                 type: string
                 enum:
-                  - OPEN
-                  - FIX_REQUESTED
-                  - FIXED
-                  - DISMISSED
-                  - ISSUE_REQUESTED
+                  - open
+                  - fixed
             required:
               - externalId
               - position
@@ -7818,6 +7803,7 @@ components:
           format: date-time
           pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|([+-](?:[01]\d|2[0-3]):[0-5]\d)))$
       required:
+        - externalId
         - status
         - lanes
         - findings

@@ -57,14 +57,13 @@ const RESULT_STATES: Record<FindingAction['kind'], FindingState> = {
   issue: 'ISSUE_REQUESTED',
 };
 
-const REVIEW_STAGE_NAME = 'Review';
-const REVIEW_STAGE_POSITION = 6;
 const DEFAULT_MAX_ITERATIONS = 5;
 
 interface PullRequestRow {
   id: string;
   project_id: string;
   workflow_id: string;
+  review_stage_id: string | null;
 }
 
 interface StageRow {
@@ -112,7 +111,7 @@ export async function applyFindingAction(
 
   const pr = (
     await client.query<PullRequestRow>(
-      `SELECT id, project_id, workflow_id FROM pull_requests
+      `SELECT id, project_id, workflow_id, review_stage_id FROM pull_requests
         WHERE organization_id = $1 AND id = $2 AND project_id = ANY($3::uuid[]) FOR UPDATE`,
       [user.organizationId, pullRequestId, projectIds],
     )
@@ -121,7 +120,10 @@ export async function applyFindingAction(
 
   const finding = (
     await client.query<FindingRow>(
-      `${FINDING_SELECT} WHERE f.id = $1 AND f.pull_request_id = $2 FOR UPDATE OF f`,
+      // Only the latest review's findings are shown and actionable; a finding a newer cycle dropped is gone.
+      `${FINDING_SELECT} WHERE f.id = $1 AND f.pull_request_id = $2
+          AND f.review_id = (SELECT id FROM reviews WHERE pull_request_id = $2 ORDER BY cycle_number DESC LIMIT 1)
+        FOR UPDATE OF f`,
       [findingId, pr.id],
     )
   ).rows[0];
@@ -159,7 +161,7 @@ export async function applyFindingAction(
 
   await client.query(
     `INSERT INTO audit_events (organization_id, project_id, workflow_id, actor_type, actor_id, actor_name, action, target_type, target_id, risk_level, policy, result, details, occurred_at)
-     VALUES ($1,$2,$3,'user',$4,$5,$6,'finding',$7,NULL,NULL,$8,$9,$10)`,
+     VALUES ($1,$2,$3,'user',$4,$5,$6,'review_finding',$7,NULL,NULL,$8,$9,$10)`,
     [
       user.organizationId,
       pr.project_id,
@@ -255,9 +257,10 @@ async function joinOrCreateCycle(
 
 /**
  * Moves the workflow's Review stage to RUNNING the way `transitionWorkflow` (decisions.ts) moves a stage: a
- * `workflow_transitions` row with `user_id` and the reason, the stage pointer re-synced. A stage already RUNNING is
- * left alone; a stage the 0001 state machine cannot restart (COMPLETED, CANCELLED) is left alone as well — the
- * runtime reports the cycle's outcome through the cycles ingest route.
+ * `workflow_transitions` row with `user_id` and the reason, the stage pointer re-synced. The stage is the one the
+ * runtime linked on the pull request (`review_stage_id`), else the stage named Review; a workflow without one keeps
+ * its stages unchanged. A stage already RUNNING is left alone; a stage the 0001 state machine cannot restart
+ * (COMPLETED, CANCELLED) is left alone as well — the runtime reports the cycle's outcome through the cycles route.
  */
 async function setReviewStageRunning(
   client: pg.PoolClient,
@@ -269,9 +272,9 @@ async function setReviewStageRunning(
   const stage = (
     await client.query<StageRow>(
       `SELECT id, state, state_observed_at FROM workflow_stages
-        WHERE workflow_id = $1 AND (name = $2 OR position = $3)
-        ORDER BY (name = $2) DESC, position LIMIT 1 FOR UPDATE`,
-      [pr.workflow_id, REVIEW_STAGE_NAME, REVIEW_STAGE_POSITION],
+        WHERE workflow_id = $1 AND id = COALESCE($2::uuid, (SELECT id FROM workflow_stages WHERE workflow_id = $1 AND name = 'Review' ORDER BY position LIMIT 1))
+        FOR UPDATE`,
+      [pr.workflow_id, pr.review_stage_id],
     )
   ).rows[0];
   if (!stage || stage.state === 'RUNNING' || !canTransition(stage.state, 'RUNNING')) return;

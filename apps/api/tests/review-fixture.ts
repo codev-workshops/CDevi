@@ -58,7 +58,7 @@ export const defaultFindings = (prefix: string) => [
     externalId: `${prefix}-f4`,
     blocking: 'SUGGESTION',
     severity: 'LOW',
-    state: 'FIXED',
+    status: 'fixed',
     evidence: [evidence({ href: undefined, accessible: false })],
   }),
 ];
@@ -78,6 +78,8 @@ export interface ReviewFixtureOptions {
   findings?: ReturnType<typeof finding>[];
   reviewStatus?: 'RUNNING' | 'COMPLETE' | 'FAILED';
   withReview?: boolean;
+  /** Position of the stage the pull request links as its Review stage (default 6); `null` leaves it unlinked. */
+  reviewStagePosition?: number | null;
 }
 
 /**
@@ -127,6 +129,7 @@ export async function reviewFixture(
     href: 'https://git.cdevi.demo/payments-api/pull/4001',
     status: 'OPEN',
     workflowExternalId,
+    reviewStagePosition: opts.reviewStagePosition === undefined ? 6 : opts.reviewStagePosition,
     observedAt: iso(plus(-40 * MIN)),
   });
   expect(pr.statusCode, pr.body).toBe(200);
@@ -136,6 +139,7 @@ export async function reviewFixture(
   let reviewId = '';
   if (opts.withReview !== false) {
     const r = await put(`/api/ingest/pull-requests/${pullRequestExternalId}/reviews/1`, {
+      externalId: `${pullRequestExternalId}-rev-1`,
       status: opts.reviewStatus ?? 'COMPLETE',
       lanes: lanes({ security: 'FAIL', correctness: 'WARN' }),
       findings,

@@ -25,6 +25,7 @@ CREATE TABLE pull_requests (
   project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   workflow_id uuid NOT NULL UNIQUE REFERENCES workflows(id) ON DELETE CASCADE,
   requirement_id uuid REFERENCES requirements(id) ON DELETE SET NULL,
+  review_stage_id uuid REFERENCES workflow_stages(id) ON DELETE SET NULL,   -- the stage Apply Fix flips to RUNNING
   external_id text NOT NULL CHECK (external_id ~ '^[A-Za-z0-9._:-]{1,128}$'),
   number integer NOT NULL CHECK (number >= 1),
   title text NOT NULL CHECK (char_length(title) BETWEEN 1 AND 200),
@@ -68,6 +69,7 @@ CREATE TABLE review_cycles (
   CONSTRAINT review_cycles_iteration_budget_check CHECK (iteration <= max_iterations)
 );
 CREATE INDEX review_cycles_pr_idx ON review_cycles (pull_request_id, cycle_number DESC);
+CREATE UNIQUE INDEX review_cycles_one_running_idx ON review_cycles (pull_request_id) WHERE state = 'RUNNING';   -- Apply Fix attaches to the running cycle
 CREATE TRIGGER review_cycles_updated_at BEFORE UPDATE ON review_cycles FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 -- reviews: one AI review per (pull request, cycle). lanes is exactly 7 × { lane, status, summary? } (the contract
@@ -127,7 +129,7 @@ CREATE TABLE review_findings (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (review_id, position),
-  UNIQUE (organization_id, external_id),
+  UNIQUE (review_id, external_id),   -- a finding keeps its runtime id across review cycles
   CONSTRAINT review_findings_dismissed_check CHECK (state <> 'DISMISSED' OR (dismissed_reason IS NOT NULL AND dismissed_at IS NOT NULL))
 );
 CREATE INDEX review_findings_review_idx ON review_findings (review_id, position);

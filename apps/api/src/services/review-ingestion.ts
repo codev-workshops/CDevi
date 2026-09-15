@@ -10,6 +10,7 @@
  */
 import {
   canTransition,
+  type FindingIngestStatus,
   type FindingState,
   type IngestResult,
   type PullRequestIngest,
@@ -30,6 +31,7 @@ interface PullRequestRow {
   workflow_id: string;
   workflow_state: WorkflowState;
   observed_at: Date;
+  review_stage_id: string | null;
 }
 
 interface PreservedFinding {
@@ -51,16 +53,8 @@ interface StageRow {
   finished_at: Date | null;
 }
 
-const REVIEW_STAGE_NAME = 'Review';
-const REVIEW_STAGE_POSITION = 6;
 const DEFAULT_MAX_ITERATIONS = 5;
-/** The runtime reports findings as OPEN or FIXED; human outcomes are preserved from the stored row, never ingested. */
-const RUNTIME_FINDING_STATES: readonly FindingState[] = ['OPEN', 'FIXED'];
 const TERMINAL_CYCLE_STATES = ['COMPLETED', 'FAILED', 'CANCELLED'];
-
-/** A review has no external id of its own in the ingest contract; it is named after its pull request and cycle. */
-export const reviewExternalId = (pullRequestExternalId: string, cycle: number): string =>
-  `rev-${cycle}:${pullRequestExternalId}`.slice(0, 128);
 
 export class ReviewIngestionService {
   constructor(
@@ -125,7 +119,7 @@ export class ReviewIngestionService {
   ): Promise<PullRequestRow> {
     const pr = (
       await client.query<PullRequestRow>(
-        `SELECT pr.id, pr.project_id, pr.workflow_id, w.state AS workflow_state, pr.observed_at
+        `SELECT pr.id, pr.project_id, pr.workflow_id, w.state AS workflow_state, pr.observed_at, pr.review_stage_id
            FROM pull_requests pr JOIN workflows w ON w.id = pr.workflow_id
           WHERE pr.organization_id = $1 AND pr.external_id = $2 FOR UPDATE OF pr`,
         [this.principal.organizationId, externalId],
@@ -172,6 +166,20 @@ export class ReviewIngestionService {
         if (!rq) throw problems.notFound(`Unknown requirement ${body.requirementExternalId}.`);
         requirementId = rq.id;
       }
+      let reviewStageId: string | null = null;
+      if (body.reviewStagePosition != null) {
+        const stage = (
+          await client.query<{ id: string }>(
+            `SELECT id FROM workflow_stages WHERE workflow_id = $1 AND position = $2`,
+            [w.id, body.reviewStagePosition],
+          )
+        ).rows[0];
+        if (!stage)
+          throw problems.validation([
+            { path: 'reviewStagePosition', message: 'no such stage on this workflow' },
+          ]);
+        reviewStageId = stage.id;
+      }
       const existing = (
         await client.query<{ id: string; workflow_id: string; observed_at: Date }>(
           `SELECT id, workflow_id, observed_at FROM pull_requests WHERE organization_id = $1 AND external_id = $2 FOR UPDATE`,
@@ -189,8 +197,17 @@ export class ReviewIngestionService {
           return { outcome: 'stale', id: existing.id, state: w.state };
         }
         await client.query(
-          `UPDATE pull_requests SET requirement_id = $2, number = $3, title = $4, href = $5, status = $6, observed_at = $7 WHERE id = $1`,
-          [existing.id, requirementId, body.number, body.title, body.href, body.status, observedAt],
+          `UPDATE pull_requests SET requirement_id = $2, number = $3, title = $4, href = $5, status = $6, observed_at = $7, review_stage_id = $8 WHERE id = $1`,
+          [
+            existing.id,
+            requirementId,
+            body.number,
+            body.title,
+            body.href,
+            body.status,
+            observedAt,
+            reviewStageId,
+          ],
         );
         await this.log(client, 'accepted');
         return { outcome: 'accepted', id: existing.id, state: w.state };
@@ -207,8 +224,8 @@ export class ReviewIngestionService {
         );
       const id = (
         await client.query<{ id: string }>(
-          `INSERT INTO pull_requests (organization_id, project_id, workflow_id, requirement_id, external_id, number, title, href, status, observed_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+          `INSERT INTO pull_requests (organization_id, project_id, workflow_id, requirement_id, external_id, number, title, href, status, observed_at, review_stage_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
           [
             this.principal.organizationId,
             w.project_id,
@@ -220,6 +237,7 @@ export class ReviewIngestionService {
             body.href,
             body.status,
             observedAt,
+            reviewStageId,
           ],
         )
       ).rows[0]!.id;
@@ -240,16 +258,6 @@ export class ReviewIngestionService {
     body: ReviewIngest,
   ): Promise<IngestResult> {
     return this.run(async (client) => {
-      const bad = body.findings.findIndex(
-        (f) => f.state && !RUNTIME_FINDING_STATES.includes(f.state),
-      );
-      if (bad >= 0)
-        throw problems.validation([
-          {
-            path: `findings.${bad}.state`,
-            message: 'the runtime reports OPEN or FIXED; other states are human outcomes',
-          },
-        ]);
       const pr = await this.lockPullRequest(client, externalId);
       const existing = (
         await client.query<{ id: string; observed_at: Date }>(
@@ -268,7 +276,7 @@ export class ReviewIngestionService {
       if (existing) {
         reviewId = existing.id;
         await client.query(
-          `UPDATE reviews SET status = $2, lanes = $3, observed_at = $4, started_at = $5, finished_at = $6, agent_run_id = $7 WHERE id = $1`,
+          `UPDATE reviews SET status = $2, lanes = $3, observed_at = $4, started_at = $5, finished_at = $6, agent_run_id = $7, external_id = $8 WHERE id = $1`,
           [
             reviewId,
             body.status,
@@ -277,6 +285,7 @@ export class ReviewIngestionService {
             new Date(body.startedAt),
             body.finishedAt ? new Date(body.finishedAt) : null,
             agentRunId,
+            body.externalId,
           ],
         );
       } else {
@@ -289,7 +298,7 @@ export class ReviewIngestionService {
               pr.project_id,
               pr.workflow_id,
               pr.id,
-              reviewExternalId(externalId, cycle),
+              body.externalId,
               cycle,
               body.status,
               lanes,
@@ -302,20 +311,25 @@ export class ReviewIngestionService {
         ).rows[0]!.id;
       }
 
+      // A finding keeps its runtime externalId across cycles (unique per review, not per PR): the human outcome
+      // recorded on this review's own row wins, otherwise the one on the most recent earlier cycle carries over.
       const preserved = new Map(
         (
           await client.query<PreservedFinding>(
-            // externalId is unique per organization: a finding the runtime carries over from an earlier cycle
-            // moves into this review with its human outcome.
-            `DELETE FROM review_findings WHERE review_id = $1 OR (pull_request_id = $2 AND external_id = ANY($3::text[]))
-             RETURNING external_id, state, dismissed_reason, dismissed_by_user_id, dismissed_at, fix_cycle_id, issue_requested_by_user_id, issue_requested_at`,
+            `SELECT DISTINCT ON (f.external_id)
+                    f.external_id, f.state, f.dismissed_reason, f.dismissed_by_user_id, f.dismissed_at, f.fix_cycle_id,
+                    f.issue_requested_by_user_id, f.issue_requested_at
+             FROM review_findings f JOIN reviews r ON r.id = f.review_id
+             WHERE f.pull_request_id = $2 AND f.external_id = ANY($3::text[])
+             ORDER BY f.external_id, (f.review_id = $1) DESC, r.cycle_number DESC`,
             [reviewId, pr.id, body.findings.map((f) => f.externalId)],
           )
         ).rows.map((f) => [f.external_id, f] as const),
       );
+      await client.query(`DELETE FROM review_findings WHERE review_id = $1`, [reviewId]);
       for (const f of body.findings) {
         const prev = preserved.get(f.externalId);
-        const state = mergedState(prev?.state, f.state);
+        const state = mergedState(prev?.state, f.status);
         const keep = prev && state === prev.state ? prev : null;
         await client.query(
           `INSERT INTO review_findings (organization_id, project_id, workflow_id, pull_request_id, review_id, external_id, position, lane, severity, blocking,
@@ -390,6 +404,19 @@ export class ReviewIngestionService {
         throw problems.validation([
           { path: 'iteration', message: `must not exceed maxIterations (${maxIterations})` },
         ]);
+      if (body.state === 'RUNNING') {
+        // One fix loop per pull request (review_cycles_one_running_idx): a 409 instead of a unique violation.
+        const other = (
+          await client.query<{ cycle_number: number }>(
+            `SELECT cycle_number FROM review_cycles WHERE pull_request_id = $1 AND state = 'RUNNING' AND cycle_number <> $2`,
+            [pr.id, cycle],
+          )
+        ).rows[0];
+        if (other)
+          throw problems.invalidTransition(
+            `Cycle ${other.cycle_number} is still RUNNING on this pull request.`,
+          );
+      }
       const agentRunId = await this.agentRunId(client, pr.workflow_id, body.agentRunExternalId);
       const finishedAt = body.finishedAt
         ? new Date(body.finishedAt)
@@ -443,26 +470,35 @@ export class ReviewIngestionService {
           )
         ).rows[0]!.id;
       }
-      if (body.state === 'COMPLETED' || body.state === 'FAILED')
-        await this.syncReviewStage(client, pr.workflow_id, body.state, observedAt, cycle);
+      // The Review stage mirrors the pull request's current fix loop: only its latest cycle may move it.
+      const latest = (
+        await client.query<{ n: number }>(
+          `SELECT max(cycle_number) AS n FROM review_cycles WHERE pull_request_id = $1`,
+          [pr.id],
+        )
+      ).rows[0]!.n;
+      if ((body.state === 'COMPLETED' || body.state === 'FAILED') && cycle === latest)
+        await this.syncReviewStage(client, pr, body.state, observedAt, cycle);
       await this.log(client, 'accepted');
       return { outcome: 'accepted', id, state: pr.workflow_state };
     });
   }
 
+  /** The stage linked on the pull request (`review_stage_id`), else the stage named Review; none → stages untouched. */
   private async syncReviewStage(
     client: pg.PoolClient,
-    workflowId: string,
+    pr: PullRequestRow,
     to: 'COMPLETED' | 'FAILED',
     observedAt: Date,
     cycle: number,
   ): Promise<void> {
+    const workflowId = pr.workflow_id;
     const stage = (
       await client.query<StageRow>(
         `SELECT id, state, state_observed_at, started_at, finished_at FROM workflow_stages
-          WHERE workflow_id = $1 AND (name = $2 OR position = $3)
-          ORDER BY (name = $2) DESC, position LIMIT 1 FOR UPDATE`,
-        [workflowId, REVIEW_STAGE_NAME, REVIEW_STAGE_POSITION],
+          WHERE workflow_id = $1 AND id = COALESCE($2::uuid, (SELECT id FROM workflow_stages WHERE workflow_id = $1 AND name = 'Review' ORDER BY position LIMIT 1))
+          FOR UPDATE`,
+        [workflowId, pr.review_stage_id],
       )
     ).rows[0];
     if (!stage || stage.state === to) return;
@@ -491,11 +527,8 @@ export class ReviewIngestionService {
 }
 
 /** The stored human outcome wins; the runtime may only open a finding or report it FIXED. */
-function mergedState(
-  prev: FindingState | undefined,
-  reported: FindingState | undefined,
-): FindingState {
+function mergedState(prev: FindingState | undefined, reported: FindingIngestStatus): FindingState {
   if (prev === 'DISMISSED' || prev === 'ISSUE_REQUESTED') return prev;
-  if (prev === 'FIX_REQUESTED') return reported === 'FIXED' ? 'FIXED' : 'FIX_REQUESTED';
-  return reported ?? 'OPEN';
+  if (prev === 'FIX_REQUESTED') return reported === 'fixed' ? 'FIXED' : 'FIX_REQUESTED';
+  return reported === 'fixed' ? 'FIXED' : 'OPEN';
 }

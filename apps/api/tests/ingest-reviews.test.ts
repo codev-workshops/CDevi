@@ -41,6 +41,7 @@ describe.skipIf(skipDb)(
       observedAt: string,
       over: Record<string, unknown> = {},
     ) => ({
+      externalId: uniq('rev'),
       status: 'COMPLETE',
       lanes: lanes({ security: 'FAIL' }),
       findings,
@@ -208,7 +209,7 @@ describe.skipIf(skipDb)(
       expect(await fixOn(1)).toBe(cycleId);
       const p = fx.pullRequestExternalId;
       const reported = [
-        finding(1, { externalId: `${p}-f1`, state: 'FIXED' }),
+        finding(1, { externalId: `${p}-f1`, status: 'fixed' }),
         finding(2, { externalId: `${p}-f2` }),
         finding(3, { externalId: `${p}-f9`, blocking: 'SUGGESTION' }),
       ];
@@ -410,12 +411,104 @@ describe.skipIf(skipDb)(
       const p = fx.pullRequestExternalId;
       const r = await put(
         `/api/ingest/pull-requests/${p}/reviews/2`,
-        reviewBody([finding(1, { externalId: `${p}-f1`, state: 'FIXED' })], iso(plus(-19 * MIN))),
+        reviewBody([finding(1, { externalId: `${p}-f1`, status: 'fixed' })], iso(plus(-19 * MIN))),
       );
       expect(r.statusCode, r.body).toBe(200);
       const after = await detail(fx.pullRequestId);
       expect(after.cycles).toHaveLength(1);
       expect(after.cycles[0]).toMatchObject({ state: 'RUNNING', fixedCount: 0 });
+    });
+
+    it('FR-036 a second RUNNING cycle on the same pull request → 409; a report for an older cycle never moves the Review stage', async () => {
+      const fx = await reviewFixture(app, { reviewStageState: 'RUNNING' });
+      const p = fx.pullRequestExternalId;
+      const c1 = await put(`/api/ingest/pull-requests/${p}/cycles/1`, {
+        ...cycleBody({ state: 'RUNNING', fixedCount: 0, remainingCount: 3 }),
+        finishedAt: undefined,
+        observedAt: iso(plus(-18 * MIN)),
+      });
+      expect(c1.statusCode, c1.body).toBe(200);
+      const c2 = await put(`/api/ingest/pull-requests/${p}/cycles/2`, {
+        ...cycleBody({ state: 'RUNNING', fixedCount: 0, remainingCount: 3, iteration: 2 }),
+        finishedAt: undefined,
+        observedAt: iso(plus(-17 * MIN)),
+      });
+      expect(c2.statusCode, c2.body).toBe(409);
+      expect(c2.headers['content-type']).toContain('application/problem+json');
+
+      // Cycle 2 is reported straight as CANCELLED: allowed, and CANCELLED leaves the stage alone.
+      const c2c = await put(
+        `/api/ingest/pull-requests/${p}/cycles/2`,
+        cycleBody({
+          state: 'CANCELLED',
+          fixedCount: 0,
+          remainingCount: 3,
+          iteration: 2,
+          observedAt: iso(plus(-16 * MIN)),
+        }),
+      );
+      expect(c2c.statusCode, c2c.body).toBe(200);
+      expect(await reviewStage(fx.workflowId)).toBe('RUNNING');
+      // A later report for cycle 1 is accepted as history but cannot complete the stage: cycle 2 is the latest.
+      const done1 = await put(
+        `/api/ingest/pull-requests/${p}/cycles/1`,
+        cycleBody({ observedAt: iso(plus(-15 * MIN)) }),
+      );
+      expect(done1.statusCode, done1.body).toBe(200);
+      expect(await reviewStage(fx.workflowId)).toBe('RUNNING');
+      const d = await detail(fx.pullRequestId);
+      expect(d.cycles.map((c) => [c.cycleNumber, c.state])).toEqual([
+        [2, 'CANCELLED'],
+        [1, 'COMPLETED'],
+      ]);
+    });
+
+    it('FR-036 the Review stage is the one linked by reviewStagePosition; an unlinked pull request without a Review stage leaves stages alone', async () => {
+      const fx = await reviewFixture(app, {
+        reviewStageState: 'RUNNING',
+        reviewStagePosition: null,
+      });
+      const p = fx.pullRequestExternalId;
+      await pool.query(
+        `UPDATE workflow_stages SET name = 'Verify' WHERE workflow_id = $1 AND position = $2`,
+        [fx.workflowId, REVIEW_STAGE_POSITION],
+      );
+      const done = await put(`/api/ingest/pull-requests/${p}/cycles/1`, cycleBody());
+      expect(done.statusCode, done.body).toBe(200);
+      expect(await reviewStage(fx.workflowId)).toBe('RUNNING');
+
+      const bad = await put(`/api/ingest/pull-requests/${p}`, {
+        number: 4242,
+        title: 'Linked pull request',
+        href: 'https://git.cdevi.demo/payments-api/pull/4242',
+        status: 'OPEN',
+        workflowExternalId: fx.workflowExternalId,
+        reviewStagePosition: 19,
+        observedAt: iso(plus(-12 * MIN)),
+      });
+      expect(bad.statusCode, bad.body).toBe(400);
+      const link = await put(`/api/ingest/pull-requests/${p}`, {
+        number: 4242,
+        title: 'Linked pull request',
+        href: 'https://git.cdevi.demo/payments-api/pull/4242',
+        status: 'OPEN',
+        workflowExternalId: fx.workflowExternalId,
+        reviewStagePosition: REVIEW_STAGE_POSITION,
+        observedAt: iso(plus(-12 * MIN)),
+      });
+      expect(link.statusCode, link.body).toBe(200);
+      const c2 = await put(`/api/ingest/pull-requests/${p}/cycles/2`, {
+        ...cycleBody({ state: 'RUNNING', iteration: 2, fixedCount: 0, remainingCount: 3 }),
+        finishedAt: undefined,
+        observedAt: iso(plus(-11 * MIN)),
+      });
+      expect(c2.statusCode, c2.body).toBe(200);
+      const done2 = await put(
+        `/api/ingest/pull-requests/${p}/cycles/2`,
+        cycleBody({ iteration: 2, observedAt: iso(plus(-10 * MIN)) }),
+      );
+      expect(done2.statusCode, done2.body).toBe(200);
+      expect(await reviewStage(fx.workflowId)).toBe('COMPLETED');
     });
   },
 );
