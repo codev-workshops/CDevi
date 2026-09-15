@@ -489,11 +489,13 @@ CREATE TABLE requirements (
 );
 CREATE UNIQUE INDEX requirements_jira_key_idx ON requirements (organization_id, (external_ref->>'key')) WHERE source = 'jira';
 CREATE INDEX requirements_list_idx     ON requirements (organization_id, project_id, created_at DESC, id DESC);
-CREATE INDEX requirements_state_idx    ON requirements (organization_id, state, created_at DESC, id DESC) WHERE state NOT IN ('COMPLETED','REJECTED');
+CREATE INDEX requirements_state_idx    ON requirements (organization_id, state, created_at DESC, id DESC);   -- full: the state filter accepts terminal states too (§23.3)
 CREATE INDEX requirements_assignee_idx ON requirements (organization_id, assignee_user_id, created_at DESC, id DESC) WHERE assignee_user_id IS NOT NULL;
 CREATE TRIGGER requirements_updated_at BEFORE UPDATE ON requirements FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
--- §22.3 requirement_analysis_items: one row per criterion / rule / open question (R34)
+-- §22.3 requirement_analysis_items: one row per criterion / rule / open question (R34).
+-- Human-authored items (create form) and AI items (analysis ingest) have DISJOINT position spaces:
+-- the unique key includes ai_generated, so an authored criterion and an AI criterion may both be position 1.
 CREATE TABLE requirement_analysis_items (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   organization_id uuid NOT NULL REFERENCES organizations(id),
@@ -505,9 +507,10 @@ CREATE TABLE requirement_analysis_items (
   ai_generated boolean NOT NULL,
   source text NOT NULL CHECK (char_length(source) <= 120),   -- 'user:<display name>' | 'agent:<agent>'
   created_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (requirement_id, kind, position)
+  UNIQUE (requirement_id, kind, ai_generated, position),
+  CONSTRAINT requirement_analysis_items_human_check CHECK (ai_generated OR (kind = 'acceptance_criterion' AND position <= 20))   -- humans author ≤ 20 criteria only (R45)
 );
-CREATE INDEX requirement_analysis_items_req_idx ON requirement_analysis_items (requirement_id, kind, position);
+CREATE INDEX requirement_analysis_items_req_idx ON requirement_analysis_items (requirement_id, kind, ai_generated, position);
 
 -- §22.4 requirement_transitions: append-only history (R32), mirrors workflow_transitions
 CREATE TABLE requirement_transitions (
@@ -523,8 +526,12 @@ CREATE TABLE requirement_transitions (
   occurred_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX requirement_transitions_req_idx ON requirement_transitions (requirement_id, occurred_at);
+CREATE FUNCTION requirement_transitions_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'requirement_transitions is append-only' USING ERRCODE = 'P0001';
+END $$;   -- same body as 0003 audit_events_append_only(), per-table message like 0001
 CREATE TRIGGER requirement_transitions_append_only BEFORE UPDATE OR DELETE ON requirement_transitions
-  FOR EACH ROW EXECUTE FUNCTION audit_events_append_only();   -- reuses the 0003 append-only guard
+  FOR EACH ROW EXECUTE FUNCTION requirement_transitions_append_only();
 
 -- §22.5 workflows.requirement_id — one workflow per requirement in US4 (R37)
 ALTER TABLE workflows ADD COLUMN requirement_id uuid REFERENCES requirements(id) ON DELETE SET NULL;
@@ -571,11 +578,8 @@ END $$;
 CREATE TRIGGER inbox_changed_requirements AFTER INSERT OR UPDATE ON requirements FOR EACH ROW EXECUTE FUNCTION notify_requirement_changed();
 CREATE TRIGGER inbox_changed_analysis_items AFTER INSERT OR DELETE ON requirement_analysis_items FOR EACH ROW EXECUTE FUNCTION notify_requirement_changed();
 
--- §22.8 RLS (same policy shape as 0001) and grants
-ALTER TABLE integration_project_mappings ENABLE ROW LEVEL SECURITY;
-ALTER TABLE requirements                 ENABLE ROW LEVEL SECURITY;
-ALTER TABLE requirement_analysis_items   ENABLE ROW LEVEL SECURITY;
-ALTER TABLE requirement_transitions      ENABLE ROW LEVEL SECURITY;
+-- §22.8 RLS policies (same shape as 0001; ENABLE/DISABLE ROW LEVEL SECURITY is NOT done here — the CDEVI_RLS loop in
+-- packages/db/src/migrate.ts owns it for every table in RLS_TABLES, which gains these four names) and grants
 DO $$
 DECLARE t text;
 BEGIN
@@ -589,7 +593,7 @@ GRANT SELECT, INSERT ON requirement_transitions TO app_user;      -- append-only
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_user;
 ```
 
-Notes: the append-only trigger reuses `audit_events_append_only()` from 0003 (it raises on any UPDATE/DELETE regardless of table). The webhook's lookups run with `app.organization_id` **unset** until the mapping resolves the organization; the service therefore resolves the mapping with the pool owner connection (which bypasses RLS as today's `visibleProjects` bootstrap does) and then opens the transaction with the resolved organization. Mirrored in `packages/db/src/schema.ts`: `requirementState`, `requirementSource`, `analysisItemKind`, `externalFlag` enums; `integrationProjectMappings`, `requirements`, `requirementAnalysisItems`, `requirementTransitions` tables; `workflows.requirementId`; `inboxChangeLog.requirementId` (and `workflowId` nullable); every index above; `RLS_TABLES` gains the four names. Rollback: drop the two triggers/functions, the `inbox_change_log` constraint and column (re-add `NOT NULL` only if no requirement rows exist), `workflows.requirement_id` and its indexes, the four tables, the four enums.
+Notes: `requirement_transitions_append_only()` has the same body as 0003's `audit_events_append_only()` but names its own table in the message, as 0001 does per table. **Webhook and RLS**: the mapping lookup (`SELECT … FROM integration_project_mappings WHERE provider = 'jira' AND external_project_key = $1`) runs on `app.pool` (`DATABASE_URL`, role `app_user`) *before* any organization is known, so `app.organization_id` is unset; the table carries the same `organization_id` isolation policy as every other table, which means that with `CDEVI_RLS=on` this lookup returns no rows — exactly the limitation the sessions bootstrap in `apps/api/src/plugins/db.ts` already has (it also reads before the organization is known). RLS is flag-off in dev, test and CI (`CDEVI_RLS` unset), which both bootstraps depend on; a bypass role for the two bootstraps is an open question for the deployment story, not for US4, and nothing in US4 widens the policy. After the mapping resolves, `handleJiraEvent` opens `app.tx({ organizationId })` like every other write. Mirrored in `packages/db/src/schema.ts`: `requirementState`, `requirementSource`, `analysisItemKind`, `externalFlag` enums; `integrationProjectMappings`, `requirements`, `requirementAnalysisItems`, `requirementTransitions` tables; `workflows.requirementId`; `inboxChangeLog.requirementId` (and `workflowId` nullable); every index above. `packages/db/src/migrate.ts` `RLS_TABLES` gains `integration_project_mappings`, `requirements`, `requirement_analysis_items`, `requirement_transitions`. Rollback: drop the three triggers/functions, the `inbox_change_log` constraint and column (re-add `NOT NULL` only if no requirement rows exist), `workflows.requirement_id` and its indexes, the four tables, the four enums.
 
 ## 23. Requirement shapes (`packages/contracts/src/requirements.ts`, Zod)
 
@@ -620,7 +624,8 @@ export const Requirement = z.object({            // list row (§23.1)
   href: z.string(),                              // '/requirements/{id}'
 });
 
-export const AnalysisItem = z.object({ id: Uuid, kind: AnalysisItemKind, position: z.number().int(), text: z.string(), aiGenerated: z.boolean(), source: z.string() });
+export const AnalysisItem = z.object({ id: Uuid, kind: AnalysisItemKind, position: z.number().int().min(1).max(50), text: z.string(), aiGenerated: z.boolean(), source: z.string() });
+// `position` is 1..n within (kind, aiGenerated); lists are ordered human items first (ai_generated ASC), then position ASC
 
 export const RequirementActions = z.object({ canSubmit: z.boolean(), canApprove: z.boolean(), canReject: z.boolean(), submitLabel: z.enum(['Submit for analysis','Resubmit for analysis']), reasons: z.array(z.string()) });
 
@@ -629,7 +634,7 @@ export const RequirementDetail = z.object({       // §23.2
   businessObjective: z.string(),
   analysis: z.object({
     observedAt: IsoDateTime.nullable(), agent: z.string().nullable(), summary: z.string().nullable(),   // summary is AI-generated when present
-    acceptanceCriteria: z.array(AnalysisItem).max(70),   // ≤ 20 human + ≤ 50 AI
+    acceptanceCriteria: z.array(AnalysisItem).max(70),   // ≤ 20 human (positions 1..20, aiGenerated:false) + ≤ 50 AI (positions 1..50, aiGenerated:true)
     rules: z.array(AnalysisItem).max(50),
     openQuestions: z.array(AnalysisItem).max(20),
   }),
@@ -775,7 +780,7 @@ export const canTransitionRequirement = (from: RequirementState | null, to: Requ
 export const isTerminalRequirement = (s: RequirementState) => s === 'COMPLETED' || s === 'REJECTED';
 export const stateAfterAnalysis = (openQuestions: number): RequirementState => openQuestions === 0 ? 'READY' : 'NEEDS_CLARIFICATION';
 export function requirementStateForWorkflow(current: RequirementState, workflow: WorkflowState): RequirementState | null;   // R33 table
-export function requirementActions(state: RequirementState, role: Role): RequirementActions;   // uses canCreateRequirement / canDecide from decision-rules; reasons[] explain disabled actions ("Only approvers and administrators can approve", "Analysis has not finished")
+export function requirementActions(state: RequirementState, role: Role): RequirementActions;   // (state, role) only — no flags; uses canCreateRequirement / canDecide from decision-rules; reasons[] explain disabled actions ("Only approvers and administrators can approve", "Analysis has not finished")
 export const REQUIREMENTS_PAGE_SIZE = 50; export const WORKFLOWS_PAGE_SIZE = 50;
 export function encodeRequirementCursor(keys: { createdAt: string; id: string }): string;  export function decodeRequirementCursor(cursor: string): { createdAt: string; id: string };  // b64url ['requirements', createdAt, id]; throws InvalidCursorError
 export function encodeWorkflowCursor(keys: { stateObservedAt: string; id: string }): string; export function decodeWorkflowCursor(cursor: string): { stateObservedAt: string; id: string };
@@ -784,7 +789,7 @@ export const isSafeExternalUrl = (url: string) => /^https:\/\//.test(url);
 export type JiraMappedEvent = { kind: 'create' | 'update' | 'flag' | 'ignore'; key: string; projectKey: string; title: string; objective: string; url: (base: string) => string; updatedAt: string | null; flag: 'deleted' | 'closed' | null; assigneeEmail: string | null };
 export function mapJiraEvent(event: JiraWebhookEventLike): JiraMappedEvent;   // R36 table; 'done' status category → flag 'closed'
 export function adfToPlainText(doc: unknown, max = 4000): string;              // walks ADF `content[].text`, joins paragraphs with '\n', truncates
-export const REQUIREMENT_STATE_WORDS: Readonly<Record<RequirementState, string>>;   // 'needs clarification' etc. — must equal the design-system table (R41); asserted equal in a test
+export const REQUIREMENT_STATE_WORDS: Readonly<Record<RequirementState, string>>;   // 'needs clarification' etc. — must equal the design-system table (R41); asserted equal in apps/web (T110), the only package that depends on both @cdevi/contracts and @cdevi/design-system
 ```
 
 Browser code imports only this subpath, `/vocabulary` and `/read-model`; `requirements.ts`, `workflow-list.ts`, `integrations.ts` (Zod) stay server-side.
@@ -797,8 +802,10 @@ Browser code imports only this subpath, `/vocabulary` and `/read-model`; `requir
 | `…/submit` | default | `SELECT … FOR UPDATE` → `canTransitionRequirement(state,'ANALYZING')` else 409 → `UPDATE state, submitted_*` → transition row (user) → `audit_events requirement.submitted` → detail |
 | `…/approve` | default | R37 steps 1–10 (lock → READY check → workflow + 7 stages + transitions → APPROVED → transition → 2 audit rows) |
 | `…/reject` | default | lock → state ∈ DRAFT/NEEDS_CLARIFICATION/READY → `UPDATE state='REJECTED', rejected_*` → transition (reason) → `audit_events requirement.rejected` |
-| analysis ingest | default | principal scope → lock → state check → `observedAt` watermark → `DELETE … WHERE requirement_id AND ai_generated` → `INSERT` items → `UPDATE analysis_*, state` → transition (agent) → `ingestion_log` |
-| Jira webhook | default | verify (outside tx) → mapping lookup → tx with resolved organization: create/update/flag; flag path additionally locks the linked workflow, `canTransition(state,'BLOCKED')` → `UPDATE workflows`, current stage → BLOCKED, `workflow_transitions (source='jira-webhook')`, `audit_events requirement.flagged` |
+| analysis ingest | default | principal scope → lock → state check → `observedAt` watermark → `DELETE … WHERE requirement_id AND ai_generated` → `INSERT` AI items (positions 1..n per kind, `ai_generated = true`; human rows keep positions 1..20 in their own key space) → `UPDATE analysis_*, state` → transition (agent) → `ingestion_log` |
+| Jira webhook | default | verify (outside tx) → mapping lookup (no lock) → tx with resolved organization: create/update → lock the requirement; **flag path**: read the requirement's `id` and linked `workflows.id` without locking, then lock **the workflow first** (`SELECT … FROM workflows … FOR UPDATE`), then the requirement (`FOR UPDATE`), `canTransition(state,'BLOCKED')` → `UPDATE workflows`, current stage → BLOCKED, `workflow_transitions (source='jira-webhook')`, `UPDATE requirements SET external_flag…`, `audit_events requirement.flagged` |
+
+**Lock order** (deadlock rule): any transaction that locks both a workflow and its requirement locks the **workflow first, then the requirement**. The R33 trigger runs inside a `workflows` UPDATE (stage ingest, US1 actions, US2 decisions) that already holds the workflow row lock and then locks the requirement; the webhook flag path follows the same order. `…/approve` locks only the requirement and *inserts* the workflow (no existing row to lock), so it cannot participate in a cycle.
 | reads (`GET /requirements`, `GET /requirements/{id}`, `GET /workflows`) | `REPEATABLE READ` | page + count (list); header + items + transitions (≤ 40) + audit (≤ 20) + linked workflow (detail) |
 
 ## 30. Seed additions (research R44)
