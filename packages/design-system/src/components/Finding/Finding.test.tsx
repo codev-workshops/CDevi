@@ -108,6 +108,7 @@ describe('FindingRow and AuditTable', () => {
         blocking="BLOCKING"
         lane="Security"
         title="Refund endpoint does not verify payment ownership"
+        description="POST /refunds issues the refund without checking the caller owns the payment."
         impact="A user may refund another user's payment."
         evidence={[{ label: 'RefundController.java:84', href: '#l84' }]}
         fix="Validate payment ownership before processing."
@@ -128,6 +129,7 @@ describe('FindingRow and AuditTable', () => {
     expect(within(art).getByText('high')).toHaveClass('cd-fail');
     expect(within(art).getByText('blocking')).toHaveClass('cd-needs-you');
     expect(art).toHaveClass('cd-finding-blocking');
+    expect(within(art).getByText('Description')).toBeInTheDocument();
     expect(within(art).getByText('Impact')).toBeInTheDocument();
     expect(within(art).getByRole('link', { name: 'RefundController.java:84' })).toBeInTheDocument();
     expect(within(art).getByText('Recommended fix')).toBeInTheDocument();

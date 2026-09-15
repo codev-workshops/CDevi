@@ -11,6 +11,7 @@ import {
   FINDING_SEVERITIES,
   FINDING_STATES,
   LANE_STATUSES,
+  PULL_REQUEST_STATUSES,
   REVIEW_CYCLE_STATES,
   REVIEW_LANES,
   REVIEW_STATUSES,
@@ -30,7 +31,7 @@ export const FindingState = z.enum(FINDING_STATES);
 export type FindingState = z.infer<typeof FindingState>;
 export const ReviewCycleState = z.enum(REVIEW_CYCLE_STATES);
 export type ReviewCycleState = z.infer<typeof ReviewCycleState>;
-export const PullRequestStatus = z.enum(['OPEN', 'MERGED', 'CLOSED']);
+export const PullRequestStatus = z.enum(PULL_REQUEST_STATUSES);
 export type PullRequestStatus = z.infer<typeof PullRequestStatus>;
 
 /** Bounded prose that may span lines (description, impact, recommended fix). */
