@@ -30,6 +30,21 @@ const stage = (position: number, state: WorkflowState, current = false): Stage =
 };
 const ref = (s: Stage) => ({ id: s.id, position: s.position, name: s.name });
 
+/** specs/001 US5 drill-down: two runs on the retried Test stage (newest first) and one on the current stage. */
+export function detailWithRuns(): WorkflowDetail {
+  const d = detail();
+  const test = d.stages[4]!;
+  const cur = d.stages[5]!;
+  test.agentRuns = [
+    { id: uuid(), agent: 'Test Agent', state: 'COMPLETED', stagePosition: test.position },
+    { id: uuid(), agent: 'Test Agent', state: 'FAILED', stagePosition: test.position },
+  ];
+  cur.agentRuns = [
+    { id: uuid(), agent: 'Approve Agent', state: 'WAITING_FOR_HUMAN', stagePosition: cur.position },
+  ];
+  return d;
+}
+
 export function detail(over: Partial<WorkflowDetail> = {}): WorkflowDetail {
   const stages = [
     stage(1, 'COMPLETED'),

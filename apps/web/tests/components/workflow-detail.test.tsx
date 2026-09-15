@@ -7,6 +7,7 @@ import {
   blockedDetail,
   completedDetail,
   detail,
+  detailWithRuns,
   emptyDetail,
   failedDetail,
 } from '../fixtures/workflow-detail';
@@ -86,6 +87,60 @@ describe('Workflow Detail (specs/001 US1)', () => {
     expect(within(cur).getByText(/not evidence/)).toBeInTheDocument();
     expect(cur).toHaveTextContent('Waiting for a human: Approval required before merge');
     await expectNoViolations(container);
+  });
+
+  it('FR-016 Workflow Detail stage renders an Inspect run link per agent run, keeps the summary and adds no saffron', async () => {
+    const d = detailWithRuns();
+    const { container } = renderApp(<WorkflowDetailScreen initial={d} userRole="engineer" />);
+    const pipeline = screen.getByRole('list', { name: 'Stage pipeline' });
+    const steps = within(pipeline).getAllByRole('listitem');
+
+    // Stages without runs render nothing to inspect.
+    expect(within(steps[0]!).queryAllByRole('link')).toHaveLength(0);
+
+    const test = steps[4]!;
+    const [r1, r2] = d.stages[4]!.agentRuns;
+    const testLinks = within(test).getAllByRole('link', { name: /^Inspect run/ });
+    expect(testLinks).toHaveLength(2);
+    expect(testLinks[0]).toHaveAttribute('href', `/agents/runs/${r1!.id}`);
+    expect(testLinks[0]).toHaveAccessibleName('Inspect run 1 of 2 by Test Agent, completed');
+    expect(testLinks[0]).toHaveTextContent('Inspect run · Test Agent');
+    expect(testLinks[1]).toHaveAttribute('href', `/agents/runs/${r2!.id}`);
+    expect(testLinks[1]).toHaveAccessibleName('Inspect run 2 of 2 by Test Agent, failed');
+    // The stage keeps exactly one visible state pill; each run's state word lives in its link's accessible name.
+    expect(test.querySelectorAll('.cd-pill[data-state]')).toHaveLength(1);
+    expect(test).toHaveAttribute('id', 'stage-5');
+
+    const cur = steps[5]!;
+    const [run] = d.stages[5]!.agentRuns;
+    const link = within(cur).getByRole('link', { name: /^Inspect run/ });
+    expect(link).toHaveAttribute('href', `/agents/runs/${run!.id}`);
+    expect(link).toHaveAccessibleName('Inspect run 1 of 1 by Approve Agent, needs you');
+    expect(link).toHaveTextContent(/^Inspect run$/);
+    expect(link).not.toHaveClass('cd-btn');
+
+    const region = screen.getByRole('region', { name: /Current stage: Approve/ });
+    expect(within(region).getByRole('link', { name: /^Inspect run/ })).toHaveAttribute(
+      'href',
+      `/agents/runs/${run!.id}`,
+    );
+    expect(region).toHaveTextContent('Run');
+    expect(
+      within(region).getByRole('link', { name: /^Inspect run/ }).nextElementSibling,
+    ).toHaveClass('cd-pill');
+    expect(within(region).getByText(/not evidence/)).toBeInTheDocument();
+    expect(region).toHaveTextContent('Waiting for a human: Approval required before merge');
+
+    // The drill-down adds no saffron: the one WAITING_FOR_HUMAN action stays the only one.
+    expect(container.querySelectorAll('.cd-saffron')).toHaveLength(1);
+    await expectNoViolations(container);
+  });
+
+  it('FR-016 Workflow Detail current stage without runs says so', () => {
+    renderApp(<WorkflowDetailScreen initial={detail()} userRole="engineer" />);
+    const region = screen.getByRole('region', { name: /Current stage: Approve/ });
+    expect(region).toHaveTextContent('RunNo run recorded');
+    expect(within(region).queryAllByRole('link', { name: /^Inspect run/ })).toHaveLength(0);
   });
 
   it('FR-004 lists activity in order with timestamps and every artifact tagged with its producing stage', () => {

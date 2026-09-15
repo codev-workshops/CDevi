@@ -38,8 +38,8 @@ The stale notice is an **indicator**: `StatePill` still shows the runtime's stat
 
 | # | Region | Extension |
 |---|--------|-----------|
-| 2.6 Stage pipeline | each `Step` `detail` gains, after the existing text, one `Link href={agentRunHref(run.id)}` per `stage.agentRuns[]` (≤ 20, API order = newest first) with accessible name "Inspect run {index} of {n} by {run.agent}, {stateToPill[run.state].word}" and visible text "Inspect run" (+ " · {agent}" when the stage has more than one run) followed by `StatePill state={run.state}` |
-| 2.7 Current stage | the `KeyValue` gains a row **Run** → the same `Link`(s) for the current stage's runs, or "No run recorded" |
+| 2.6 Stage pipeline | each `Step` `detail` gains, after the existing text, one `Link href={agentRunHref(run.id)}` per `stage.agentRuns[]` (≤ 20, API order = newest first) with accessible name "Inspect run {index} of {n} by {run.agent}, {stateToPill[run.state].word}" and visible text "Inspect run" (+ " · {agent}" when the stage has more than one run). The `Step` keeps its single visible `StatePill` (the stage's); the run's state word travels in the link's accessible name so the pipeline still has exactly one state pill per stage. Each `Step` carries `id="stage-{position}"` so the run screen's breadcrumb (`/workflows/{id}#stage-{n}`) lands on it |
+| 2.7 Current stage | the `KeyValue` gains a row **Run** → the same `Link`(s) for the current stage's runs, each followed by `StatePill state={run.state}`, or "No run recorded" |
 | 5 States | a stage with `agentRuns.length === 0` renders no link (nothing to inspect); the existing keyboard order (§6 of that contract) gains the "Inspect run" links after the `Step` they belong to — `Stepper` itself remains a list, its links are tab stops |
 
 The links are plain `Link`s (no button, no saffron): they navigate to evidence, they do not ask for a person.
