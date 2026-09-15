@@ -52,6 +52,7 @@ export interface RunRow {
 
 export interface ArtifactRow {
   id: string;
+  externalId: string;
   stageId: string;
   type: ArtifactType;
   title: string;
@@ -296,6 +297,7 @@ export function groupArtifactsByStage(
     if (!s) continue;
     views.push({
       id: a.id,
+      externalId: a.externalId,
       type: a.type,
       title: a.title,
       href: a.href,

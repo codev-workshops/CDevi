@@ -133,6 +133,7 @@ export function detail(over: Partial<WorkflowDetail> = {}): WorkflowDetail {
     artifacts: [
       {
         id: uuid(),
+        externalId: 's500-001-art1',
         type: 'requirement_spec',
         title: 'Requirement spec',
         href: 'https://example.test/spec',
@@ -142,6 +143,7 @@ export function detail(over: Partial<WorkflowDetail> = {}): WorkflowDetail {
       },
       {
         id: uuid(),
+        externalId: 's500-001-art2',
         type: 'impact_analysis',
         title: 'Impact analysis',
         href: null,
@@ -151,6 +153,7 @@ export function detail(over: Partial<WorkflowDetail> = {}): WorkflowDetail {
       },
       {
         id: uuid(),
+        externalId: 's500-001-art3',
         type: 'implementation_plan',
         title: 'Implementation plan',
         href: null,
@@ -160,6 +163,7 @@ export function detail(over: Partial<WorkflowDetail> = {}): WorkflowDetail {
       },
       {
         id: uuid(),
+        externalId: 's500-001-art4',
         type: 'code_diff',
         title: 'Code diff',
         href: 'https://example.test/diff',
@@ -169,6 +173,7 @@ export function detail(over: Partial<WorkflowDetail> = {}): WorkflowDetail {
       },
       {
         id: uuid(),
+        externalId: 's500-001-art5',
         type: 'test_results',
         title: 'Test results',
         href: 'https://example.test/tests',
@@ -178,6 +183,7 @@ export function detail(over: Partial<WorkflowDetail> = {}): WorkflowDetail {
       },
       {
         id: uuid(),
+        externalId: 's500-001-art6',
         type: 'pull_request',
         title: 'PR #412',
         href: 'https://example.test/pr/412',

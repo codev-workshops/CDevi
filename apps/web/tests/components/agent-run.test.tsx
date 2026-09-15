@@ -1,4 +1,4 @@
-import { act, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AgentRunScreen } from '../../app/(app)/agents/runs/[id]/AgentRunScreen';
@@ -87,7 +87,16 @@ describe('Agent Run Inspector (specs/001 US5)', () => {
     const terms = within(header)
       .getAllByRole('term')
       .map((t) => t.textContent);
-    expect(terms).toEqual(['Agent', 'Workflow', 'Stage', 'Model', 'Started', 'Duration', 'Status']);
+    expect(terms).toEqual([
+      'Agent',
+      'Workflow',
+      'Stage',
+      'Model',
+      'Started',
+      'Duration',
+      'Finished',
+      'Status',
+    ]);
     expect(header).toHaveTextContent('Review Agent');
     expect(
       within(header).getByRole('link', { name: `s500-001 · ${run.workflow.title}` }),
@@ -98,6 +107,7 @@ describe('Agent Run Inspector (specs/001 US5)', () => {
     expect(header).toHaveTextContent('20 min ago');
     expect(header).toHaveTextContent('20 min 0 s');
     expect(within(header).getAllByText('running')).not.toHaveLength(0);
+    expect(header).toHaveTextContent('in progress');
 
     // Summary is the agent's claim, visibly "not evidence" (DR-03).
     const summary = container.querySelector('.cd-msg.cd-summary')!;
@@ -266,6 +276,26 @@ describe('Agent Run Inspector (specs/001 US5)', () => {
     await userEvent.click(retry);
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
     expect(screen.getByText('Recovered.')).toBeInTheDocument();
+  });
+
+  it('FR-016 Finished shows the absolute UTC end time for a finished run and a neutral placeholder otherwise', () => {
+    const done = runCompleted();
+    renderApp(<AgentRunScreen initial={done} now={NOW} />);
+    let header = screen.getByRole('region', { name: 'Run' });
+    const finished = header.querySelector(`time[datetime="${done.finishedAt}"]`)!;
+    expect(finished).not.toBeNull();
+    expect(finished).toHaveTextContent('2026-09-14 07:20 UTC');
+    expect(finished).toHaveTextContent('ago');
+    expect(header).not.toHaveTextContent('in progress');
+    cleanup();
+
+    renderApp(<AgentRunScreen initial={runRunning()} now={NOW} />);
+    header = screen.getByRole('region', { name: 'Run' });
+    const row = within(header)
+      .getAllByRole('term')
+      .find((t) => t.textContent === 'Finished')!;
+    expect(row.nextElementSibling).toHaveTextContent(/^in progress$/);
+    expect(header.querySelectorAll('.cd-saffron')).toHaveLength(0);
   });
 
   it('FR-016 duration ticks once per second while running and stops when the run finishes', async () => {
