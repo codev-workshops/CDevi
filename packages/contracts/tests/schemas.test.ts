@@ -908,6 +908,19 @@ describe('US5 agent-run schemas (specs/001 US5, FR-016–FR-018)', () => {
     expect(EvidenceRef.safeParse(noAccessible).success).toBe(false);
   });
 
+  it('FR-018 EvidenceRef is strict: reasoning, chainOfThought or any other unknown key inside an evidence item is rejected (not stripped)', () => {
+    for (const key of ['reasoning', 'chainOfThought', 'thoughts', 'note'])
+      expect(
+        EvidenceRef.safeParse({ ...evidence(), [key]: 'Let me think step by step…' }).success,
+        key,
+      ).toBe(false);
+    expect(
+      AgentDecisionIngest.safeParse(
+        decision({ evidence: [{ ...evidence(), reasoning: 'because…' } as EvidenceRef] }),
+      ).success,
+    ).toBe(false);
+  });
+
   it('AS-3 RunStep: label ≤ 120 single line, status completed|running|pending|failed', () => {
     expect(RunStep.safeParse({ label: 'Read ticket', status: 'completed' }).success).toBe(true);
     expect(RunStep.safeParse({ label: 'x'.repeat(121), status: 'pending' }).success).toBe(false);

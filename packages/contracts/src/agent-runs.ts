@@ -23,14 +23,19 @@ export type PolicyOutcome = z.infer<typeof PolicyOutcome>;
 export const EvidenceKind = z.enum(EVIDENCE_KINDS);
 export type EvidenceKind = z.infer<typeof EvidenceKind>;
 
-/** Typed evidence behind a decision; `accessible:false` or no `href` renders "access restricted", never a broken link. */
-export const EvidenceRef = z.object({
-  kind: EvidenceKind,
-  label: line(200),
-  href: DecisionLink.nullable().optional(),
-  locator: line(200).nullable().optional(),
-  accessible: z.boolean(),
-});
+/**
+ * Typed evidence behind a decision; `accessible:false` or no `href` renders "access restricted", never a broken link.
+ * Strict (FR-018): an evidence item is a pointer, never a place to smuggle free-form reasoning.
+ */
+export const EvidenceRef = z
+  .object({
+    kind: EvidenceKind,
+    label: line(200),
+    href: DecisionLink.nullable().optional(),
+    locator: line(200).nullable().optional(),
+    accessible: z.boolean(),
+  })
+  .strict();
 export type EvidenceRef = z.infer<typeof EvidenceRef>;
 
 export const RunStepStatus = z.enum(RUN_STEP_STATUSES);

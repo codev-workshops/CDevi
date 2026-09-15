@@ -5401,6 +5401,7 @@ components:
         - kind
         - label
         - accessible
+      additionalProperties: false
     RunStep:
       type: object
       properties:
@@ -5499,6 +5500,7 @@ components:
               - kind
               - label
               - accessible
+            additionalProperties: false
       required:
         - id
         - position
@@ -5708,6 +5710,7 @@ components:
                     - kind
                     - label
                     - accessible
+                  additionalProperties: false
             required:
               - id
               - position
@@ -5809,6 +5812,7 @@ components:
               - kind
               - label
               - accessible
+            additionalProperties: false
       required:
         - position
         - decidedAt
@@ -5905,6 +5909,7 @@ components:
                     - kind
                     - label
                     - accessible
+                  additionalProperties: false
             required:
               - position
               - decidedAt
