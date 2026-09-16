@@ -143,11 +143,20 @@ function evidenceItems(finding: ReviewFindingView): FindingEvidence[] {
   });
 }
 
+/**
+ * An action targets a finding row by uuid. When a live refetch has since replaced that row with a newer review's
+ * snapshot (same externalId, new uuid), the loaded view is more recent than the result and the result is ignored.
+ */
+function isStaleResult(view: PullRequestReviewView, result: FindingActionResult): boolean {
+  return !view.findings.some((f) => f.id === result.finding.id);
+}
+
 /** Merge a `FindingActionResult` into the last loaded view: the finding, the cycle it created or joined, the derived readiness. */
 function applyResult(
   view: PullRequestReviewView,
   result: FindingActionResult,
 ): PullRequestReviewView {
+  if (isStaleResult(view, result)) return view;
   const findings = view.findings.map((f) => (f.id === result.finding.id ? result.finding : f));
   let cycles = view.cycles;
   if (result.cycle) {
@@ -271,6 +280,9 @@ export function ReviewCenterScreen({ initial, userRole, now }: ReviewCenterScree
   const [stateFilter, setStateFilter] = useState<FindingState | 'all'>('all');
   const [focusCycle, setFocusCycle] = useState<string | null>(null);
   const refocusDismiss = useRef<string | null>(null);
+  // The most recent snapshot handed to `setView`, kept in step synchronously so an action result can be checked
+  // against a refetch that has been accepted but not yet committed.
+  const latestView = useRef(initial);
 
   const hashAnchor = useSyncExternalStore(subscribeHash, readHashAnchor, noHash);
   // A tab choice is remembered until the URL hash changes: every new `#finding-n` selects Findings again.
@@ -307,6 +319,7 @@ export function ReviewCenterScreen({ initial, userRole, now }: ReviewCenterScree
     try {
       const next = await getPullRequestReview(prId);
       if (mine !== generation.current) return;
+      latestView.current = next;
       setView(next);
       setLastFetchedAt(new Date().toISOString());
       setLoadError(false);
@@ -360,7 +373,7 @@ export function ReviewCenterScreen({ initial, userRole, now }: ReviewCenterScree
       action: FindingAction,
       reason?: string,
     ): Promise<boolean> => {
-      setPending({ findingId: finding.id, action });
+      setPending({ findingId: finding.externalId, action });
       setActionError(null);
       setOutcome(null);
       try {
@@ -370,9 +383,11 @@ export function ReviewCenterScreen({ initial, userRole, now }: ReviewCenterScree
             : action === 'issue'
               ? await createIssue(prId, finding.id)
               : await dismissFinding(prId, finding.id, reason ?? '');
-        setView((prev) => applyResult(prev, result));
+        const stale = isStaleResult(latestView.current, result);
+        latestView.current = applyResult(latestView.current, result);
+        setView(latestView.current);
         setDismissing(null);
-        if (action === 'fix' && result.cycle) {
+        if (action === 'fix' && result.cycle && !stale) {
           setFocusCycle(result.cycle.id);
           setTab('cycles');
         }
@@ -456,17 +471,17 @@ export function ReviewCenterScreen({ initial, userRole, now }: ReviewCenterScree
         </>
       );
     }
-    if (dismissing === f.id && canAct) {
+    if (dismissing === f.externalId && canAct) {
       return (
         <DismissForm
           findingTitle={f.title}
-          busy={pending?.findingId === f.id && pending.action === 'dismiss'}
+          busy={pending?.findingId === f.externalId && pending.action === 'dismiss'}
           onConfirm={(reason) => act(f, 'dismiss', reason)}
-          onCancel={() => cancelDismiss(f.id)}
+          onCancel={() => cancelDismiss(f.externalId)}
         />
       );
     }
-    const busy = pending?.findingId === f.id;
+    const busy = pending?.findingId === f.externalId;
     const describedBy = canAct ? undefined : viewerHelpId;
     return (
       <>
@@ -482,8 +497,8 @@ export function ReviewCenterScreen({ initial, userRole, now }: ReviewCenterScree
         </Button>
         <Button
           ref={(el) => {
-            if (el) dismissButtons.current.set(f.id, el);
-            else dismissButtons.current.delete(f.id);
+            if (el) dismissButtons.current.set(f.externalId, el);
+            else dismissButtons.current.delete(f.externalId);
           }}
           size="sm"
           variant="ghost"
@@ -491,7 +506,7 @@ export function ReviewCenterScreen({ initial, userRole, now }: ReviewCenterScree
           aria-describedby={describedBy}
           onClick={() => {
             setActionError(null);
-            setDismissing(f.id);
+            setDismissing(f.externalId);
           }}
         >
           Dismiss
@@ -752,7 +767,7 @@ export function ReviewCenterScreen({ initial, userRole, now }: ReviewCenterScree
         ) : (
           <ol aria-label="Findings">
             {visible.map((f) => (
-              <li key={f.id} id={findingAnchor(f.position)} tabIndex={-1}>
+              <li key={f.externalId} id={findingAnchor(f.position)} tabIndex={-1}>
                 <FindingRow
                   severity={f.severity}
                   blocking={toDesignBlocking(f.blocking)}
