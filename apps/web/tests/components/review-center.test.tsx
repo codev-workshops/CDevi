@@ -39,6 +39,51 @@ const findingRows = () =>
 const saffron = (c: Element) => c.querySelectorAll('.cd-saffron').length;
 const lastCall = () => fetchMock.mock.calls.at(-1) as [string, RequestInit];
 
+/** A new review row gives every finding a new uuid (same externalId) and fixes the blocking ones. */
+const nextCycleView = (view: ReturnType<typeof reviewView>) =>
+  reviewView({
+    findings: view.findings.map((f) => ({
+      ...f,
+      id: `${f.id.slice(0, -4)}beef`,
+      state: f.blocking === 'BLOCKING' ? ('FIXED' as const) : f.state,
+    })),
+    readyForMerge: true,
+    blockingOpenCount: 0,
+  });
+
+const deferredResponse = () => {
+  let resolve: (r: Response) => void = () => {};
+  fetchMock.mockImplementationOnce(() => new Promise<Response>((r) => (resolve = r)));
+  return (body: unknown) => resolve(jsonResponse(body));
+};
+
+/** Apply Fix on finding 2 is in flight while a live refetch for a newer cycle is also in flight. */
+async function applyFixRacingRefetch() {
+  const view = reviewView();
+  const fix = deferredResponse();
+  renderApp(<ReviewCenterScreen initial={view} userRole="engineer" now={NOW} />);
+  await userEvent.click(within(finding(2)).getByRole('button', { name: 'Apply Fix' }));
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+  const refetch = deferredResponse();
+  changed(WORKFLOW_ID);
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  return {
+    resolveFix: () => fix(applyFixResult()),
+    resolveRefetch: () => refetch(nextCycleView(view)),
+  };
+}
+
+async function expectNewerSnapshotKept() {
+  await waitFor(() =>
+    expect(within(finding(2)).queryByRole('button', { name: 'Apply Fix' })).toBeNull(),
+  );
+  expect(finding(2)).toHaveTextContent('fixed');
+  expect(finding(2)).not.toHaveTextContent('fix requested');
+  expect(screen.getByText(/Ready for merge approval/)).toBeInTheDocument();
+  expect(findingsTab()).toHaveAttribute('aria-selected', 'true');
+  expect(cyclesTab()).toHaveTextContent('Cycles (3)');
+}
+
 describe('PR Review Center (specs/001 US6)', () => {
   it('FR-020 Review Center renders PR id, requirement, status and 7 lane results', () => {
     const view = reviewView();
@@ -374,18 +419,8 @@ describe('PR Review Center (specs/001 US6)', () => {
   });
 
   it('FR-034 a new review cycle keeps the reading position and focused finding across the live refetch', async () => {
-    // A new review row gives every finding a new uuid (same externalId); the blocking notice goes away.
     const view = reviewView();
-    const next = reviewView({
-      findings: view.findings.map((f) => ({
-        ...f,
-        id: `${f.id.slice(0, -4)}beef`,
-        state: f.blocking === 'BLOCKING' ? ('FIXED' as const) : f.state,
-      })),
-      readyForMerge: true,
-      blockingOpenCount: 0,
-    });
-    fetchMock.mockResolvedValueOnce(jsonResponse(next));
+    fetchMock.mockResolvedValueOnce(jsonResponse(nextCycleView(view)));
     const scrollTo = vi.fn();
     vi.stubGlobal('scrollTo', scrollTo);
     const scrollIntoView = vi.fn();
@@ -413,71 +448,19 @@ describe('PR Review Center (specs/001 US6)', () => {
   });
 
   it('FR-034 an action result that arrives after a newer review snapshot does not overwrite it', async () => {
-    const view = reviewView();
-    const newer = reviewView({
-      findings: view.findings.map((f) => ({
-        ...f,
-        id: `${f.id.slice(0, -4)}beef`,
-        state: f.blocking === 'BLOCKING' ? ('FIXED' as const) : f.state,
-      })),
-      readyForMerge: true,
-      blockingOpenCount: 0,
-    });
-    let resolveFix: (r: Response) => void = () => {};
-    fetchMock.mockImplementationOnce(() => new Promise<Response>((r) => (resolveFix = r)));
-    renderApp(<ReviewCenterScreen initial={view} userRole="engineer" now={NOW} />);
-
-    await userEvent.click(within(finding(2)).getByRole('button', { name: 'Apply Fix' }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-
-    fetchMock.mockResolvedValueOnce(jsonResponse(newer));
-    changed(WORKFLOW_ID);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const { resolveFix, resolveRefetch } = await applyFixRacingRefetch();
+    resolveRefetch();
     await waitFor(() => expect(finding(2)).toHaveTextContent('fixed'));
-
-    resolveFix(jsonResponse(applyFixResult()));
-    await waitFor(() =>
-      expect(within(finding(2)).queryByRole('button', { name: 'Apply Fix' })).toBeNull(),
-    );
-    expect(finding(2)).toHaveTextContent('fixed');
-    expect(finding(2)).not.toHaveTextContent('fix requested');
-    expect(screen.getByText(/Ready for merge approval/)).toBeInTheDocument();
-    expect(cyclesTab()).toHaveTextContent('Cycles (3)');
+    resolveFix();
+    await expectNewerSnapshotKept();
   });
 
   it('FR-034 an action result resolving in the same tick as a newer snapshot neither merges nor navigates', async () => {
-    const view = reviewView();
-    const newer = reviewView({
-      findings: view.findings.map((f) => ({
-        ...f,
-        id: `${f.id.slice(0, -4)}beef`,
-        state: f.blocking === 'BLOCKING' ? ('FIXED' as const) : f.state,
-      })),
-      readyForMerge: true,
-      blockingOpenCount: 0,
-    });
-    let resolveFix: (r: Response) => void = () => {};
-    let resolveRefetch: (r: Response) => void = () => {};
-    fetchMock
-      .mockImplementationOnce(() => new Promise<Response>((r) => (resolveFix = r)))
-      .mockImplementationOnce(() => new Promise<Response>((r) => (resolveRefetch = r)));
-    renderApp(<ReviewCenterScreen initial={view} userRole="engineer" now={NOW} />);
-
-    await userEvent.click(within(finding(2)).getByRole('button', { name: 'Apply Fix' }));
-    changed(WORKFLOW_ID);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-
+    const { resolveFix, resolveRefetch } = await applyFixRacingRefetch();
     // Refetch first, action right behind it — before React renders the refetched view.
-    resolveRefetch(jsonResponse(newer));
-    resolveFix(jsonResponse(applyFixResult()));
-
-    await waitFor(() => expect(finding(2)).toHaveTextContent('fixed'));
-    await waitFor(() =>
-      expect(within(finding(2)).queryByRole('button', { name: 'Apply Fix' })).toBeNull(),
-    );
-    expect(finding(2)).not.toHaveTextContent('fix requested');
-    expect(findingsTab()).toHaveAttribute('aria-selected', 'true');
-    expect(cyclesTab()).toHaveTextContent('Cycles (3)');
+    resolveRefetch();
+    resolveFix();
+    await expectNewerSnapshotKept();
   });
 
   it('FR-034 a failed refetch shows a retryable error notice and keeps the last good model', async () => {
