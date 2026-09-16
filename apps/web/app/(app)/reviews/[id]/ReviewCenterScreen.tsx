@@ -148,7 +148,9 @@ function applyResult(
   view: PullRequestReviewView,
   result: FindingActionResult,
 ): PullRequestReviewView {
-  const findings = view.findings.map((f) => (f.id === result.finding.id ? result.finding : f));
+  const findings = view.findings.map((f) =>
+    f.externalId === result.finding.externalId ? result.finding : f,
+  );
   let cycles = view.cycles;
   if (result.cycle) {
     const c = result.cycle;
@@ -360,7 +362,7 @@ export function ReviewCenterScreen({ initial, userRole, now }: ReviewCenterScree
       action: FindingAction,
       reason?: string,
     ): Promise<boolean> => {
-      setPending({ findingId: finding.id, action });
+      setPending({ findingId: finding.externalId, action });
       setActionError(null);
       setOutcome(null);
       try {
@@ -456,17 +458,17 @@ export function ReviewCenterScreen({ initial, userRole, now }: ReviewCenterScree
         </>
       );
     }
-    if (dismissing === f.id && canAct) {
+    if (dismissing === f.externalId && canAct) {
       return (
         <DismissForm
           findingTitle={f.title}
-          busy={pending?.findingId === f.id && pending.action === 'dismiss'}
+          busy={pending?.findingId === f.externalId && pending.action === 'dismiss'}
           onConfirm={(reason) => act(f, 'dismiss', reason)}
-          onCancel={() => cancelDismiss(f.id)}
+          onCancel={() => cancelDismiss(f.externalId)}
         />
       );
     }
-    const busy = pending?.findingId === f.id;
+    const busy = pending?.findingId === f.externalId;
     const describedBy = canAct ? undefined : viewerHelpId;
     return (
       <>
@@ -482,8 +484,8 @@ export function ReviewCenterScreen({ initial, userRole, now }: ReviewCenterScree
         </Button>
         <Button
           ref={(el) => {
-            if (el) dismissButtons.current.set(f.id, el);
-            else dismissButtons.current.delete(f.id);
+            if (el) dismissButtons.current.set(f.externalId, el);
+            else dismissButtons.current.delete(f.externalId);
           }}
           size="sm"
           variant="ghost"
@@ -491,7 +493,7 @@ export function ReviewCenterScreen({ initial, userRole, now }: ReviewCenterScree
           aria-describedby={describedBy}
           onClick={() => {
             setActionError(null);
-            setDismissing(f.id);
+            setDismissing(f.externalId);
           }}
         >
           Dismiss
@@ -752,7 +754,7 @@ export function ReviewCenterScreen({ initial, userRole, now }: ReviewCenterScree
         ) : (
           <ol aria-label="Findings">
             {visible.map((f) => (
-              <li key={f.id} id={findingAnchor(f.position)} tabIndex={-1}>
+              <li key={f.externalId} id={findingAnchor(f.position)} tabIndex={-1}>
                 <FindingRow
                   severity={f.severity}
                   blocking={toDesignBlocking(f.blocking)}

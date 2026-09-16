@@ -373,6 +373,45 @@ describe('PR Review Center (specs/001 US6)', () => {
     expect(window.location.hash).toBe('');
   });
 
+  it('FR-034 a new review cycle keeps the reading position and focused finding across the live refetch', async () => {
+    // A new review row gives every finding a new uuid (same externalId); the blocking notice goes away.
+    const view = reviewView();
+    const next = reviewView({
+      findings: view.findings.map((f) => ({
+        ...f,
+        id: `${f.id.slice(0, -4)}beef`,
+        state: f.blocking === 'BLOCKING' ? ('FIXED' as const) : f.state,
+      })),
+      readyForMerge: true,
+      blockingOpenCount: 0,
+    });
+    fetchMock.mockResolvedValueOnce(jsonResponse(next));
+    const scrollTo = vi.fn();
+    vi.stubGlobal('scrollTo', scrollTo);
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    renderApp(<ReviewCenterScreen initial={view} userRole="engineer" now={NOW} />);
+    expect(screen.getByText(/Not ready for merge approval/)).toBeInTheDocument();
+
+    const row = finding(2);
+    act(() => row.focus());
+    expect(row).toHaveFocus();
+    const rowCount = findingRows().length;
+
+    changed(WORKFLOW_ID);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await screen.findByText(/Ready for merge approval/);
+
+    expect(document.getElementById('finding-2')).toBe(row);
+    expect(row).toBeInTheDocument();
+    expect(row).toHaveFocus();
+    expect(within(row).getByText(/^fixed$/)).toBeInTheDocument();
+    expect(findingRows()).toHaveLength(rowCount);
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    expect(findingsTab()).toHaveAttribute('aria-selected', 'true');
+  });
+
   it('FR-034 a failed refetch shows a retryable error notice and keeps the last good model', async () => {
     fetchMock
       .mockResolvedValueOnce(problem(500, 'boom'))
