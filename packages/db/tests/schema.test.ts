@@ -154,7 +154,16 @@ describe.skipIf(skip)('migration 0001_init (data-model.md §2)', () => {
       'inbox_changed_approvals',
       'inbox_changed_artifacts',
       'inbox_changed_clarifications',
+      'inbox_changed_pull_requests',
+      'inbox_changed_pull_requests_updated',
       'inbox_changed_requirements',
+      'inbox_changed_review_cycles',
+      'inbox_changed_review_cycles_updated',
+      'inbox_changed_review_findings',
+      'inbox_changed_review_findings_deleted',
+      'inbox_changed_review_findings_updated',
+      'inbox_changed_reviews',
+      'inbox_changed_reviews_updated',
       'inbox_changed_test_runs',
       'inbox_changed_workflow_stages',
       'inbox_changed_workflows',
@@ -695,6 +704,7 @@ describe.skipIf(skip)('migration 0004_dashboard (specs/001 data-model.md §18)',
     'requirement_transitions',
   ];
   const TABLES_ADDED_BY_0006 = ['agent_decisions'];
+  const TABLES_ADDED_BY_0007 = ['pull_requests', 'reviews', 'review_findings', 'review_cycles'];
   beforeAll(async () => {
     const { migrate } = await import('../src/migrate');
     await migrate({ log: () => {} });
@@ -750,7 +760,12 @@ describe.skipIf(skip)('migration 0004_dashboard (specs/001 data-model.md §18)',
       )
     ).rows.map((r) => r.tablename as string);
     expect(tables).toEqual(
-      [...TABLES_AFTER_0003, ...TABLES_ADDED_BY_0005, ...TABLES_ADDED_BY_0006].sort(),
+      [
+        ...TABLES_AFTER_0003,
+        ...TABLES_ADDED_BY_0005,
+        ...TABLES_ADDED_BY_0006,
+        ...TABLES_ADDED_BY_0007,
+      ].sort(),
     );
     const columnCounts = Object.fromEntries(
       (
@@ -2267,6 +2282,760 @@ describe.skipIf(skip)(
         listener.release();
         writer.release();
       }
+    });
+  },
+);
+
+describe.skipIf(skip)(
+  'migration 0007_reviews (specs/001 US6 — pull request reviews, findings, fix cycles)',
+  () => {
+    const admin7 = new pg.Pool({ connectionString: process.env['DATABASE_MIGRATOR_URL'] });
+    const app7 = new pg.Pool({ connectionString: process.env['DATABASE_URL'] });
+    beforeAll(async () => {
+      const { migrate } = await import('../src/migrate');
+      await migrate({ log: () => {} });
+    });
+    afterAll(async () => {
+      await admin7.end();
+      await app7.end();
+    });
+
+    const columns = async (table: string) =>
+      (
+        await admin7.query(
+          `select column_name, is_nullable, column_default, udt_name from information_schema.columns where table_name=$1`,
+          [table],
+        )
+      ).rows as {
+        column_name: string;
+        is_nullable: 'YES' | 'NO';
+        column_default: string | null;
+        udt_name: string;
+      }[];
+    const constraintNames = async (table: string) =>
+      (
+        await admin7.query(`select conname from pg_constraint where conrelid = $1::regclass`, [
+          table,
+        ])
+      ).rows.map((r) => r.conname as string);
+    const indexNames = async (table: string) =>
+      (await admin7.query(`select indexname from pg_indexes where tablename=$1`, [table])).rows.map(
+        (r) => r.indexname as string,
+      );
+    /** Column rows keyed by name; asserts the table has exactly `expected` columns. */
+    async function columnsByName(table: string, expected: readonly string[]) {
+      const byName = Object.fromEntries((await columns(table)).map((c) => [c.column_name, c]));
+      expect(Object.keys(byName).sort(), table).toEqual([...expected].sort());
+      return byName;
+    }
+    const maxSeq = async (client: pg.PoolClient) =>
+      (await client.query(`select coalesce(max(seq),0) as m from inbox_change_log`)).rows[0]
+        .m as number;
+    /**
+     * LISTEN inbox_changed on one connection and hand the test a writer plus `framesSince(workflow, seq, atLeast)`,
+     * which waits (≤ 5 s, then settles 200 ms) for that many frames of the workflow newer than `seq`.
+     */
+    async function withInboxListener(
+      pool: pg.Pool,
+      run: (
+        writer: pg.PoolClient,
+        framesSince: (
+          workflow: string,
+          seq: number,
+          atLeast: number,
+        ) => Promise<Record<string, unknown>[]>,
+      ) => Promise<void>,
+    ) {
+      const listener = await pool.connect();
+      const writer = await pool.connect();
+      try {
+        const payloads: string[] = [];
+        listener.on('notification', (n) => {
+          if (n.payload) payloads.push(n.payload);
+        });
+        await listener.query('listen inbox_changed');
+        const framesSince = async (workflow: string, seq: number, atLeast: number) => {
+          const mine = () =>
+            payloads
+              .map((p) => JSON.parse(p) as Record<string, unknown>)
+              .filter((p) => p['workflowId'] === workflow && Number(p['seq']) > Number(seq));
+          const deadline = Date.now() + 5_000;
+          while (Date.now() < deadline && mine().length < atLeast)
+            await new Promise((r) => setTimeout(r, 50));
+          await new Promise((r) => setTimeout(r, 200));
+          return mine();
+        };
+        await run(writer, framesSince);
+        await listener.query('unlisten inbox_changed');
+      } finally {
+        listener.release();
+        writer.release();
+      }
+    }
+    /** Remove a committed fixture (org → project → workflow cascade) and its inbox rows. */
+    async function dropFixture(
+      writer: pg.PoolClient,
+      f: { org: string; project: string; workflow: string },
+    ) {
+      await writer.query(`delete from inbox_change_log where organization_id=$1`, [f.org]);
+      await writer.query(`delete from workflows where id=$1`, [f.workflow]);
+      await writer.query(`delete from inbox_change_log where organization_id=$1`, [f.org]);
+      await writer.query(`delete from projects where id=$1`, [f.project]);
+      await writer.query(`delete from organizations where id=$1`, [f.org]);
+    }
+    const SEVEN_LANES = JSON.stringify(
+      [
+        'correctness',
+        'security',
+        'dependencies',
+        'edge_cases',
+        'testing',
+        'architecture',
+        'general',
+      ].map((lane) => ({ lane, status: 'PASS' })),
+    );
+
+    /** org, project, workflow and one OPEN pull request inside the caller's transaction. */
+    async function fixture(client: pg.PoolClient) {
+      const org = (
+        await client.query(`insert into organizations(name) values ('t-org-0007') returning id`)
+      ).rows[0].id as string;
+      const project = (
+        await client.query(
+          `insert into projects(organization_id, key, name) values ($1,'t7','T7') returning id`,
+          [org],
+        )
+      ).rows[0].id as string;
+      const workflow = (
+        await client.query(
+          `insert into workflows(organization_id, project_id, external_id, title, state, state_observed_at) values ($1,$2,'w7','W7','RUNNING',now()) returning id`,
+          [org, project],
+        )
+      ).rows[0].id as string;
+      const pr = (
+        await client.query(
+          `insert into pull_requests(organization_id, project_id, workflow_id, external_id, number, title, href, status, observed_at)
+         values ($1,$2,$3,'pr-7',7,'PR seven','https://git.example.com/pr/7','OPEN',now()) returning id`,
+          [org, project, workflow],
+        )
+      ).rows[0].id as string;
+      return { org, project, workflow, pr };
+    }
+    const insertReview = (
+      client: pg.PoolClient,
+      f: { org: string; project: string; workflow: string; pr: string },
+      cycle: number,
+      lanes: string = SEVEN_LANES,
+    ) =>
+      client.query(
+        `insert into reviews(organization_id, project_id, workflow_id, pull_request_id, external_id, cycle_number, status, lanes, observed_at, started_at)
+       values ($1,$2,$3,$4,$5,$6,'COMPLETE',$7::jsonb,now(),now()) returning id`,
+        [f.org, f.project, f.workflow, f.pr, `rev-7-${cycle}`, cycle, lanes],
+      );
+    const insertFinding = (
+      client: pg.PoolClient,
+      f: { org: string; project: string; workflow: string; pr: string },
+      review: string,
+      position: number,
+      over: Record<string, unknown> = {},
+    ) =>
+      client.query(
+        `insert into review_findings(organization_id, project_id, workflow_id, pull_request_id, review_id, external_id, position, lane, severity, blocking, title, description, impact, evidence, recommended_fix, state)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16) returning id`,
+        [
+          f.org,
+          f.project,
+          f.workflow,
+          f.pr,
+          review,
+          over['external_id'] ?? `find-7-${position}`,
+          over['position'] ?? position,
+          over['lane'] ?? 'security',
+          over['severity'] ?? 'CRITICAL',
+          over['blocking'] ?? 'BLOCKING',
+          over['title'] ?? 'Missing authorization check',
+          over['description'] ?? 'The endpoint trusts the caller.',
+          over['impact'] ?? 'Any user can refund any payment.',
+          JSON.stringify(over['evidence'] ?? []),
+          over['recommended_fix'] ?? 'Verify the owner.',
+          over['state'] ?? 'OPEN',
+        ],
+      );
+    const insertCycle = (
+      client: pg.PoolClient,
+      f: { org: string; project: string; workflow: string; pr: string },
+      cycle: number,
+      over: Record<string, unknown> = {},
+    ) =>
+      client.query(
+        `insert into review_cycles(organization_id, project_id, workflow_id, pull_request_id, cycle_number, findings_count, fixed_count, remaining_count, iteration, state, observed_at, started_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now(),now()) returning id`,
+        [
+          f.org,
+          f.project,
+          f.workflow,
+          f.pr,
+          cycle,
+          over['findings_count'] ?? 7,
+          over['fixed_count'] ?? 6,
+          over['remaining_count'] ?? 1,
+          over['iteration'] ?? cycle,
+          over['state'] ?? 'COMPLETED',
+        ],
+      );
+
+    /** Runs `fn` inside a SAVEPOINT and expects it to fail matching `re`; the transaction stays usable. */
+    async function expectFail(client: pg.PoolClient, fn: () => Promise<unknown>, re: RegExp) {
+      await client.query('SAVEPOINT sp');
+      await expect(fn()).rejects.toThrow(re);
+      await client.query('ROLLBACK TO SAVEPOINT sp');
+    }
+    /** BEGIN → fixture → body → ROLLBACK, always releasing the client and never leaving an aborted transaction. */
+    async function tx(
+      pool: pg.Pool,
+      body: (client: pg.PoolClient, f: Awaited<ReturnType<typeof fixture>>) => Promise<void>,
+    ) {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const f = await fixture(client);
+        await body(client, f);
+      } finally {
+        await client.query('ROLLBACK').catch(() => undefined);
+        client.release();
+      }
+    }
+
+    it('FR-020 defines the seven US6 enums with the exact vocabulary and records 0007', async () => {
+      const ev = enumValuesFrom(admin7);
+      expect(await ev('review_lane')).toEqual([
+        'correctness',
+        'security',
+        'dependencies',
+        'edge_cases',
+        'testing',
+        'architecture',
+        'general',
+      ]);
+      expect(await ev('lane_status')).toEqual(['PASS', 'WARN', 'FAIL']);
+      expect(await ev('review_status')).toEqual(['RUNNING', 'COMPLETE', 'FAILED']);
+      expect(await ev('finding_severity')).toEqual(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']);
+      expect(await ev('finding_blocking')).toEqual(['BLOCKING', 'NON_BLOCKING', 'SUGGESTION']);
+      expect(await ev('finding_state')).toEqual([
+        'OPEN',
+        'FIX_REQUESTED',
+        'FIXED',
+        'DISMISSED',
+        'ISSUE_REQUESTED',
+      ]);
+      expect(await ev('review_cycle_state')).toEqual([
+        'RUNNING',
+        'COMPLETED',
+        'FAILED',
+        'CANCELLED',
+      ]);
+      expect(await ev('pull_request_status')).toEqual(['OPEN', 'MERGED', 'CLOSED']);
+      expect(
+        (await admin7.query(`select name from schema_migrations where name='0007_reviews.sql'`))
+          .rowCount,
+      ).toBe(1);
+    });
+
+    it('FR-036 pull_requests: one per workflow (UNIQUE workflow_id), UNIQUE (organization_id, external_id), title ≤ 200, http(s) href, nullable requirement_id and review_stage_id (ON DELETE SET NULL), observed_at watermark, created/updated_at', async () => {
+      const byName = Object.fromEntries(
+        (await columns('pull_requests')).map((c) => [c.column_name, c]),
+      );
+      expect(Object.keys(byName).sort()).toEqual(
+        [
+          'id',
+          'organization_id',
+          'project_id',
+          'workflow_id',
+          'requirement_id',
+          'review_stage_id',
+          'external_id',
+          'number',
+          'title',
+          'href',
+          'status',
+          'observed_at',
+          'created_at',
+          'updated_at',
+        ].sort(),
+      );
+      expect(byName['requirement_id']?.is_nullable).toBe('YES');
+      expect(byName['review_stage_id']?.is_nullable).toBe('YES');
+      expect(byName['review_stage_id']?.udt_name).toBe('uuid');
+      expect(byName['status']?.udt_name).toBe('pull_request_status');
+      expect(byName['number']?.udt_name).toBe('int4');
+      const cons = await constraintNames('pull_requests');
+      expect(cons).toContain('pull_requests_workflow_id_key');
+      expect(cons).toContain('pull_requests_organization_id_external_id_key');
+      expect(await indexNames('pull_requests')).toContain('pull_requests_list_idx');
+      const trg = (
+        await admin7.query(
+          `select tgname from pg_trigger where tgrelid='pull_requests'::regclass and not tgisinternal order by tgname`,
+        )
+      ).rows.map((r) => r.tgname);
+      expect(trg).toEqual([
+        'inbox_changed_pull_requests',
+        'inbox_changed_pull_requests_updated',
+        'pull_requests_updated_at',
+      ]);
+      await tx(app7, async (client, f) => {
+        await expectFail(
+          client,
+          () =>
+            client.query(
+              `insert into pull_requests(organization_id, project_id, workflow_id, external_id, number, title, href, status, observed_at)
+             values ($1,$2,$3,'pr-8',8,'second','https://git.example.com/pr/8','OPEN',now())`,
+              [f.org, f.project, f.workflow],
+            ),
+          /pull_requests_workflow_id_key/,
+        );
+        await expectFail(
+          client,
+          () =>
+            client.query(`update pull_requests set title=$2 where id=$1`, [f.pr, 'x'.repeat(201)]),
+          /pull_requests_title_check/,
+        );
+        await expectFail(
+          client,
+          () => client.query(`update pull_requests set href='ftp://nope' where id=$1`, [f.pr]),
+          /pull_requests_href_check/,
+        );
+        await expectFail(
+          client,
+          () => client.query(`update pull_requests set number=0 where id=$1`, [f.pr]),
+          /pull_requests_number_check/,
+        );
+        const stage = (
+          await client.query(
+            `insert into workflow_stages(organization_id, project_id, workflow_id, position, name, state, state_observed_at)
+             values ($1,$2,$3,6,'Review','WAITING_FOR_HUMAN',now()) returning id`,
+            [f.org, f.project, f.workflow],
+          )
+        ).rows[0].id as string;
+        await client.query(`update pull_requests set review_stage_id=$2 where id=$1`, [
+          f.pr,
+          stage,
+        ]);
+        await expectFail(
+          client,
+          () =>
+            client.query(`update pull_requests set review_stage_id=$2 where id=$1`, [
+              f.pr,
+              '00000000-0000-0000-0000-000000000000',
+            ]),
+          /pull_requests_review_stage_id_fkey/,
+        );
+      });
+      const fk = (
+        await admin7.query(
+          `select confrelid::regclass::text rel, confdeltype from pg_constraint where conname='pull_requests_review_stage_id_fkey'`,
+        )
+      ).rows[0];
+      expect(fk).toEqual({ rel: 'workflow_stages', confdeltype: 'n' });
+    });
+
+    it('FR-020 reviews: UNIQUE (pull_request_id, cycle_number), lanes jsonb CHECKed to exactly 7 entries, nullable finished_at / agent_run_id, observed_at watermark', async () => {
+      const byName = await columnsByName('reviews', [
+        'id',
+        'organization_id',
+        'project_id',
+        'workflow_id',
+        'pull_request_id',
+        'external_id',
+        'cycle_number',
+        'status',
+        'lanes',
+        'observed_at',
+        'started_at',
+        'finished_at',
+        'agent_run_id',
+        'created_at',
+        'updated_at',
+      ]);
+      expect(byName['status']?.udt_name).toBe('review_status');
+      expect(byName['finished_at']?.is_nullable).toBe('YES');
+      expect(byName['agent_run_id']?.is_nullable).toBe('YES');
+      const cons = await constraintNames('reviews');
+      expect(cons).toContain('reviews_pull_request_id_cycle_number_key');
+      expect(cons).toContain('reviews_organization_id_external_id_key');
+      expect(cons).toContain('reviews_lanes_check');
+      await tx(app7, async (client, f) => {
+        await insertReview(client, f, 1);
+        await expectFail(
+          client,
+          () => insertReview(client, f, 1),
+          /reviews_pull_request_id_cycle_number_key/,
+        );
+        await expectFail(
+          client,
+          () => insertReview(client, f, 2, JSON.stringify(JSON.parse(SEVEN_LANES).slice(0, 6))),
+          /reviews_lanes_check/,
+        );
+      });
+    });
+
+    it('FR-020 FR-021 review_findings: denormalised pull_request_id, UNIQUE (review_id, position) and (review_id, external_id) so a finding keeps its runtime id across cycles, bounded text, evidence ≤ 10, state DEFAULT OPEN, dismissal / fix-cycle / issue columns, and the partial blocking index', async () => {
+      const byName = await columnsByName('review_findings', [
+        'id',
+        'organization_id',
+        'project_id',
+        'workflow_id',
+        'pull_request_id',
+        'review_id',
+        'external_id',
+        'position',
+        'lane',
+        'severity',
+        'blocking',
+        'title',
+        'description',
+        'impact',
+        'evidence',
+        'recommended_fix',
+        'state',
+        'dismissed_reason',
+        'dismissed_by_user_id',
+        'dismissed_at',
+        'fix_cycle_id',
+        'issue_requested_by_user_id',
+        'issue_requested_at',
+        'created_at',
+        'updated_at',
+      ]);
+      expect(byName['state']?.column_default).toContain("'OPEN'");
+      expect(byName['evidence']?.column_default).toContain("'[]'");
+      for (const c of [
+        'dismissed_reason',
+        'dismissed_by_user_id',
+        'dismissed_at',
+        'fix_cycle_id',
+        'issue_requested_by_user_id',
+        'issue_requested_at',
+      ])
+        expect(byName[c]?.is_nullable, c).toBe('YES');
+      expect(byName['lane']?.udt_name).toBe('review_lane');
+      expect(byName['severity']?.udt_name).toBe('finding_severity');
+      expect(byName['blocking']?.udt_name).toBe('finding_blocking');
+      expect(byName['state']?.udt_name).toBe('finding_state');
+      const cons = await constraintNames('review_findings');
+      expect(cons).toContain('review_findings_review_id_position_key');
+      expect(cons).toContain('review_findings_review_id_external_id_key');
+      expect(cons).not.toContain('review_findings_organization_id_external_id_key');
+      const idx = (
+        await admin7.query(
+          `select indexname, indexdef from pg_indexes where tablename='review_findings' and indexname='review_findings_blocking_open_idx'`,
+        )
+      ).rows[0];
+      expect(idx).toBeDefined();
+      expect(idx.indexdef).toMatch(/WHERE .*blocking = 'BLOCKING'/);
+      expect(idx.indexdef).toMatch(
+        /state = ANY \(ARRAY\['OPEN'::finding_state, 'FIX_REQUESTED'::finding_state\]\)/,
+      );
+      await tx(app7, async (client, f) => {
+        const review = (await insertReview(client, f, 3)).rows[0].id as string;
+        const id = (await insertFinding(client, f, review, 1)).rows[0].id as string;
+        const row = (
+          await client.query(`select state, evidence from review_findings where id=$1`, [id])
+        ).rows[0];
+        expect(row).toEqual({ state: 'OPEN', evidence: [] });
+        const bad = (over: Record<string, unknown>, re: RegExp) =>
+          expectFail(client, () => insertFinding(client, f, review, 2, over), re);
+        await bad({ position: 1, external_id: 'other' }, /review_findings_review_id_position_key/);
+        await bad({ external_id: 'find-7-1' }, /review_findings_review_id_external_id_key/);
+        const review2 = (await insertReview(client, f, 2)).rows[0].id as string;
+        await insertFinding(client, f, review2, 1, { external_id: 'find-7-1' });
+        await bad({ title: 'x'.repeat(201) }, /review_findings_title_check/);
+        await bad({ description: 'x'.repeat(2001) }, /review_findings_description_check/);
+        await bad({ impact: 'x'.repeat(1001) }, /review_findings_impact_check/);
+        await bad({ recommended_fix: 'x'.repeat(1001) }, /review_findings_recommended_fix_check/);
+        await bad(
+          {
+            evidence: Array.from({ length: 11 }, (_, i) => ({
+              kind: 'file',
+              label: `f${i}`,
+              accessible: true,
+            })),
+          },
+          /review_findings_evidence_check/,
+        );
+        await bad({ position: 0 }, /review_findings_position_check/);
+        await expectFail(
+          client,
+          () =>
+            client.query(
+              `update review_findings set state='DISMISSED', dismissed_at=now(), dismissed_reason=$2 where id=$1`,
+              [id, 'x'.repeat(241)],
+            ),
+          /review_findings_dismissed_reason_check/,
+        );
+      });
+    });
+
+    it('FR-036 0008: UNIQUE (review_id, position) is DEFERRABLE so a review snapshot can reorder findings in place (ids kept); still checked immediately by default', async () => {
+      const con = (
+        await admin7.query(
+          `select condeferrable, condeferred from pg_constraint where conname='review_findings_review_id_position_key'`,
+        )
+      ).rows[0];
+      expect(con).toEqual({ condeferrable: true, condeferred: false });
+      expect(
+        (await admin7.query(`select name from schema_migrations where name like '0008%'`)).rowCount,
+      ).toBe(1);
+      await tx(app7, async (client, f) => {
+        const review = (await insertReview(client, f, 4)).rows[0].id as string;
+        const a = (await insertFinding(client, f, review, 1, { external_id: 'swap-a' })).rows[0]
+          .id as string;
+        const b = (await insertFinding(client, f, review, 2, { external_id: 'swap-b' })).rows[0]
+          .id as string;
+        await expectFail(
+          client,
+          () => client.query(`update review_findings set position = 2 where id = $1`, [a]),
+          /review_findings_review_id_position_key/,
+        );
+        await client.query(`set constraints review_findings_review_id_position_key deferred`);
+        await client.query(`update review_findings set position = 2 where id = $1`, [a]);
+        await client.query(`update review_findings set position = 1 where id = $1`, [b]);
+        await client.query(`set constraints review_findings_review_id_position_key immediate`);
+        const rows = (
+          await client.query(
+            `select id, position from review_findings where review_id = $1 order by position`,
+            [review],
+          )
+        ).rows;
+        expect(rows).toEqual([
+          { id: b, position: 1 },
+          { id: a, position: 2 },
+        ]);
+      });
+    });
+
+    it('AS-4 review_cycles: UNIQUE (pull_request_id, cycle_number), at most one RUNNING cycle per pull request (partial unique index), CHECK fixed + remaining ≤ findings_count, iteration ≤ max_iterations (default 5), requested_by user / agent nullable, observed_at watermark', async () => {
+      const byName = await columnsByName('review_cycles', [
+        'id',
+        'organization_id',
+        'project_id',
+        'workflow_id',
+        'pull_request_id',
+        'cycle_number',
+        'findings_count',
+        'fixed_count',
+        'remaining_count',
+        'iteration',
+        'max_iterations',
+        'state',
+        'requested_by_user_id',
+        'requested_by_agent',
+        'started_at',
+        'finished_at',
+        'agent_run_id',
+        'observed_at',
+        'created_at',
+        'updated_at',
+      ]);
+      expect(byName['max_iterations']?.column_default).toBe('5');
+      expect(byName['state']?.udt_name).toBe('review_cycle_state');
+      for (const c of ['requested_by_user_id', 'requested_by_agent', 'finished_at', 'agent_run_id'])
+        expect(byName[c]?.is_nullable, c).toBe('YES');
+      const cons = await constraintNames('review_cycles');
+      expect(cons).toContain('review_cycles_pull_request_id_cycle_number_key');
+      expect(cons).toContain('review_cycles_counts_check');
+      expect(cons).toContain('review_cycles_iteration_budget_check');
+      const running = (
+        await admin7.query(
+          `select indexdef from pg_indexes where tablename='review_cycles' and indexname='review_cycles_one_running_idx'`,
+        )
+      ).rows[0]?.indexdef as string | undefined;
+      expect(running).toMatch(/^CREATE UNIQUE INDEX/);
+      expect(running).toMatch(
+        /\(pull_request_id\) WHERE \(state = 'RUNNING'::review_cycle_state\)/,
+      );
+      await tx(app7, async (client, f) => {
+        const running = { state: 'RUNNING', fixed_count: 0, remaining_count: 7, iteration: 4 };
+        await insertCycle(client, f, 8, running);
+        await expectFail(
+          client,
+          () => insertCycle(client, f, 9, running),
+          /review_cycles_one_running_idx/,
+        );
+        await insertCycle(client, f, 9, { state: 'COMPLETED', iteration: 4 });
+      });
+      await tx(app7, async (client, f) => {
+        const cycle = (
+          await insertCycle(client, f, 1, { state: 'RUNNING', fixed_count: 0, remaining_count: 7 })
+        ).rows[0].id as string;
+        await expectFail(
+          client,
+          () => insertCycle(client, f, 1),
+          /review_cycles_pull_request_id_cycle_number_key/,
+        );
+        await expectFail(
+          client,
+          () => insertCycle(client, f, 2, { fixed_count: 6, remaining_count: 2 }),
+          /review_cycles_counts_check/,
+        );
+        await expectFail(
+          client,
+          () => insertCycle(client, f, 2, { iteration: 6 }),
+          /review_cycles_iteration_budget_check/,
+        );
+        // fix_cycle_id on a finding references review_cycles
+        const review = (await insertReview(client, f, 1)).rows[0].id as string;
+        const fid = (await insertFinding(client, f, review, 1)).rows[0].id as string;
+        await expect(
+          client.query(
+            `update review_findings set state='FIX_REQUESTED', fix_cycle_id=$2 where id=$1`,
+            [fid, cycle],
+          ),
+        ).resolves.toMatchObject({ rowCount: 1 });
+        await expectFail(
+          client,
+          () =>
+            client.query(`update review_findings set fix_cycle_id=gen_random_uuid() where id=$1`, [
+              fid,
+            ]),
+          /review_findings_fix_cycle_id_fkey/,
+        );
+      });
+    });
+
+    it('FR-021 audit_events accepts the three US6 human actions (finding.dismissed, finding.fix_requested, finding.issue_requested) with target_type review_finding', async () => {
+      await tx(app7, async (client, f) => {
+        for (const action of [
+          'finding.dismissed',
+          'finding.fix_requested',
+          'finding.issue_requested',
+        ])
+          await expect(
+            client.query(
+              `insert into audit_events(organization_id, project_id, workflow_id, actor_type, actor_id, actor_name, action, target_type, target_id, result, details)
+             values ($1,$2,$3,'user','u','Priya',$4,'review_finding',gen_random_uuid(),'ok','{}'::jsonb)`,
+              [f.org, f.project, f.workflow, action],
+            ),
+            action,
+          ).resolves.toMatchObject({ rowCount: 1 });
+      });
+    });
+
+    it('FR-032 the four US6 tables have the org-isolation RLS policy (disabled while CDEVI_RLS=off), are in RLS_TABLES, and app_user has SELECT, INSERT, UPDATE (+ DELETE on review_findings for replace-whole)', async () => {
+      const migrateSrc = readFileSync(resolve(__dirname, '../src/migrate.ts'), 'utf8');
+      for (const t of ['pull_requests', 'reviews', 'review_findings', 'review_cycles']) {
+        expect(migrateSrc, `${t} in RLS_TABLES`).toContain(`'${t}'`);
+        const pol = (
+          await admin7.query(`select policyname, qual from pg_policies where tablename=$1`, [t])
+        ).rows;
+        expect(
+          pol.map((p) => p.policyname),
+          t,
+        ).toEqual([`${t}_org_isolation`]);
+        expect(pol[0].qual, t).toContain("current_setting('app.organization_id'");
+        const rls = await admin7.query(`select relrowsecurity from pg_class where relname=$1`, [t]);
+        expect(rls.rows[0].relrowsecurity, t).toBe(false);
+        const privs = (
+          await admin7.query(
+            `select privilege_type from information_schema.role_table_grants where grantee='app_user' and table_name=$1`,
+            [t],
+          )
+        ).rows.map((r) => r.privilege_type as string);
+        expect(privs.sort(), t).toEqual(
+          t === 'review_findings'
+            ? ['DELETE', 'INSERT', 'SELECT', 'UPDATE']
+            : ['INSERT', 'SELECT', 'UPDATE'],
+        );
+      }
+    });
+
+    it('FR-034 every US6 table has statement-level AFTER INSERT / UPDATE (and DELETE for review_findings) inbox_changed triggers: a review replace-whole (DELETE + 7 INSERTs + review UPDATE + cycle INSERT) in one transaction writes exactly one inbox_change_log row for the workflow and NOTIFYs once', async () => {
+      const triggers = async (t: string) =>
+        (
+          await admin7.query(
+            `select tgname, tgtype from pg_trigger where tgrelid=$1::regclass and not tgisinternal and tgname like 'inbox_changed_%' order by tgname`,
+            [t],
+          )
+        ).rows as { tgname: string; tgtype: number }[];
+      for (const t of ['pull_requests', 'reviews', 'review_findings', 'review_cycles']) {
+        const trg = await triggers(t);
+        const expected = [
+          `inbox_changed_${t}`,
+          ...(t === 'review_findings' ? [`inbox_changed_${t}_deleted`] : []),
+          `inbox_changed_${t}_updated`,
+        ];
+        expect(
+          trg.map((x) => x.tgname),
+          t,
+        ).toEqual(expected);
+        for (const x of trg) {
+          expect(x.tgtype & 1, `${x.tgname} FOR EACH STATEMENT`).toBe(0);
+          expect(x.tgtype & 2, `${x.tgname} AFTER`).toBe(0);
+        }
+      }
+      const client = await app7.connect();
+      try {
+        await client.query('BEGIN');
+        const f = await fixture(client);
+        const logRows = async () =>
+          (
+            await client.query(
+              `select organization_id, project_id, workflow_id, requirement_id from inbox_change_log where workflow_id = $1 order by seq`,
+              [f.workflow],
+            )
+          ).rows;
+        const row = {
+          organization_id: f.org,
+          project_id: f.project,
+          workflow_id: f.workflow,
+          requirement_id: null,
+        };
+        // the workflow INSERT (0001 trigger) and the pull_requests INSERT each log once
+        expect(await logRows(), 'workflow insert + PR insert').toEqual([row, row]);
+        const review = (await insertReview(client, f, 3)).rows[0].id as string;
+        for (let i = 1; i <= 7; i++)
+          await insertFinding(client, f, review, i, { external_id: `find-7-${i}` });
+        await client.query(`delete from review_findings where review_id=$1`, [review]);
+        for (let i = 1; i <= 7; i++)
+          await insertFinding(client, f, review, i, { external_id: `find-7-${i}` });
+        await client.query(
+          `update reviews set status='COMPLETE', finished_at=now(), observed_at=now() where id=$1`,
+          [review],
+        );
+        await insertCycle(client, f, 3);
+        expect(
+          await logRows(),
+          'whole review replacement adds no further row in the same transaction',
+        ).toEqual([row, row]);
+        await client.query('ROLLBACK');
+      } finally {
+        client.release();
+      }
+
+      await withInboxListener(admin7, async (writer, framesSince) => {
+        await writer.query('begin');
+        const f = await fixture(writer);
+        await writer.query('commit');
+        const seqBefore = await maxSeq(writer);
+        await writer.query('begin');
+        const review = (await insertReview(writer, f, 1)).rows[0].id as string;
+        await insertFinding(writer, f, review, 1);
+        await insertFinding(writer, f, review, 2, { external_id: 'find-7-2' });
+        await writer.query('commit');
+        const frames = await framesSince(f.workflow, seqBefore, 1);
+        expect(frames).toHaveLength(1);
+        expect(frames[0]).toMatchObject({
+          organizationId: f.org,
+          projectId: f.project,
+          workflowId: f.workflow,
+        });
+        // A human action after the transaction (dismiss) notifies again, once.
+        await writer.query(
+          `update review_findings set state='DISMISSED', dismissed_reason='dup', dismissed_at=now() where review_id=$1 and position=1`,
+          [review],
+        );
+        expect(await framesSince(f.workflow, seqBefore, 2)).toHaveLength(2);
+        await dropFixture(writer, f);
+      });
     });
   },
 );

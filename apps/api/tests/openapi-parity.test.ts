@@ -25,7 +25,7 @@ describe.skipIf(skipDb)('OpenAPI ↔ Fastify route table parity (specs/001 US5, 
   });
   afterAll(() => app.close());
 
-  it('FR-016/FR-017 every documented operation is served, including the US5 agent-run routes', () => {
+  it('FR-016/FR-017 every documented operation is served, including the US5 agent-run and US6 review routes', () => {
     const ops = documentedOperations();
     expect(ops).toEqual(
       expect.arrayContaining([
@@ -33,6 +33,14 @@ describe.skipIf(skipDb)('OpenAPI ↔ Fastify route table parity (specs/001 US5, 
         'PUT /api/ingest/agent-runs/:externalId',
         'PUT /api/ingest/agent-runs/:externalId/decisions',
         'GET /api/workflows/:id',
+        'GET /api/reviews',
+        'GET /api/reviews/:pullRequestId',
+        'POST /api/reviews/:pullRequestId/findings/:findingId/dismiss',
+        'POST /api/reviews/:pullRequestId/findings/:findingId/fix',
+        'POST /api/reviews/:pullRequestId/findings/:findingId/issue',
+        'PUT /api/ingest/pull-requests/:externalId',
+        'PUT /api/ingest/pull-requests/:externalId/reviews/:cycle',
+        'PUT /api/ingest/pull-requests/:externalId/cycles/:cycle',
       ]),
     );
     const missing = ops.filter((op) => {

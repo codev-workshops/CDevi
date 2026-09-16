@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { IsoDateTime, line, Uuid } from './common';
+import { DecisionLink, IsoDateTime, line, Uuid } from './common';
+import { REVIEW_STATUSES } from './review-model';
 import { RiskLevel, WorkflowState } from './vocabulary';
 
 /** The six artifact kinds of specs/001 US1 scenario 2 (data-model.md §2.3). */
@@ -144,6 +145,26 @@ export const ActionsView = z.object({
 });
 export type ActionsView = z.infer<typeof ActionsView>;
 
+/**
+ * US6 FR-022: the workflow's pull request and its derived merge readiness (declared here, not in ./reviews,
+ * because ./agent-runs already imports this module). `href` is the PR in the git host, `reviewHref` the Review Center.
+ */
+export const WorkflowPullRequestView = z.object({
+  id: Uuid,
+  number: z.number().int().min(1),
+  title: z.string(),
+  href: z
+    .string()
+    .trim()
+    .max(500)
+    .refine((s) => /^https?:\/\//.test(s), { message: 'must be an http(s) URL' }),
+  reviewStatus: z.enum(REVIEW_STATUSES).nullable(),
+  readyForMerge: z.boolean(),
+  blockingOpenCount: z.number().int().min(0),
+  reviewHref: DecisionLink,
+});
+export type WorkflowPullRequestView = z.infer<typeof WorkflowPullRequestView>;
+
 export const WorkflowDetail = z.object({
   generatedAt: IsoDateTime,
   workflow: z.object({
@@ -174,5 +195,7 @@ export const WorkflowDetail = z.object({
   attention: AttentionView.nullable(),
   failure: FailureView.nullable(),
   actions: ActionsView,
+  /** US6 FR-022: the workflow's pull request and its merge readiness; `workflow.pullRequestRef` stays for older readers. */
+  pullRequest: WorkflowPullRequestView.nullable().default(null),
 });
 export type WorkflowDetail = z.infer<typeof WorkflowDetail>;

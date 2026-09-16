@@ -1642,6 +1642,10 @@ pre.cd-diff {
 .cd-finding .cd-finding-evidence a {
   font-family: var(--mono);
   font-size: 12px;
+  /* WCAG 2.5.8: stacked evidence links stay a real target */
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--space-6);
 }
 .cd-finding .cd-acts {
   display: flex;

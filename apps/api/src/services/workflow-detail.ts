@@ -22,6 +22,7 @@ import {
   type AgentRunEvent,
   type ArtifactRow,
   type ArtifactType,
+  type ReviewStatus,
   type RiskLevel,
   type Role,
   type RunRow,
@@ -32,6 +33,12 @@ import {
   type WorkflowDetail,
   type WorkflowState,
 } from '@cdevi/contracts';
+import {
+  blockingOpenCount,
+  readyForMerge,
+  reviewHref,
+  type FindingLike,
+} from '@cdevi/contracts/review-model';
 import type pg from 'pg';
 
 export interface DetailScope {
@@ -285,6 +292,26 @@ export async function workflowDetail(
     )
   ).rows[0]!;
 
+  // US6 (FR-020/FR-022): the workflow's pull request with the finding states of its latest review; readiness is derived, never stored.
+  const pr = (
+    await client.query<{
+      id: string;
+      number: number;
+      title: string;
+      href: string;
+      review_status: ReviewStatus | null;
+      findings: FindingLike[];
+    }>(
+      `SELECT pr.id, pr.number, pr.title, pr.href, lr.status AS review_status, COALESCE(fs.findings, '[]'::json) AS findings
+         FROM pull_requests pr
+         LEFT JOIN LATERAL (SELECT id, status FROM reviews r WHERE r.pull_request_id = pr.id ORDER BY cycle_number DESC LIMIT 1) lr ON true
+         LEFT JOIN LATERAL (SELECT json_agg(json_build_object('lane', f.lane, 'blocking', f.blocking, 'state', f.state)) AS findings
+                              FROM review_findings f WHERE f.review_id = lr.id) fs ON true
+        WHERE pr.workflow_id = $1`,
+      [w.id],
+    )
+  ).rows[0];
+
   const ordered = orderStages(stages);
   const current = deriveCurrentStage(ordered);
   const run = latestRunFor(current, runs);
@@ -344,5 +371,17 @@ export async function workflowDetail(
       ordered,
     ),
     actions: allowedActions(scope.role, w.state),
+    pullRequest: pr
+      ? {
+          id: pr.id,
+          number: pr.number,
+          title: pr.title,
+          href: pr.href,
+          reviewStatus: pr.review_status,
+          readyForMerge: readyForMerge(pr.findings),
+          blockingOpenCount: blockingOpenCount(pr.findings),
+          reviewHref: reviewHref(pr.id),
+        }
+      : null,
   };
 }

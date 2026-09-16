@@ -24,6 +24,8 @@ export interface FindingRowProps extends Omit<HTMLAttributes<HTMLElement>, 'titl
   /** Review lane, e.g. Security. */
   lane?: ReactNode;
   title: ReactNode;
+  /** What the reviewer observed, before its impact. */
+  description?: ReactNode;
   impact?: ReactNode;
   evidence?: FindingEvidence[];
   fix?: ReactNode;
@@ -33,7 +35,19 @@ export interface FindingRowProps extends Omit<HTMLAttributes<HTMLElement>, 'titl
 
 /** One AI review finding (specs/001 FR-020). Severity and blocking class are always words. */
 export const FindingRow = forwardRef<HTMLElement, FindingRowProps>(function FindingRow(
-  { severity, blocking, lane, title, impact, evidence, fix, actions, className, ...rest },
+  {
+    severity,
+    blocking,
+    lane,
+    title,
+    description,
+    impact,
+    evidence,
+    fix,
+    actions,
+    className,
+    ...rest
+  },
   ref,
 ) {
   const id = useId();
@@ -52,6 +66,12 @@ export const FindingRow = forwardRef<HTMLElement, FindingRowProps>(function Find
         {lane ? <Pill variant="neutral">{lane}</Pill> : null}
         <h3 id={id}>{title}</h3>
       </div>
+      {description ? (
+        <div className="cd-finding-section">
+          <b>Description</b>
+          {description}
+        </div>
+      ) : null}
       {impact ? (
         <div className="cd-finding-section">
           <b>Impact</b>

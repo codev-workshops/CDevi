@@ -1,5 +1,5 @@
 import type { WorkflowDetail } from '@cdevi/contracts';
-import { SHOWCASE_FAILED, SHOWCASE_WAITING } from '@cdevi/db/seed';
+import { EXPECTED_REVIEW_SEED, SHOWCASE_FAILED, SHOWCASE_WAITING } from '@cdevi/db/seed';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -116,6 +116,30 @@ describe.skipIf(skipDb)('GET /api/workflows/:id (US1 read model)', () => {
     expect(d.attention?.reason.length).toBeGreaterThan(0);
     expect(d.attention?.action.href).toMatch(/^\/approvals\//);
     expect(d.failure).toBeNull();
+  });
+
+  it('FR-020 workflow detail carries pullRequest', async () => {
+    const w = await detail(engineer, waitingId);
+    expect(w.pullRequest).not.toBeNull();
+    const pr = w.pullRequest!;
+    expect(pr).toEqual({
+      id: pr.id,
+      number: EXPECTED_REVIEW_SEED.pullRequest.number,
+      title: EXPECTED_REVIEW_SEED.pullRequest.title,
+      href: pr.href,
+      reviewStatus: EXPECTED_REVIEW_SEED.review.status,
+      readyForMerge: EXPECTED_REVIEW_SEED.readyForMerge,
+      blockingOpenCount: EXPECTED_REVIEW_SEED.blockingOpenCount,
+      reviewHref: `/reviews/${pr.id}`,
+    });
+    expect(pr.href).toMatch(/^https:\/\//);
+    const prRow = await app.pool.query<{ id: string }>(
+      `SELECT id FROM pull_requests WHERE external_id = $1`,
+      [EXPECTED_REVIEW_SEED.pullRequest.externalId],
+    );
+    expect(pr.id).toBe(prRow.rows[0]!.id);
+    expect((await detail(viewer, waitingId)).pullRequest).toEqual(pr);
+    expect((await detail(engineer, failedId)).pullRequest).toBeNull();
   });
 
   it('FR-006 failed workflow reports failing stage, last successful stage, reason and role-gated actions', async () => {

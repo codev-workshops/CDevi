@@ -3,6 +3,23 @@
 Tokens, CSS variable names, `cd-` class names, component names and props are the public API. Additive
 changes bump the minor version; renames or removals bump the major version and carry a migration note.
 
+## 1.5.1 — 2026-09-15
+
+### Fixed
+
+- `FindingRow` evidence links are `inline-flex` with `min-height: var(--space-6)` (24 px), so two or more stacked
+  evidence links on one finding satisfy WCAG 2.5.8 target size (axe `target-size` on the Review Center with the
+  seeded `find-1821-1`, which carries a file and a ticket link). No markup, class or token change.
+
+## 1.5.0 — 2026-09-15
+
+### Added
+
+- `FindingRow.description` (optional): the reviewer's observation rendered as its own "Description" section
+  before Impact, so a review finding carries description, impact, evidence and recommended fix as specs/001
+  FR-020 lists them (US6 Review Center). Reuses `.cd-finding-section`; no new CSS. Gallery entry and
+  DESIGN.md §3 row updated.
+
 ## 1.4.0 — 2026-09-15
 
 ### Added
