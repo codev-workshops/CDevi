@@ -143,14 +143,21 @@ function evidenceItems(finding: ReviewFindingView): FindingEvidence[] {
   });
 }
 
+/**
+ * An action targets a finding row by uuid. When a live refetch has since replaced that row with a newer review's
+ * snapshot (same externalId, new uuid), the loaded view is more recent than the result and the result is ignored.
+ */
+function isStaleResult(view: PullRequestReviewView, result: FindingActionResult): boolean {
+  return !view.findings.some((f) => f.id === result.finding.id);
+}
+
 /** Merge a `FindingActionResult` into the last loaded view: the finding, the cycle it created or joined, the derived readiness. */
 function applyResult(
   view: PullRequestReviewView,
   result: FindingActionResult,
 ): PullRequestReviewView {
-  const findings = view.findings.map((f) =>
-    f.externalId === result.finding.externalId ? result.finding : f,
-  );
+  if (isStaleResult(view, result)) return view;
+  const findings = view.findings.map((f) => (f.id === result.finding.id ? result.finding : f));
   let cycles = view.cycles;
   if (result.cycle) {
     const c = result.cycle;
@@ -273,6 +280,10 @@ export function ReviewCenterScreen({ initial, userRole, now }: ReviewCenterScree
   const [stateFilter, setStateFilter] = useState<FindingState | 'all'>('all');
   const [focusCycle, setFocusCycle] = useState<string | null>(null);
   const refocusDismiss = useRef<string | null>(null);
+  const latestView = useRef(initial);
+  useEffect(() => {
+    latestView.current = view;
+  }, [view]);
 
   const hashAnchor = useSyncExternalStore(subscribeHash, readHashAnchor, noHash);
   // A tab choice is remembered until the URL hash changes: every new `#finding-n` selects Findings again.
@@ -372,9 +383,10 @@ export function ReviewCenterScreen({ initial, userRole, now }: ReviewCenterScree
             : action === 'issue'
               ? await createIssue(prId, finding.id)
               : await dismissFinding(prId, finding.id, reason ?? '');
+        const stale = isStaleResult(latestView.current, result);
         setView((prev) => applyResult(prev, result));
         setDismissing(null);
-        if (action === 'fix' && result.cycle) {
+        if (action === 'fix' && result.cycle && !stale) {
           setFocusCycle(result.cycle.id);
           setTab('cycles');
         }
