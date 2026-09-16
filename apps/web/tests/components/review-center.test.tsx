@@ -445,6 +445,41 @@ describe('PR Review Center (specs/001 US6)', () => {
     expect(cyclesTab()).toHaveTextContent('Cycles (3)');
   });
 
+  it('FR-034 an action result resolving in the same tick as a newer snapshot neither merges nor navigates', async () => {
+    const view = reviewView();
+    const newer = reviewView({
+      findings: view.findings.map((f) => ({
+        ...f,
+        id: `${f.id.slice(0, -4)}beef`,
+        state: f.blocking === 'BLOCKING' ? ('FIXED' as const) : f.state,
+      })),
+      readyForMerge: true,
+      blockingOpenCount: 0,
+    });
+    let resolveFix: (r: Response) => void = () => {};
+    let resolveRefetch: (r: Response) => void = () => {};
+    fetchMock
+      .mockImplementationOnce(() => new Promise<Response>((r) => (resolveFix = r)))
+      .mockImplementationOnce(() => new Promise<Response>((r) => (resolveRefetch = r)));
+    renderApp(<ReviewCenterScreen initial={view} userRole="engineer" now={NOW} />);
+
+    await userEvent.click(within(finding(2)).getByRole('button', { name: 'Apply Fix' }));
+    changed(WORKFLOW_ID);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    // Refetch first, action right behind it — before React renders the refetched view.
+    resolveRefetch(jsonResponse(newer));
+    resolveFix(jsonResponse(applyFixResult()));
+
+    await waitFor(() => expect(finding(2)).toHaveTextContent('fixed'));
+    await waitFor(() =>
+      expect(within(finding(2)).queryByRole('button', { name: 'Apply Fix' })).toBeNull(),
+    );
+    expect(finding(2)).not.toHaveTextContent('fix requested');
+    expect(findingsTab()).toHaveAttribute('aria-selected', 'true');
+    expect(cyclesTab()).toHaveTextContent('Cycles (3)');
+  });
+
   it('FR-034 a failed refetch shows a retryable error notice and keeps the last good model', async () => {
     fetchMock
       .mockResolvedValueOnce(problem(500, 'boom'))

@@ -280,10 +280,9 @@ export function ReviewCenterScreen({ initial, userRole, now }: ReviewCenterScree
   const [stateFilter, setStateFilter] = useState<FindingState | 'all'>('all');
   const [focusCycle, setFocusCycle] = useState<string | null>(null);
   const refocusDismiss = useRef<string | null>(null);
+  // The most recent snapshot handed to `setView`, kept in step synchronously so an action result can be checked
+  // against a refetch that has been accepted but not yet committed.
   const latestView = useRef(initial);
-  useEffect(() => {
-    latestView.current = view;
-  }, [view]);
 
   const hashAnchor = useSyncExternalStore(subscribeHash, readHashAnchor, noHash);
   // A tab choice is remembered until the URL hash changes: every new `#finding-n` selects Findings again.
@@ -320,6 +319,7 @@ export function ReviewCenterScreen({ initial, userRole, now }: ReviewCenterScree
     try {
       const next = await getPullRequestReview(prId);
       if (mine !== generation.current) return;
+      latestView.current = next;
       setView(next);
       setLastFetchedAt(new Date().toISOString());
       setLoadError(false);
@@ -384,7 +384,8 @@ export function ReviewCenterScreen({ initial, userRole, now }: ReviewCenterScree
               ? await createIssue(prId, finding.id)
               : await dismissFinding(prId, finding.id, reason ?? '');
         const stale = isStaleResult(latestView.current, result);
-        setView((prev) => applyResult(prev, result));
+        latestView.current = applyResult(latestView.current, result);
+        setView(latestView.current);
         setDismissing(null);
         if (action === 'fix' && result.cycle && !stale) {
           setFocusCycle(result.cycle.id);
